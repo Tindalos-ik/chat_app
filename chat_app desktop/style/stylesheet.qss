@@ -1,0 +1,60 @@
+QDialog#LoginDialog, #RegisterDialog{
+background-color:rgb(255,255,255)
+}
+
+
+QLabel#err_tip[state="normal"]{
+   color: green;
+}
+
+QLabel#err_tip[state="err"]{
+   color: red;
+}
+
+ClickedLabel#pass_visible[state='unvisible']{
+   border-image: url(:/res/unvisible.png);
+}
+
+ClickedLabel#pass_visible[state='unvisible_hover']{
+   border-image: url(:/res/unvisible_hover.png);
+}
+
+ClickedLabel#pass_visible[state='visible']{
+   border-image: url(:/res/visible.png);
+}
+
+ClickedLabel#pass_visible[state='visible_hover']{
+   border-image: url(:/res/visible_hover.png);
+}
+
+ClickedLabel#confirm_visible[state='unvisible']{
+   border-image: url(:/res/unvisible.png);
+}
+
+ClickedLabel#confirm_visible[state='unvisible_hover']{
+   border-image: url(:/res/unvisible_hover.png);
+}
+
+ClickedLabel#confirm_visible[state='visible']{
+   border-image: url(:/res/visible.png);
+}
+
+ClickedLabel#confirm_visible[state='visible_hover']{
+   border-image: url(:/res/visible_hover.png);
+}
+
+ClickedLabel#forget_pwd_label[state='normal'],#forget_pwd_label[state='selected']{
+   color: black;
+}
+
+ClickedLabel#forget_pwd_label[state='hover'],#forget_pwd_label[state='selected_hover']{
+   color: rgb(42,112,241);
+}
+
+
+
+
+
+
+
+

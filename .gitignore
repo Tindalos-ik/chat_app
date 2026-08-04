@@ -1,0 +1,51 @@
+# ==================== 构建产物 ====================
+build/
+build_*/
+**/build/
+**/build_*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.sln
+*.tlog
+*.lastbuildstate
+
+# ==================== IDE / 编辑器 ====================
+.vscode/
+.qtcreator/
+chat_app desktop/.qtcreator/
+**/.qtc_clangd/
+*.user
+
+# ==================== Node.js ====================
+VarifyServer/node_modules/
+npm-debug.log*
+
+# ==================== 生成代码（CMake 配置阶段会自动重新生成） ====================
+**/proto_gen/
+
+# ==================== 二进制与编译中间文件 ====================
+*.exe
+*.dll
+*.lib
+*.obj
+*.pdb
+*.ilk
+*.o
+*.a
+*.so
+*.out
+*.exe.recipe
+
+# ==================== 本地配置（含敏感信息，不入库） ====================
+# VarifyServer 的 config.json 含 163 邮箱授权码，请复制 config.example.json 后自行填写
+VarifyServer/config.json
+
+# ==================== 日志 / 临时文件 ====================
+*.log
+*.tmp
+Thumbs.db
+.DS_Store

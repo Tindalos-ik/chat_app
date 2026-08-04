@@ -1,0 +1,36 @@
+{
+    "version": 3,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 21,
+        "patch": 0
+    },
+    "configurePresets": [
+        {
+            "name": "windows-vcpkg",
+            "displayName": "Windows x64 (vcpkg)",
+            "description": "Visual Studio 2022 + vcpkg 工具链，输出到 build 目录",
+            "generator": "Visual Studio 17 2022",
+            "architecture": "x64",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "CMAKE_TOOLCHAIN_FILE": "D:/cppsoft/vcpkg/scripts/buildsystems/vcpkg.cmake",
+                "VCPKG_TARGET_TRIPLET": "x64-windows"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "debug",
+            "displayName": "Debug",
+            "configurePreset": "windows-vcpkg",
+            "configuration": "Debug"
+        },
+        {
+            "name": "release",
+            "displayName": "Release",
+            "configurePreset": "windows-vcpkg",
+            "configuration": "Release"
+        }
+    ]
+}

@@ -1,0 +1,13 @@
+cmake_minimum_required(VERSION 3.10)
+project(chat_app)
+
+# 设置一些全局变量，所有子项目都能看见
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# 添加子项目目录，可以理解成一个个模块
+add_subdirectory(ChatServer)
+add_subdirectory(GateServer)
+add_subdirectory(StatusServer)
+
+# VarifyServer 是 Node.js 项目（用 npm/node 启动），没有 CMakeLists.txt，不需要 CMake 编译，
