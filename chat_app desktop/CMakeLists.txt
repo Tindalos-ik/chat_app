@@ -23,7 +23,8 @@ qt_add_executable(chat_app
     timerbtn.h timerbtn.cpp
     clickedlabel.h clickedlabel.cpp
     tcpmgr.h tcpmgr.cpp
-    resetdialog.cpp resetdialog.h resetdialog.ui   #ini、ui、qrc直接加入可执行文件
+    resetdialog.cpp resetdialog.h resetdialog.ui
+    usermgr.h usermgr.cpp   #ini、ui、qrc直接加入可执行文件
 )
 
 target_include_directories(chat_app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

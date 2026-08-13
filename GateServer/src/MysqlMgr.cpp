@@ -167,8 +167,9 @@ bool MysqlMgr::RegUser(const std::string &name, const std::string &email, const 
             return false;
         }
         // 准备调用存储过程或执行 SQL 插入
+        // 存储过程是 原子化的，保证高并发情况下的数据一致性
         // 使用参数化查询防止 SQL 注入
-        std::string sql = "INSERT INTO users (name, email, password) VALUES (?, ?, ?)";
+        std::string sql = "INSERT INTO user (name, email, pwd) VALUES (?, ?, ?)";
         auto result = con->sql(sql).bind(name).bind(email).bind(password).execute();
         std::cout << "user:" << name << " email:" << email << " password:" << password 
                                                     << " register success" << std::endl;
@@ -188,7 +189,7 @@ bool MysqlMgr::Checkuser(const::std::string & name)
             return false;
         }
         // 查询用户是否存在，统计满足条件的行数
-        std::string sql = "SELECT COUNT(*) FROM users WHERE name = ?";
+        std::string sql = "SELECT COUNT(*) FROM user WHERE name = ?";
         auto result = con->sql(sql).bind(name).execute();
         auto rows = result.fetchOne();
         if (rows) {
@@ -210,7 +211,7 @@ bool MysqlMgr::isMatch(const ::std::string &name, std::string &email)
         if(con == nullptr){
             return false;
         }
-        std::string sql = "SELECT COUNT(*) FROM users WHERE name = ? AND email = ?";
+        std::string sql = "SELECT COUNT(*) FROM user WHERE name = ? AND email = ?";
         auto result = con->sql(sql).bind(name).bind(email).execute();
         auto rows = result.fetchOne();
         if (rows) {
@@ -239,7 +240,7 @@ bool MysqlMgr::Checkemail(const std::string &email)
             return false;
         }
         // 查询邮箱是否存在，统计满足条件的行数
-        std::string sql = "SELECT COUNT(*) FROM users WHERE email = ?";
+        std::string sql = "SELECT COUNT(*) FROM user WHERE email = ?";
         auto result = con->sql(sql).bind(email).execute();
         auto rows = result.fetchOne();
         if (rows) {
@@ -268,7 +269,7 @@ bool MysqlMgr::UpdatePwd(const std::string &name, const std::string &newpwd)
             return false;
         }
         // 更新密码，update不返回结果集
-        std::string sql = "UPDATE users SET password = ? WHERE name = ?";
+        std::string sql = "UPDATE user SET pwd = ? WHERE name = ?";
         auto result = con->sql(sql).bind(newpwd).bind(name).execute();
         return true; //没有异常就是成功
     }catch(const std::exception &e){
@@ -296,7 +297,7 @@ bool MysqlMgr::CheckPwd(const std::string &name, const std::string &pwd, UserInf
             return false;
         }
         // 查询用户信息
-        std::string sql = "SELECT uid, name, email, password FROM users WHERE name = ?";
+        std::string sql = "SELECT uid, name, email, pwd FROM user WHERE name = ?";
         auto result = con->sql(sql).bind(name).execute();
         auto rows = result.fetchOne(); //获取一行返回
         

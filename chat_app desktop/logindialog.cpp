@@ -195,6 +195,7 @@ void LoginDialog::initHttpHandlers()
         _token = si.Token;
 
         emit sig_connect_tcp(si); //发给tcpmgr
+        //为什么不直接调用tcpmgr发给服务器呢？在高并发的情况下，实现一个类似排队的效果，用tcpmgr的信号和槽机制
     });
 
 }

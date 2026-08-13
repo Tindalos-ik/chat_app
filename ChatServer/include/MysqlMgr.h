@@ -93,6 +93,10 @@ struct UserInfo{
     std::string email;
     std::string passwd;
     int uid; // 用户ID
+    std::string nick; // 昵称
+    std::string desc; // 个性签名
+    int sex;          // 0未知 1男 2女
+    std::string icon; // 头像
 };
 
 //数据库操作类
@@ -118,6 +122,8 @@ public:
 
     //检查用户名和密码是否匹配
     bool CheckPwd(const std::string& name, const std::string& pwd, UserInfo& userInfo);
+
+    UserInfo GetUserInfo(int uid);
 
 private:
     MysqlMgr();

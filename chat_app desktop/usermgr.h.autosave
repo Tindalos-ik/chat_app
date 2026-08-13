@@ -1,0 +1,23 @@
+#ifndef USERMGR_H
+#define USERMGR_H
+#include <QObject>
+#include <memory>
+#include <singleton.h>
+
+/*
+ * 用户管理类，负责
+ */
+
+class UserMgr:public QObject, public Singleton<UserMgr>,
+                public: std::enable_shared_from_this<UserMgr>
+{
+    Q_OBJECT
+public:
+    friend class Singleton<UserMgr>
+    UserMgr();
+    void SetName(QString name);
+    void SetUid
+    
+};
+
+#endif // USERMGR_H

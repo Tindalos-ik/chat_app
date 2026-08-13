@@ -2,6 +2,7 @@
 #include <json.h>
 #include <sstream>
 #include <iostream>
+#include "MysqlMgr.h"
 
 using namespace std;
 
@@ -101,14 +102,24 @@ void LogicSystem::LoginHandler(std::shared_ptr<CSession> session, const short &m
 
     // 构造回包：error == 0 表示登录成功
     Json::Value rtvalue;
+    Defer defer([this, &rtvalue, session]{
+        std::string return_str = rtvalue.toStyledString();
+        session->Send(return_str, MSG_CHAT_LOGIN_RSP); // 发送登录回包，在出作用域的时候会自动调用
+    });
+
     rtvalue["error"] = rsp.error();
-    rtvalue["uid"] = rsp.uid();
-    rtvalue["token"] = rsp.token();
-    if (rsp.error() == ErrorCode::Success) {
-        session->SetUserId(uid); // 登录成功，记录用户id，后续消息路由使用
+    if(rsp.error() != ErrorCode::Success) {
+        return;
     }
 
-    std::string return_str = rtvalue.toStyledString();
-    // 把登录结果回包发送给客户端
-    session->Send(return_str, MSG_CHAT_LOGIN_RSP);
+    // 查询用户信息，返回客户端，用于渲染界面
+    auto user_info = MysqlMgr::GetInstance()->GetUserInfo(uid);
+    rtvalue["uid"] = user_info.uid;
+    rtvalue["user"] = user_info.user;
+    rtvalue["email"] = user_info.email;
+    rtvalue["pwd"] = user_info.passwd;
+    rtvalue["nick"] = user_info.nick;
+    rtvalue["sex"] = user_info.sex;
+    rtvalue["icon"] = user_info.icon;
+    rtvalue["desc"] = user_info.desc;
 }

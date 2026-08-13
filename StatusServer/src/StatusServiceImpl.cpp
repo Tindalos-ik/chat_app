@@ -44,7 +44,7 @@ StatusServiceImpl::StatusServiceImpl()
 
 Status StatusServiceImpl::GetChatServer(ServerContext *context, const GetChatServerReq *request, GetChatServerRsp *reply)
 {
-    std::cout << "StatusServer has been called to get chat server" << std::endl;
+    std::cout << "StatusServer has been called to get chatserver" << std::endl;
     ChatServer server = getChatServer();
     reply->set_host(server.host);
     reply->set_port(server.port);
