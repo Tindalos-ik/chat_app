@@ -3,6 +3,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include "mainwindow.h"
+#include "usermgr.h"
 
 TcpMgr::~TcpMgr()
 {
@@ -128,8 +129,9 @@ void TcpMgr::initHandlers()
             emit sig_login_failed(err);
         }
 
-        //UserMgr::GetInstance()->SetUid(json_obj["uid"].toInt());
-        //UserMgr::GetInstance()->SetToken(json_obj["token"].toString());
+        UserMgr::GetInstance()->SetUid(json_obj["uid"].toInt());
+        UserMgr::GetInstance()->SetToken(json_obj["token"].toString());
+        UserMgr::GetInstance()->SetName(json_obj["user"].toString());
 
         emit sig_switch_chatdlg();
     });

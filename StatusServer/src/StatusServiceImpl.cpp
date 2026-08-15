@@ -33,12 +33,7 @@ StatusServiceImpl::StatusServiceImpl()
     server.name = config["ChatServer1"]["name"];
     server.con_count = 0;
     _servers[server.name] = server;
-
-    server.host = config["ChatServer2"]["host"];
-    server.port = config["ChatServer2"]["port"];
-    server.name = config["ChatServer2"]["name"];
-    server.con_count = 0;
-    _servers[server.name] = server;
+    // 目前只部署一个 ChatServer 实例（8090）；以后加实例时按 ChatServer1 的格式补一段即可
     
 }
 

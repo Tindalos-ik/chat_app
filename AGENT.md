@@ -30,7 +30,7 @@
 
 ## 已知坑（遇到直接修，不要当新发现重复报告）
 
-1. `RegUser` 没分配 uid：按 llfc1 表结构第二个用户注册会撞唯一索引（待办：user_id 分配或调用 reg_user 存储过程）。
+1. ~~`RegUser` 没分配 uid~~：已修复——改为事务里 `UPDATE user_id SET id=id+1` 分配 uid 再插入（三份 MysqlMgr 同步）；依赖 `user_id` 表存在并初始化，建表脚本见 `sql/create_tables.sql`。
 2. ChatServer `LoginHandler` 的 `GetUserInfo(uid)` 已实现但没接进登录回包（TODO，注意回包别带 pwd）。
 3. token 存 StatusServer 内存 map：重启全失效、无 TTL、多实例不一致。
 4. TcpMgr `_b_recy_pending` 声明未赋值：半包状态没真正记录，遇到半包会解析错位。
@@ -49,6 +49,7 @@
 
 | 文件 | 内容 |
 | --- | --- |
+| [sql/create_tables.sql](sql/create_tables.sql) | 数据库建表脚本（user/user_id/friend/friend_apply） |
 | [疑惑.md](note/疑惑.md) | 常见小知识点解答（uid/token、分布式、Qt 并发安全、MySQL/Redis 边界等） |
 | [全栈聊天室.md](note/全栈聊天室.md) | 架构总览 |
 | [login.md](note/login.md) | 登录全链路 |

@@ -1,5 +1,6 @@
 #include "mainwindow.h"
 #include "ui_mainwindow.h"
+#include "tcpmgr.h"
 
 // 切换到注册界面的槽函数
 void MainWindow::SlotSwitchReg()
@@ -14,11 +15,18 @@ void MainWindow::SlotSwitchLogin()
 {
     // 使用堆叠窗口的setCurrentWidget方法切换回登录界面
     _stacked_widget->setCurrentWidget(_login_dlg);
+    resize(300, 500);
 }
 
 void MainWindow::SlotSwitchReset()
 {
     _stacked_widget->setCurrentWidget(_reset_dlg);
+}
+
+void MainWindow::SlotSwitchChat()
+{
+    _stacked_widget->setCurrentWidget(_chat_dlg);
+    resize(900, 1000);
 }
 
 // 主窗口构造函数
@@ -37,12 +45,14 @@ MainWindow::MainWindow(QWidget *parent)
     _login_dlg = new LoginDialog(this);
     _reg_dlg = new RegisterDialog(this);
     _reset_dlg = new ResetDialog(this);
+    _chat_dlg = new ChatDialog(this);
 
     // addWidget()方法会将部件添加到堆叠窗口的管理中
     // 添加后，堆叠窗口会给每个部件分配一个索引（从0开始）
     _stacked_widget->addWidget(_login_dlg);  // 登录对话框索引为0
     _stacked_widget->addWidget(_reg_dlg);    // 注册对话框索引为1
     _stacked_widget->addWidget(_reset_dlg);
+    _stacked_widget->addWidget(_chat_dlg);
 
     // setCurrentWidget()方法会显示指定的部件，隐藏其他所有部件
     // 这里设置登录对话框为初始显示界面
@@ -57,6 +67,9 @@ MainWindow::MainWindow(QWidget *parent)
     connect(_login_dlg,&LoginDialog::switchReset,this,&MainWindow::SlotSwitchReset);
 
     connect(_reset_dlg,&ResetDialog::switchLogin,this,&MainWindow::SlotSwitchLogin);
+
+    //当接收到登录成功信息的时候，切换聊天界面
+    connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_switch_chatdlg, this, &MainWindow::SlotSwitchChat);
 
 }
 

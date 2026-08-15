@@ -6,6 +6,7 @@
 #include "logindialog.h"   // 登录对话框头文件
 #include "registerdialog.h" // 注册对话框头文件
 #include "resetdialog.h"
+#include "chatdialog.h"
 
 /******************************************************************************
  *
@@ -36,6 +37,7 @@ private slots:
     void SlotSwitchReg();    // 切换到注册界面的槽函数
     void SlotSwitchLogin();  // 切换到登录界面的槽函数
     void SlotSwitchReset();
+    void SlotSwitchChat();
 
 private:
     Ui::MainWindow *ui;
@@ -43,6 +45,7 @@ private:
     LoginDialog *_login_dlg;          // 登录对话框指针
     RegisterDialog *_reg_dlg;         // 注册对话框指针
     ResetDialog *_reset_dlg;
+    ChatDialog *_chat_dlg;
 
 };
 

@@ -166,15 +166,28 @@ bool MysqlMgr::RegUser(const std::string &name, const std::string &email, const 
         if(con == nullptr){
             return false;
         }
-        // 准备调用存储过程或执行 SQL 插入
-        // 存储过程是 原子化的，保证高并发情况下的数据一致性
-        // 使用参数化查询防止 SQL 注入
-        std::string sql = "INSERT INTO user (name, email, pwd) VALUES (?, ?, ?)";
-        auto result = con->sql(sql).bind(name).bind(email).bind(password).execute();
+        // 注册 = 分配 uid + 插入用户，包在一个事务里保证原子性
+        // 1. user_id 表自增分配 uid（单行 UPDATE 天然串行，并发安全）
+        con->startTransaction();
+        con->sql("UPDATE user_id SET id = id + 1").execute();
+        auto res = con->sql("SELECT id FROM user_id").execute();
+        auto row = res.fetchOne();
+        if(!row){
+            con->rollback();
+            return false;
+        }
+        int uid = row[0].get<int>();
+
+        // 2. 插入用户（带 uid），参数化查询防止 SQL 注入
+        std::string sql = "INSERT INTO user (uid, name, email, pwd) VALUES (?, ?, ?, ?)";
+        con->sql(sql).bind(uid).bind(name).bind(email).bind(password).execute();
+        con->commit();
         std::cout << "user:" << name << " email:" << email << " password:" << password 
                                                     << " register success" << std::endl;
         return true;
     }catch(const std::exception &e){
+        // 任一步失败都回滚，避免 user_id 自增了但用户没插进去
+        try { con->rollback(); } catch (...) {}
         std::cout << "Exception: " << e.what() << std::endl;
         return false;
     }

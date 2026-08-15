@@ -117,7 +117,8 @@ void LogicSystem::LoginHandler(std::shared_ptr<CSession> session, const short &m
     rtvalue["uid"] = user_info.uid;
     rtvalue["user"] = user_info.user;
     rtvalue["email"] = user_info.email;
-    rtvalue["pwd"] = user_info.passwd;
+    // 客户端不需要 pwd，避免把密码回传给客户端
+    //rtvalue["pwd"] = user_info.passwd;
     rtvalue["nick"] = user_info.nick;
     rtvalue["sex"] = user_info.sex;
     rtvalue["icon"] = user_info.icon;
