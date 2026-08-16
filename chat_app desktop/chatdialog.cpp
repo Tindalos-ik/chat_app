@@ -4,7 +4,10 @@
 #include <QIcon>
 #include <QLineEdit>
 #include <QStringLiteral>
+#include <QTimer>
 #include "chatuserwid.h"
+#include "conuserwid.h"
+#include "chatuserlist.h"
 
 ChatDialog::ChatDialog(QWidget *parent)
     : QDialog(parent)
@@ -53,10 +56,31 @@ ChatDialog::ChatDialog(QWidget *parent)
         list->addItem(item);
         list->setItemWidget(item, wid);
     };
-    addDemoItem(ui->session_list, "张三", "你好，在吗？", "14:30", ":/res/head_1.jpg", true);
-    addDemoItem(ui->session_list, "李四", "[图片]", "12:05", ":/res/head_2.jpg", false);
-    addDemoItem(ui->contact_list, "王五", "周六一起打球", "昨天", ":/res/head_3.jpg", false);
-    addDemoItem(ui->contact_list, "赵六", "", "周一", ":/res/head_4.jpg", true);
+
+    // 聊天列表塞 30 条，保证能滚出滚动条、测试滚轮
+    const QString icons[] = {":/res/head_1.jpg", ":/res/head_2.jpg", ":/res/head_3.jpg",
+                             ":/res/head_4.jpg", ":/res/head_5.jpg"};
+    for (int i = 1; i <= 30; ++i) {
+        addDemoItem(ui->session_list,
+                    QStringLiteral("用户%1").arg(i),
+                    QStringLiteral("第 %1 条消息内容").arg(i),
+                    QStringLiteral("%1:%2").arg(9 + i % 10).arg(i % 60),
+                    icons[i % 5], i % 3 == 0);
+    }
+    // 好友列表：只有头像 + 名字（ConUserWid）
+    auto addConItem = [this](QListWidget *list, const QString &name, const QString &icon) {
+        auto *item = new QListWidgetItem;
+        auto *wid = new ConUserWid;
+        wid->SetUserName(name);
+        wid->SetHeadIcon(icon);
+        item->setSizeHint(wid->sizeHint());
+        list->addItem(item);
+        list->setItemWidget(item, wid);
+    };
+    addConItem(ui->contact_list, "王五", ":/res/head_3.jpg");
+    addConItem(ui->contact_list, "赵六", ":/res/head_4.jpg");
+
+
 }
 
 ChatDialog::~ChatDialog()

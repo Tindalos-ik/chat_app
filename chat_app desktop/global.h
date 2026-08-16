@@ -62,6 +62,14 @@ enum ClickLbState{
     Selected = 1 //睁眼
 };
 
+enum ListItemType{
+    ChatItem = 0,      // 聊天列表项
+    ContactItem = 1,   // 好友列表项
+    GroupTipItem = 2,  // 分组提示项
+    LineItem = 3,      // 分割线项
+    InvalidItem = 4    // 无效项
+};
+
 struct ServerInfo{
     QString Host;
     QString Port;

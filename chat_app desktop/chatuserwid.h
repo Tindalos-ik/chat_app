@@ -3,6 +3,7 @@
 
 #include <QWidget>
 #include <QSize>
+#include "listitembase.h"
 
 namespace Ui {
 class ChatUserWid;
@@ -10,7 +11,7 @@ class ChatUserWid;
 
 // 聊天/好友/搜索列表的列表项控件
 // 用法：new 一个 ChatUserWid，setItemWidget 到 QListWidget 的 item 上
-class ChatUserWid : public QWidget
+class ChatUserWid : public ListItemBase
 {
     Q_OBJECT
 
