@@ -63,11 +63,12 @@ enum ClickLbState{
 };
 
 enum ListItemType{
-    ChatItem = 0,      // 聊天列表项
-    ContactItem = 1,   // 好友列表项
-    GroupTipItem = 2,  // 分组提示项
-    LineItem = 3,      // 分割线项
-    InvalidItem = 4    // 无效项
+    CHAT_USER_ITEM, // 聊天用户
+    CONTACT_USER_ITEM, // 联系人用户
+    SEARCH_USER_ITEM, // 搜索到的用户
+    ADD_USER_TIP_ITEM, // 显示添加用户
+    INVALID_ITEM, // 不可点击条目
+    GRUOP_TIP_ITEM, // 分组显示条目
 };
 
 struct ServerInfo{
