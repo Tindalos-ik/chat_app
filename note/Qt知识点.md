@@ -7,7 +7,7 @@
 
 ---
 
-## 0. 一张图看懂客户端结构
+## 0. 客户端结构
 
 ```text
 main.cpp（启动装配：QSS、配置、窗口图标、MainWindow）
@@ -56,7 +56,7 @@ main.cpp（启动装配：QSS、配置、窗口图标、MainWindow）
 
 ---
 
-## 2. Qt 核心机制（本项目实际用到的）
+## 2. Qt 核心机制
 
 ### 2.1 元对象系统与 Q_OBJECT
 
@@ -180,6 +180,92 @@ Qt 有两套"通知机制"：
 本项目 `ClickedLabel` 重写 `mousePressEvent` / `enterEvent` / `leaveEvent` 定制鼠标交互，`TimerBtn` 重写 `mouseReleaseEvent` 定制点击行为。它们都把"处理完的事件"转换成**业务信号**（`Clicked`、`clicked`）再抛出去，使用方只需要 connect，不需要关心事件细节。
 
 注意：重写事件函数时，最后要调用**基类版本**（如 `QLabel::mousePressEvent(ev)`），保证默认行为（如点击效果、事件继续传播）不被破坏。
+
+#### 事件过滤器（Event Filter）
+
+事件过滤器是 Qt 事件系统的第三层干预手段：**在事件到达目标控件之前，安排一个"哨兵"先检查它**。
+
+```cpp
+目标对象->installEventFilter(哨兵对象);              // 安装过滤器
+bool 哨兵对象::eventFilter(QObject *watched, QEvent *event); // 每个事件先过这里
+```
+
+事件的处理顺序：
+
+```text
+事件产生
+  ↓
+事件过滤器 eventFilter()      ← 最先看到事件（可拦截）
+  ↓
+目标对象的 event()             ← 分发
+  ↓
+具体处理函数（mousePressEvent / wheelEvent ...）
+```
+
+`eventFilter` 返回 `true` = 事件被吞掉，不再往下传；返回 `false` = 放行，走正常流程。
+
+**和"重写事件函数"的区别**：重写是"我自己处理自己的事件"（在目标类内部）；事件过滤器是"第三方插队旁观/拦截别人的事件"，**不用修改目标类的代码**，还能用同一个过滤器监控多个对象（在 `eventFilter` 里按 `watched` 分流）。
+
+**本项目/参考项目实例：ChatUserList（仿微信的聊天列表）**
+
+```cpp
+ChatUserList::ChatUserList(QWidget *parent)
+    : QListWidget(parent), _load_pending(false)
+{
+    this->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    this->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    // 装到 viewport() 而不是 this：鼠标悬浮/滚轮事件是发给 viewport 的
+    this->viewport()->installEventFilter(this);
+}
+
+bool ChatUserList::eventFilter(QObject *watched, QEvent *event)
+{
+    // ① 鼠标进入/离开：显示/隐藏滚动条（仿微信的"悬浮才出现滚动条"）
+    if (watched == this->viewport()) {
+        if (event->type() == QEvent::Enter) {
+            this->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+        } else if (event->type() == QEvent::Leave) {
+            this->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        }
+    }
+
+    // ② 滚轮事件：自定义滚动步长 + 滚到底部触发"加载更多"
+    if (watched == this->viewport() && event->type() == QEvent::Wheel) {
+        QWheelEvent *wheelEvent = static_cast<QWheelEvent*>(event);
+        int numSteps = (wheelEvent->angleDelta().y() / 8) / 15;
+        this->verticalScrollBar()->setValue(
+            this->verticalScrollBar()->value() - numSteps);
+
+        QScrollBar *scrollBar = this->verticalScrollBar();
+        if (scrollBar->maximum() - scrollBar->value() <= 0) {
+            if (_load_pending) return true;   // 防抖：正在加载则忽略
+            _load_pending = true;
+            emit sig_loading_chat_user();     // 让外层去加载下一页联系人
+        }
+        return true;  // ③ 返回 true：拦截默认滚轮行为，避免滚两次
+    }
+
+    // ④ 其他事件放行，走正常流程（漏了这行会吞掉所有事件！）
+    return QListWidget::eventFilter(watched, event);
+}
+```
+
+要点：
+
+* **为什么装到 `viewport()` 而不是 `this`**：QListWidget 的可视区域是内部子控件 viewport，悬浮/滚轮事件发给它；
+* **`return true` = 拦截**：滚轮被接管后阻止默认行为，避免"自己滚一遍 + 默认再滚一遍"；
+* **`return 基类::eventFilter(...)` = 放行**：不关心的事件交给基类，**漏了会吞掉所有事件导致控件失灵**；
+* **过滤器里可以发信号**：滚动到底部 `emit sig_loading_chat_user()`，列表控件不关心数据从哪来，实现"旁观者"解耦；
+* **防抖标志位**：滚轮高频触发，`_load_pending` 保证"加载更多"只触发一次。
+
+**什么时候用过滤器 vs 重写事件**：
+
+| 场景 | 选择 | 原因 |
+| --- | --- | --- |
+| 拦的是**别人**的事件（如 viewport、子控件） | 事件过滤器 | 不能改 Qt 源码，装过滤器最直接 |
+| 事件是**自己**的、只为自己服务 | 重写事件函数 | 更直观、性能更好 |
+| 想监听多个对象统一处理 | 事件过滤器 | 一个 `eventFilter` 按 `watched` 分流 |
+| 临时监听（如弹窗期间） | 事件过滤器 | 用完 `removeEventFilter` 卸载 |
 
 ### 2.4 对象树与内存管理
 

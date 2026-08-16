@@ -71,6 +71,8 @@ MainWindow::MainWindow(QWidget *parent)
     //当接收到登录成功信息的时候，切换聊天界面
     connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_switch_chatdlg, this, &MainWindow::SlotSwitchChat);
 
+    emit TcpMgr::GetInstance()->sig_switch_chatdlg();
+
 }
 
 // 主窗口析构函数
