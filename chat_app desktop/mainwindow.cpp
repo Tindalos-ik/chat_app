@@ -26,7 +26,7 @@ void MainWindow::SlotSwitchReset()
 void MainWindow::SlotSwitchChat()
 {
     _stacked_widget->setCurrentWidget(_chat_dlg);
-    resize(900, 1000);
+    resize(1000, 750);
 }
 
 // 主窗口构造函数

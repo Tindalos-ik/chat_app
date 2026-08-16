@@ -1,11 +1,7 @@
 -- ============================================================
--- chat_app_db 建表语句（对齐 llfc1 表结构 + 当前代码）
+-- chat_app_db 建表语句
 -- 使用前先确认 MySQL 已启动（X Protocol 端口 33060）
 --
--- 用法：
---   mysqlsh -u root -h 127.0.0.1 -P 33060 --sql < create_tables.sql
---   或在你常用的数据库工具（Navicat / Workbench）里整段执行
--- ============================================================
 
 -- 创建数据库（如果不存在）
 CREATE DATABASE IF NOT EXISTS `chat_app_db`
