@@ -15,7 +15,10 @@ class ChatDialog : public QDialog
 public:
     explicit ChatDialog(QWidget *parent = nullptr);
     ~ChatDialog();
-    void addChatUserList(); // 添加用户列表
+    void addChatUserList(QListWidget *list, const QString &name,
+                         const QString &msg, const QString &time,
+                         const QString &icon, bool red); // 添加用户列表
+    void addConUserList(QListWidget *list, const QString &name, const QString &icon); //添加好友列表
 
 private:
     Ui::ChatDialog *ui;

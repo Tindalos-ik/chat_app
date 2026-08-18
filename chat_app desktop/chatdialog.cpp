@@ -42,43 +42,20 @@ ChatDialog::ChatDialog(QWidget *parent)
     });
 
     // ===== 示例数据（测试完可删）=====
-    auto addDemoItem = [this](QListWidget *list, const QString &name,
-                              const QString &msg, const QString &time,
-                              const QString &icon, bool red) {
-        auto *item = new QListWidgetItem;
-        auto *wid = new ChatUserWid;
-        wid->SetUserName(name);
-        wid->SetChatMsg(msg);
-        wid->SetTime(time);
-        wid->SetHeadIcon(icon);
-        wid->ShowRedPoint(red);
-        item->setSizeHint(wid->sizeHint());
-        list->addItem(item);
-        list->setItemWidget(item, wid);
-    };
 
     // 聊天列表塞 30 条，保证能滚出滚动条、测试滚轮
     const QString icons[] = {":/res/head_1.jpg", ":/res/head_2.jpg", ":/res/head_3.jpg",
                              ":/res/head_4.jpg", ":/res/head_5.jpg"};
     for (int i = 1; i <= 30; ++i) {
-        addDemoItem(ui->session_list,
+        addChatUserList(ui->session_list,
                     QStringLiteral("用户%1").arg(i),
                     QStringLiteral("第 %1 条消息内容").arg(i),
                     QStringLiteral("%1:%2").arg(9 + i % 10).arg(i % 60),
                     icons[i % 5], i % 3 == 0);
     }
     // 好友列表：只有头像 + 名字（ConUserWid）
-    auto addConItem = [this](QListWidget *list, const QString &name, const QString &icon) {
-        auto *item = new QListWidgetItem;
-        auto *wid = new ConUserWid;
-        wid->SetUserName(name);
-        wid->SetHeadIcon(icon);
-        item->setSizeHint(wid->sizeHint());
-        list->addItem(item);
-        list->setItemWidget(item, wid);
-    };
-    addConItem(ui->contact_list, "王五", ":/res/head_3.jpg");
-    addConItem(ui->contact_list, "赵六", ":/res/head_4.jpg");
+    addConUserList(ui->contact_list, "王五", ":/res/head_3.jpg");
+    addConUserList(ui->contact_list, "赵六", ":/res/head_4.jpg");
 
 
 }
@@ -87,4 +64,30 @@ ChatDialog::~ChatDialog()
 {
     delete ui;
 }
+
+void ChatDialog::addChatUserList(QListWidget *list, const QString &name, const QString &msg, const QString &time, const QString &icon, bool red)
+{
+    auto *item = new QListWidgetItem;
+    auto *wid = new ChatUserWid;
+    wid->SetUserName(name);
+    wid->SetChatMsg(msg);
+    wid->SetTime(time);
+    wid->SetHeadIcon(icon);
+    wid->ShowRedPoint(red);
+    item->setSizeHint(wid->sizeHint());
+    list->addItem(item);
+    list->setItemWidget(item, wid);
+}
+
+void ChatDialog::addConUserList(QListWidget *list, const QString &name, const QString &icon)
+{
+    auto *item = new QListWidgetItem;
+    auto *wid = new ConUserWid;
+    wid->SetUserName(name);
+    wid->SetHeadIcon(icon);
+    item->setSizeHint(wid->sizeHint());
+    list->addItem(item);
+    list->setItemWidget(item, wid);
+}
+
 

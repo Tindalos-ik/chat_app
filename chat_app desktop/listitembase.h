@@ -19,7 +19,7 @@ protected:
     void paintEvent(QPaintEvent *event) override;
 
 private:
-    ListItemType _itemType = InvalidItem;
+    ListItemType _itemType = ListItemType::CHAT_USER_ITEM;
 };
 
 #endif // LISTITEMBASE_H

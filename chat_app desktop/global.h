@@ -62,6 +62,7 @@ enum ClickLbState{
     Selected = 1 //睁眼
 };
 
+// 自定义QListWidgetItem的几种类型
 enum ListItemType{
     CHAT_USER_ITEM, // 聊天用户
     CONTACT_USER_ITEM, // 联系人用户
