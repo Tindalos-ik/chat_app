@@ -2,7 +2,7 @@
 #define CLICKEDLABEL_H
 
 #include <QLabel>
-#include "global.h"4
+#include "global.h"
 #include <QEvent>
 #include <QEnterEvent>
 #include <QMouseEvent>

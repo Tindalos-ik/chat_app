@@ -39,6 +39,8 @@
 7. RegisterDialog 用 `QEventLoop::exec` 阻塞 3 秒，期间 UI 卡死。
 8. GateServer 注册是"先查重再插入"，无事务，并发下可能重复注册。
 9. 跨 ChatServer 消息路由缺失，A 服务器的用户发不了 B 服务器的用户。
+10. ~~聊天列表"加载更多"链路没接上~~：已修复——ChatDialog 补 `connect(sig_loading_chat_user → slot_loading_chat_user)` 和槽函数（防抖 + 追加一批），并给"滚到底"判断加了 10px 余量和"有滚动余地才触发"的守卫。
+11. ~~ChatUserList 看不到滚动条~~：已修复——事件过滤器把非 Enter 事件全当 Leave（`else`），滚动条策略被立刻改回 AlwaysOff；已改为 `else if (QEvent::Leave)` 精确匹配，实现"悬浮显示、移开隐藏"。
 
 ## 文档规范
 

@@ -7,7 +7,13 @@
 #include <QTimer>
 #include "chatuserwid.h"
 #include "conuserwid.h"
-#include "chatuserlist.h"
+#include "loadingdlg.h"
+
+namespace {
+// 示例头像资源，循环使用
+const QString kHeadIcons[] = {":/res/head_1.jpg", ":/res/head_2.jpg", ":/res/head_3.jpg",
+                              ":/res/head_4.jpg", ":/res/head_5.jpg"};
+}
 
 ChatDialog::ChatDialog(QWidget *parent)
     : QDialog(parent)
@@ -41,22 +47,12 @@ ChatDialog::ChatDialog(QWidget *parent)
         ui->list_stack->setCurrentIndex(text.isEmpty() ? _cur_mode : 2);
     });
 
-    // ===== 示例数据（测试完可删）=====
+    // 聊天列表滚到底部 -> 加载更多（ChatUserList 只负责发信号，数据由这里补）
+    connect(ui->session_list, &ChatUserList::sig_loading_chat_user,
+            this, &ChatDialog::slot_loading_chat_user);
 
-    // 聊天列表塞 30 条，保证能滚出滚动条、测试滚轮
-    const QString icons[] = {":/res/head_1.jpg", ":/res/head_2.jpg", ":/res/head_3.jpg",
-                             ":/res/head_4.jpg", ":/res/head_5.jpg"};
-    for (int i = 1; i <= 30; ++i) {
-        addChatUserList(ui->session_list,
-                    QStringLiteral("用户%1").arg(i),
-                    QStringLiteral("第 %1 条消息内容").arg(i),
-                    QStringLiteral("%1:%2").arg(9 + i % 10).arg(i % 60),
-                    icons[i % 5], i % 3 == 0);
-    }
-    // 好友列表：只有头像 + 名字（ConUserWid）
-    addConUserList(ui->contact_list, "王五", ":/res/head_3.jpg");
-    addConUserList(ui->contact_list, "赵六", ":/res/head_4.jpg");
-
+    addChatUserList();
+    addConUserList();
 
 }
 
@@ -65,7 +61,24 @@ ChatDialog::~ChatDialog()
     delete ui;
 }
 
-void ChatDialog::addChatUserList(QListWidget *list, const QString &name, const QString &msg, const QString &time, const QString &icon, bool red)
+void ChatDialog::addChatUserList()
+{
+    for (int i = _loaded_chat_count; i <= _loaded_chat_count+30; ++i) {
+        addChatUserWid(ui->session_list,
+                       QStringLiteral("用户%1").arg(i),
+                       QStringLiteral("第 %1 条消息内容").arg(i),
+                       QStringLiteral("%1:%2").arg(9 + i % 10).arg(i % 60),
+                       kHeadIcons[i % 5], i % 3 == 0);
+    }
+}
+
+void ChatDialog::addConUserList()
+{
+    addConUserWid(ui->contact_list, "王五", ":/res/head_3.jpg");
+    addConUserWid(ui->contact_list, "赵六", ":/res/head_4.jpg");
+}
+
+void ChatDialog::addChatUserWid(QListWidget *list, const QString &name, const QString &msg, const QString &time, const QString &icon, bool red)
 {
     auto *item = new QListWidgetItem;
     auto *wid = new ChatUserWid;
@@ -79,7 +92,7 @@ void ChatDialog::addChatUserList(QListWidget *list, const QString &name, const Q
     list->setItemWidget(item, wid);
 }
 
-void ChatDialog::addConUserList(QListWidget *list, const QString &name, const QString &icon)
+void ChatDialog::addConUserWid(QListWidget *list, const QString &name, const QString &icon)
 {
     auto *item = new QListWidgetItem;
     auto *wid = new ConUserWid;
@@ -90,4 +103,23 @@ void ChatDialog::addConUserList(QListWidget *list, const QString &name, const QS
     list->setItemWidget(item, wid);
 }
 
+void ChatDialog::slot_loading_chat_user()
+{
+    if (_b_loading) {
+        return;
+    }
+
+    _b_loading = true;   // 防抖：加载期间忽略重复触发
+
+    LoadingDlg *loadingDialog = new LoadingDlg(this);
+    loadingDialog->show();
+
+    qDebug() << "add new data to list";
+
+    addChatUserList();
+    // 加载完成之后关闭对话框
+    loadingDialog->deleteLater();
+
+    _b_loading = false;
+}
 

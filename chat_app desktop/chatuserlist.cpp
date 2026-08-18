@@ -4,7 +4,7 @@
 ChatUserList::ChatUserList(QWidget *parent):QListWidget(parent)
 {
     Q_UNUSED(parent);
-    //关闭横向和纵向的滚动条
+    // 默认隐藏滚动条：鼠标悬浮到列表区域时再显示
     this->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     this->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     //安装事件过滤器，用于自定义一些没有的功能
@@ -14,12 +14,14 @@ ChatUserList::ChatUserList(QWidget *parent):QListWidget(parent)
 
 bool ChatUserList::eventFilter(QObject *watched, QEvent *event)
 {
-    // 检查事件是否是鼠标悬浮进入或离开
-    if(watched == this->viewport()){
-        if(event->type() == QEvent::Enter){
-            // 鼠标悬浮，显示滚动条
+    // 鼠标进入/离开列表可视区：悬浮时显示滚动条，移开时隐藏
+    // watched 就代表 list 的范围
+    if (watched == this->viewport()) {
+        if (event->type() == QEvent::Enter) {
+            // 鼠标悬浮，显示滚动条（内容超出可视区时出现）
             this->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-        }else{
+        } else if (event->type() == QEvent::Leave) {
+            // 鼠标离开，隐藏滚动条
             this->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         }
     }
@@ -38,7 +40,8 @@ bool ChatUserList::eventFilter(QObject *watched, QEvent *event)
         int maxScrollValue = scrollbar->maximum();
         int currentValue = scrollbar->value();
 
-        if(maxScrollValue - currentValue <= 0){
+        // 有滚动余地且到达/接近底部时（留 10 像素余量）才触发加载更多
+        if(maxScrollValue > 0 && maxScrollValue - currentValue <= 5){
             // 滚动到底部，加载新的联系人
             qDebug() << "load more chat user";
             // 发送信号通知聊天界面加载更多聊天内容

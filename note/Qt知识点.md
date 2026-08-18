@@ -210,11 +210,11 @@ bool 哨兵对象::eventFilter(QObject *watched, QEvent *event); // 每个事件
 
 ```cpp
 ChatUserList::ChatUserList(QWidget *parent)
-    : QListWidget(parent), _load_pending(false)
+    : QListWidget(parent)
 {
     this->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     this->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    // 装到 viewport() 而不是 this：鼠标悬浮/滚轮事件是发给 viewport 的
+    // 装到 viewport() 而不是 this：悬浮/滚轮事件是发给 viewport 的
     this->viewport()->installEventFilter(this);
 }
 
@@ -237,26 +237,55 @@ bool ChatUserList::eventFilter(QObject *watched, QEvent *event)
             this->verticalScrollBar()->value() - numSteps);
 
         QScrollBar *scrollBar = this->verticalScrollBar();
-        if (scrollBar->maximum() - scrollBar->value() <= 0) {
-            if (_load_pending) return true;   // 防抖：正在加载则忽略
-            _load_pending = true;
+        int maxScrollValue = scrollBar->maximum();
+        int currentValue = scrollBar->value();
+        // 有滚动余地且到达/接近底部（留 10px 余量）才触发，避免内容不满一屏时误触发
+        if (maxScrollValue > 0 && maxScrollValue - currentValue <= 10) {
             emit sig_loading_chat_user();     // 让外层去加载下一页联系人
         }
-        return true;  // ③ 返回 true：拦截默认滚轮行为，避免滚两次
+        return true;  // 返回 true：拦截默认滚轮行为，避免滚两次
     }
 
-    // ④ 其他事件放行，走正常流程（漏了这行会吞掉所有事件！）
+    // ③ 其他事件放行，走正常流程（漏了这行会吞掉所有事件！）
     return QListWidget::eventFilter(watched, event);
 }
 ```
 
 要点：
 
-* **为什么装到 `viewport()` 而不是 `this`**：QListWidget 的可视区域是内部子控件 viewport，悬浮/滚轮事件发给它；
+* **为什么装到 `viewport()` 而不是 `this`**：QListWidget 的可视区域是内部子控件 viewport，滚轮事件发给它；
 * **`return true` = 拦截**：滚轮被接管后阻止默认行为，避免"自己滚一遍 + 默认再滚一遍"；
 * **`return 基类::eventFilter(...)` = 放行**：不关心的事件交给基类，**漏了会吞掉所有事件导致控件失灵**；
 * **过滤器里可以发信号**：滚动到底部 `emit sig_loading_chat_user()`，列表控件不关心数据从哪来，实现"旁观者"解耦；
-* **防抖标志位**：滚轮高频触发，`_load_pending` 保证"加载更多"只触发一次。
+* **滚动条"悬浮才显示"**：默认 `AlwaysOff` 隐藏，鼠标进入列表可视区（`QEvent::Enter`）才切 `AsNeeded`、离开（`QEvent::Leave`）再切回 `AlwaysOff`。这个方案有个经典坑：**判断离开时不能写成 `else`**——viewport 上任何非 Enter 事件（鼠标移动、滚轮等）都会把滚动条藏回去，表现为"滚动条一闪而过/永远看不到"，必须用 `else if (event->type() == QEvent::Leave)` 精确匹配。
+
+**接收侧：ChatDialog 把信号接上**。列表控件只负责发信号，真正"补数据"的是 ChatDialog：
+
+```cpp
+// 构造函数里连接：列表滚到底 → 加载更多
+connect(ui->session_list, &ChatUserList::sig_loading_chat_user,
+        this, &ChatDialog::slot_loading_chat_user);
+
+void ChatDialog::slot_loading_chat_user()
+{
+    if (_b_loading) return;      // 防抖：加载期间忽略重复触发
+    _b_loading = true;
+    // 追加一批示例会话；真实场景改为从网络/数据库拉取
+    for (int i = 0; i < 20; ++i) { addChatUserList(...); }
+    _b_loading = false;
+}
+```
+
+**防抖放在哪**：加载"更多"是高频触发点，防抖标志放在接收侧（ChatDialog）而不是发送侧（ChatUserList）更合理——同一个列表可能有多个接收者，发送者不该替接收者决定"能不能加载"。
+
+#### 加载遮罩 LoadingDlg
+
+"加载更多"期间给用户一个视觉反馈，llfc 单独抽了一个 `LoadingDlg`（`QDialog` 子类 + `loadingdlg.ui`），chat_app 的 `loadingdlg.ui` 已按同样结构建好，类代码（.h/.cpp）自行实现：
+
+* 界面结构：`status_lb`（提示文字，如"正在加载聊天列表..."）+ `loading_lb`（200×200 的 GIF 动画，`QMovie` 播放 `:/res/loading.gif`），上下 spacer 让内容垂直居中；
+* 关键窗口属性：`Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint` + `Qt::WA_TranslucentBackground`（无边框、置顶、背景透明），`setFixedSize(parent->size())` + `move(parent->mapToGlobal(0,0))` 覆盖整个父窗口；
+* 使用方式：`new LoadingDlg(this, tip)` → `setModal(true)` → `show()`，用完 `deleteLater()`。模态遮罩挡住底层鼠标滚轮，配合 `_b_loading` 防抖双保险，避免加载期间重复触发"加载更多"；
+* 为什么要单独建类而不是内联：它是"加载中"这个横切关注点的通用组件，聊天列表、搜索列表等多处复用，且挂 .ui 才符合"一个界面一个 Designer 类"的约定。
 
 **什么时候用过滤器 vs 重写事件**：
 

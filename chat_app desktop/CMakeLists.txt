@@ -27,6 +27,7 @@ qt_add_executable(chat_app
     usermgr.h usermgr.cpp
     chatdialog.h chatdialog.cpp chatdialog.ui
     chatuserlist.h chatuserlist.cpp
+    loadingdlg.h loadingdlg.cpp loadingdlg.ui
     chatuserwid.h chatuserwid.cpp chatuserwid.ui
     conuserwid.h conuserwid.cpp conuserwid.ui
     listitembase.h listitembase.cpp   #ini、ui、qrc直接加入可执行文件
