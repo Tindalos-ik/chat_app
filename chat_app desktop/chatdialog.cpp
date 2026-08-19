@@ -8,6 +8,8 @@
 #include "chatuserwid.h"
 #include "conuserwid.h"
 #include "loadingdlg.h"
+#include "chatuserlist.h"
+#include "conuserlist.h"
 
 namespace {
 // 示例头像资源，循环使用
@@ -51,6 +53,9 @@ ChatDialog::ChatDialog(QWidget *parent)
     connect(ui->session_list, &ChatUserList::sig_loading_chat_user,
             this, &ChatDialog::slot_loading_chat_user);
 
+    connect(ui->contact_list, &ConUserList::sig_loading_con_user,
+            this, &ChatDialog::slot_loading_con_user);
+
     addChatUserList();
     addConUserList();
 
@@ -74,8 +79,11 @@ void ChatDialog::addChatUserList()
 
 void ChatDialog::addConUserList()
 {
-    addConUserWid(ui->contact_list, "王五", ":/res/head_3.jpg");
-    addConUserWid(ui->contact_list, "赵六", ":/res/head_4.jpg");
+    for (int i = _loaded_con_count; i <= _loaded_con_count+30; ++i) {
+        addConUserWid(ui->contact_list,
+                       QStringLiteral("用户%1").arg(i),
+                       kHeadIcons[i % 5]);
+    }
 }
 
 void ChatDialog::addChatUserWid(QListWidget *list, const QString &name, const QString &msg, const QString &time, const QString &icon, bool red)
@@ -118,6 +126,22 @@ void ChatDialog::slot_loading_chat_user()
 
     addChatUserList();
     // 加载完成之后关闭对话框
+    loadingDialog->deleteLater();
+
+    _b_loading = false;
+}
+
+void ChatDialog::slot_loading_con_user()
+{
+    if(_b_loading){
+        return;
+    }
+
+    _b_loading = true;
+    LoadingDlg *loadingDialog = new LoadingDlg(this);
+    loadingDialog->show();
+    qDebug() << "add new data to list";
+    addConUserList();
     loadingDialog->deleteLater();
 
     _b_loading = false;

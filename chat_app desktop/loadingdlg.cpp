@@ -22,7 +22,7 @@ LoadingDlg::LoadingDlg(QWidget *parent, QString tip)
 
     // 转圈动画
     auto *movie = new QMovie(this); // 挂在this有对象树统一回收
-    movie->setFileName(":/res/loading.gif");
+    movie->setFileName(":/res/loading.gif");  // 播放gif
     movie->setScaledSize(ui->loading_lb->size());
     ui->loading_lb->setMovie(movie);
     movie->start();

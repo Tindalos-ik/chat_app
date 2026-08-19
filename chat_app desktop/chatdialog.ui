@@ -391,7 +391,7 @@
             <string notr="true">background-color: transparent; border: none;</string>
            </property>
           </widget>
-          <widget class="ChatUserList" name="contact_list">
+          <widget class="ConUserList" name="contact_list">
            <property name="styleSheet">
             <string notr="true">background-color: transparent; border: none;</string>
            </property>
@@ -590,6 +590,11 @@ QPushButton:pressed { background-color: #059a4c; }</string>
    <class>ChatUserList</class>
    <extends>QListWidget</extends>
    <header location="global">chatuserlist.h</header>
+  </customwidget>
+  <customwidget>
+   <class>ConUserList</class>
+   <extends>QListWidget</extends>
+   <header location="global">conuserlist.h</header>
   </customwidget>
  </customwidgets>
  <resources>
