@@ -24,6 +24,11 @@ ChatDialog::ChatDialog(QWidget *parent)
     ui->setupUi(this);
     ui->list_stack->setCurrentIndex(0); // 默认显示聊天列表（session_list）
 
+    // 聊天区与输入区之间的分隔条：消息区占满剩余空间，输入区高度可拖拽调节（80~300）
+    ui->chat_splitter->setStretchFactor(0, 1); // 消息区可拉伸
+    ui->chat_splitter->setStretchFactor(1, 0); // 输入区保持固定
+    ui->chat_splitter->setSizes({480, 150});   // 初始分配高度
+
     // 一些操作都是通过action实现的，比如右键菜单，弹出别的东西
     QAction *searchAction = new QAction(ui->search_edit);
     searchAction->setIcon(QIcon(":/res/search.png"));
