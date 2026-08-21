@@ -22,6 +22,8 @@ private slots:
     void slot_loading_chat_user();   // 聊天列表滚到底部时加载更多
     void slot_loading_con_user();
 
+    void on_send_btn_clicked();
+
 private:
     Ui::ChatDialog *ui;
     int _cur_mode = 0;   // 0=聊天列表 1=好友列表，搜索清空后回到当前模式

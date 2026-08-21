@@ -566,7 +566,7 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: trans
             <number>10</number>
            </property>
            <item>
-            <widget class="QTextEdit" name="input_edit">
+            <widget class="MessageTextEdit" name="input_edit">
              <property name="styleSheet">
               <string notr="true">background-color: #ffffff; border: none;</string>
              </property>
@@ -649,6 +649,11 @@ QPushButton:pressed { background-color: #059a4c; }</string>
    <class>ChatView</class>
    <extends>QWidget</extends>
    <header location="global">chatview.h</header>
+  </customwidget>
+  <customwidget>
+   <class>MessageTextEdit</class>
+   <extends>QTextEdit</extends>
+   <header location="global">messagetextedit.h</header>
   </customwidget>
  </customwidgets>
  <resources>

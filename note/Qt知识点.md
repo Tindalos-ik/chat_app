@@ -49,6 +49,8 @@ main.cpp（启动装配：QSS、配置、窗口图标、MainWindow）
 | `tcpmgr.h/cpp` | TCP 管理器 | 粘包/半包解析、handler 注册表 |
 | `clickedlabel.h/cpp` | 可点击图片标签 | 事件重写、属性状态机、自定义信号 |
 | `timerbtn.h/cpp` | 倒计时按钮 | 事件重写 + QTimer |
+| `chatview.h/cpp` | 聊天消息滚动区 | QScrollArea + QVBoxLayout、三种插入、自动滚底、事件过滤器 |
+| `chatitembase / bubbleframe / textbubble / picturebubble` | 聊天气泡（一行消息 + 气泡框 + 文本/图片内容） | 自绘 paintEvent、QGridLayout 镜像布局、宽高自适应 |
 | `*.ui` | 界面布局 | Qt Designer、uic 生成 ui_*.h、控件提升 |
 | `resource.qrc` | 资源打包 | `:/` 前缀、CMAKE_AUTORCC |
 | `style/stylesheet.qss` | 全局样式 | 属性选择器、动态换肤 |
@@ -689,6 +691,69 @@ return QCoreApplication::exec();            // 进入事件循环
 - `QSettings + IniFormat` 读取 config.ini，把"服务器地址"等运行时配置与代码分离；config.ini 由 CMake `file(COPY ...)` 自动复制到构建目录；
 - `QDir::toNativeSeparators` 统一 `/` 与 `\`，跨平台拼路径的必备细节；
 - `exec()` 进入事件循环后，程序所有响应都靠事件驱动（点击、定时器、网络回包都是事件），事件循环退出程序才结束。
+
+### 3.10 ChatView —— 滚动聊天布局设计
+
+聊天区不用 QListWidget（"记录行 vs 内容流"的区别见 [疑惑.md](疑惑.md)），而是 **QScrollArea + QVBoxLayout 手堆 widget**：
+
+```text
+ChatView(QWidget)
+└─ 外层 QVBoxLayout（边距 0）
+   └─ QScrollArea（视口，内容超高时滚动）
+      └─ 内容 widget w（一张"纸"）
+         └─ 内容 QVBoxLayout（边距 0）
+            ├─ 气泡1 ...（insertWidget 插进来的）
+            ├─ 气泡2 ...
+            └─ 弹簧（第一个加进来，永远留在最后）
+```
+
+**弹簧为什么"先加却在最后"**：`addWidget(new QWidget(), 100000)` 的 100000 是**拉伸因子**不是高度；弹簧吞掉所有剩余空间，把气泡顶在顶部。气泡一律 `insertWidget(count()-1, item)` 插到弹簧前面，所以弹簧被顶到最后；对气泡误用 `addWidget` 会插到弹簧后面，变成"底部死区"看不见。
+
+**三种插入与场景**：
+
+| 插入 | 实现 | 什么时候用 |
+| --- | --- | --- |
+| 尾插 `appendChatItem` | `insertWidget(count()-1, item)` + 自动滚底 | 发消息 / 收消息 / 打开窗口铺历史 |
+| 头插 `prependChatItem` | `insertWidget(0, item)` + 滚动偏移补偿 | 往上翻加载更早记录 |
+| 中间插 `insertChatItem(before, item)` | 找到 before 在布局里的 index 再 insert | 时间分隔条、撤回提示 |
+
+**自动滚底**：尾插后内容高度变化触发滚动条 `rangeChanged` → `onVScrollBarMoved`，若 `isAppended` 为真就 `setSliderPosition(maximum())` 贴底，500ms 后重置标志——既自动贴底，又不干扰用户上翻历史。
+
+**悬浮滚动条**：滚动条默认隐藏（`ScrollBarAlwaysOff` + `setHidden(true)`），鼠标悬浮时显示。关键坑：**事件过滤器必须装到 `viewport()` 上**——Enter/Leave 是发给 viewport 的，装到滚动区域自己身上永远收不到（chat_app 之前就踩过，滚动条永不显示）。llfc 用 `setLayout` 重摆滚动条做"悬浮覆盖式"，依赖实现细节，能不用就不用。
+
+> 详情：ChatView 各函数实现与 TODO 见 `chat_app desktop/chatview.h/cpp`；"为什么布局 + 弹簧是什么"见 [疑惑.md](疑惑.md)。
+
+### 3.11 气泡消息设计 ChatItemBase / BubbleFrame / TextBubble / PictureBubble
+
+这样一个网格布局
+
+![1787228978216](assets/1787228978216.png)
+
+```text
+ChatItemBase（一行消息：头像 + 名字 + 气泡）
+└─ BubbleFrame（气泡背景：圆角矩形 + 小三角，paintEvent 手绘）
+   └─ TextBubble / PictureBubble（具体内容：文字 / 图片）
+```
+
+* **ChatItemBase**：构造时传入 `ChatRole::Self / Other`，决定整行镜像——自己：名字右对齐、头像靠右；对方：完全反过来。用 QGridLayout + `setColumnStretch` 实现（自己列伸缩 `0:2 / 1:3`，对方镜像为 `1:3 / 2:2`），`setWidget()` 用 `replaceWidget` 把占位气泡换成真正的气泡再 delete 占位。注意 chat_app 版目前没有状态图标（llfc 有 `m_pStatusLabel` + `MsgStatus` 三态，需要时再补）。
+* **BubbleFrame**：继承 QFrame，`paintEvent` 里 `drawRoundedRect` 画圆角矩形、`drawPolygon` 画小三角（自己绿色 `158,234,106`，对方白色）；内容 layout 左右 margin 预留三角宽度（`WIDTH_SANJIAO = 8`）。
+* **TextBubble**：内部是只读 QTextEdit（透明无边框）。**宽高自适应是它的难点**：
+  - 宽度：`setPlainText` 时遍历文档所有段落，用 `QFontMetricsF::horizontalAdvance`（Qt6；llfc 是 Qt5 的 `fm.width`）取最长一行宽度 + 文档边距 → `setMaximumWidth`；
+  - 高度：给 QTextEdit 装事件过滤器，Paint 事件里累加每个 `QTextBlock` 的 `QTextLayout::boundingRect().height()` → `setFixedHeight`（文字换行后高度才正确）。
+* **PictureBubble**：最简单的子类，构造里 `picture.scaled(160, 90, Qt::KeepAspectRatio)` 后放进 `setScaledContents(true)` 的 QLabel，再按缩放后尺寸 + 边距 `setFixedSize`。
+
+**组装流程（ChatPage::AppendChatMsg）**：
+
+```text
+按 msg->GetSendUid() 判断是自己还是对方 → ChatRole
+  → new ChatItemBase(role)
+  → setUserName / setUserIcon / setWidget(TextBubble 或 PictureBubble)
+  → appendChatItem() 尾插到聊天区
+```
+
+发送方把气泡按 `unique_id` 记进 `_unrsp_item_map`（未回执表），收到已读回执后 `UpdateChatStatus` 换成已读图标。状态枚举 `MsgStatus`：`UN_READ = 0`（未读红点）、`SEND_FAILED = 1`（发送失败）、`READED = 2`（已读对勾）。
+
+> 为什么要分三层：**内容与外观分离**——新增文件/图片等消息只加一个 Bubble 子类，ChatItemBase 不用动；Self/Other 只是同一套布局的镜像，不是两套代码。
 
 ---
 

@@ -32,7 +32,12 @@ qt_add_executable(chat_app
     conuserwid.h conuserwid.cpp conuserwid.ui
     listitembase.h listitembase.cpp
     conuserlist.h conuserlist.cpp
-    chatview.h chatview.cpp   #ini、ui、qrc直接加入可执行文件
+    chatview.h chatview.cpp
+    chatitembase.h chatitembase.cpp
+    bubbleframe.h bubbleframe.cpp
+    textbubble.h textbubble.cpp
+    picturebubble.h picturebubble.cpp
+    messagetextedit.h messagetextedit.cpp   #ini、ui、qrc直接加入可执行文件
 )
 
 target_include_directories(chat_app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

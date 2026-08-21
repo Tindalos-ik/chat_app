@@ -41,6 +41,9 @@
 9. 跨 ChatServer 消息路由缺失，A 服务器的用户发不了 B 服务器的用户。
 10. ~~聊天列表"加载更多"链路没接上~~：已修复——ChatDialog 补 `connect(sig_loading_chat_user → slot_loading_chat_user)` 和槽函数（防抖 + 追加一批），并给"滚到底"判断加了 10px 余量和"有滚动余地才触发"的守卫。
 11. ~~ChatUserList 看不到滚动条~~：已修复——事件过滤器把非 Enter 事件全当 Leave（`else`），滚动条策略被立刻改回 AlwaysOff；已改为 `else if (QEvent::Leave)` 精确匹配，实现"悬浮显示、移开隐藏"。
+12. ~~ChatView 滚动条永不显示~~：已修复——事件过滤器装到 `m_pScrollArea` 自己身上收不到 Enter/Leave（鼠标实际悬浮在 viewport），应装到 `m_pScrollArea->viewport()` 上。
+13. ~~ChatView 提升后链接失败~~：已修复——头文件声明了 `paintEvent` 但 .cpp 没实现，虚函数缺失导致 undefined reference；`eventFilter` 也是声明了没实现。
+14. ~~Ninja dependency cycle（客户端构建）~~：已修复——CMakeLists 里源文件重复列出 + 构建目录 `.ninja_deps`/`.ninja_log` 残留过期依赖导致；去重后删除这两个文件重建即可。
 
 ## 文档规范
 
@@ -63,3 +66,24 @@
 | [MySQL连接库.md](note/MySQL连接库.md) | X DevAPI / mysqlcppconnx |
 | [Qt知识点.md](note/Qt知识点.md) | Qt 类设计、信号槽、事件 |
 | [Qt网络编程.md](note/Qt网络编程.md) | HTTP/TCP 编程、粘包 |
+
+## 会话记录（2026-08 客户端聊天区阶段）
+
+**本次完成**
+
+- 聊天列表/联系人列表"滚到底加载更多"接通：ChatUserList / ConUserList 事件过滤发信号，ChatDialog 槽函数防抖 + 批量追加；滚动条"悬浮显示、移开隐藏"。
+- LoadingDlg 加载遮罩：.ui / .h / .cpp 齐全并已入 CMake（无边框、透明、覆盖父窗口、QMovie 转圈）。
+- ChatView 滚动聊天布局：QScrollArea + QVBoxLayout + 底部弹簧；append/prepend/insert 三个插入接口；自动滚底（rangeChanged + isAppended）；悬浮滚动条（事件过滤器装在 viewport）。
+- 气泡四件套：ChatItemBase / BubbleFrame / TextBubble / PictureBubble（参考 llfc，已建文件）。
+- chatdialog 美化：搜索框圆角、侧边栏 hover/选中、列表细滚动条；聊天区与输入区用 QSplitter，输入区高度可拖拽（80~300）。
+
+**当前状态 / 遗留**
+
+- ChatView 头插/中间插未实现（prependChatItem / insertChatItem 空壳）；气泡类已建但 ChatDialog 还没组装消息（未接真实数据）。
+- TextBubble 高度自适应依赖 Paint 事件过滤器；PictureBubble 未做点击放大；未接 MsgStatus 发送状态图标。
+- 参考项目 llfcchat 在 D:\myproject\llfcchat（可读，不在本仓库）。
+
+**文档同步**
+
+- 疑惑.md：新增"为什么只放一个组件也要用布局"、"布局里的弹簧"两节。
+- Qt知识点.md：新增 3.10 ChatView 滚动聊天布局、3.11 气泡消息设计、LoadingDlg 小节；文件清单补充 chatview 与气泡类。

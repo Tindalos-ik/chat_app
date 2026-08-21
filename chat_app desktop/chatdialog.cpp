@@ -10,6 +10,11 @@
 #include "loadingdlg.h"
 #include "chatuserlist.h"
 #include "conuserlist.h"
+#include "global.h"
+#include "picturebubble.h"
+#include "textbubble.h"
+#include "messagetextedit.h"
+#include "chatitembase.h"
 
 namespace {
 // 示例头像资源，循环使用
@@ -60,6 +65,10 @@ ChatDialog::ChatDialog(QWidget *parent)
 
     connect(ui->contact_list, &ConUserList::sig_loading_con_user,
             this, &ChatDialog::slot_loading_con_user);
+
+    // 输入框回车（不带 Shift）→ 发送
+    connect(ui->input_edit, &MessageTextEdit::send,
+            this, &ChatDialog::on_send_btn_clicked);
 
     addChatUserList();
     addConUserList();
@@ -150,5 +159,47 @@ void ChatDialog::slot_loading_con_user()
     loadingDialog->deleteLater();
 
     _b_loading = false;
+}
+
+
+void ChatDialog::on_send_btn_clicked()
+{
+    auto pTextEdit = ui->input_edit;
+    ChatRole role = ChatRole::Self;
+    QString userName = QStringLiteral("klein");
+    QString userIcon = ":/res/head_1.jpg";
+
+    const QVector<MsgInfo>& msgList = pTextEdit->getMsgList();
+    for(int i=0; i<msgList.size(); ++i)
+    {
+        QString type = msgList[i].msgFlag;
+        ChatItemBase *pChatItem = new ChatItemBase(role);
+        pChatItem->setUserName(userName);
+        pChatItem->setUserIcon(QPixmap(userIcon));
+        QWidget *pBubble = nullptr;
+        if(type == "text")
+        {
+            pBubble = new TextBubble(role, msgList[i].content);
+        }
+        else if(type == "image")
+        {
+            QPixmap pix(msgList[i].content); // 优先按原图路径加载，清晰度更好
+            if(pix.isNull())
+            {
+                pix = msgList[i].pixmap;     // 源文件读不到时用输入框里的缩略图兜底
+            }
+            pBubble = new PictureBubble(role, pix);
+        }
+        else if(type == "file")
+        {
+            // 文件消息：先按预览图展示（真正的文件发送待实现）
+            pBubble = new PictureBubble(role, msgList[i].pixmap);
+        }
+        if(pBubble != nullptr)
+        {
+            pChatItem->setWidget(pBubble);
+            ui->chat_data->appendChatItem(pChatItem);
+        }
+    }
 }
 
