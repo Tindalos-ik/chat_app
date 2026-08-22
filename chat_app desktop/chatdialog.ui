@@ -155,12 +155,7 @@
          <number>12</number>
         </property>
         <item>
-         <widget class="QPushButton" name="side_chat_btn">
-          <property name="styleSheet">
-           <string notr="true">QPushButton { border: none; border-radius: 8px; background: transparent; }
-QPushButton:hover { background-color: rgba(255,255,255,36); }
-QPushButton:checked { background-color: rgba(255,255,255,72); }</string>
-          </property>
+         <widget class="StateWidget" name="side_chat_lb" native="true">
           <property name="minimumSize">
            <size>
             <width>44</width>
@@ -172,44 +167,14 @@ QPushButton:checked { background-color: rgba(255,255,255,72); }</string>
             <width>44</width>
             <height>44</height>
            </size>
-          </property>
-          <property name="cursor">
-           <cursorShape>PointingHandCursor</cursorShape>
           </property>
           <property name="toolTip">
            <string>聊天</string>
           </property>
-          <property name="icon">
-           <iconset resource="resource.qrc">
-            <normaloff>:/res/chat_icon.png</normaloff>:/res/chat_icon.png</iconset>
-          </property>
-          <property name="iconSize">
-           <size>
-            <width>28</width>
-            <height>28</height>
-           </size>
-          </property>
-          <property name="checkable">
-           <bool>true</bool>
-          </property>
-          <property name="checked">
-           <bool>true</bool>
-          </property>
-          <property name="autoExclusive">
-           <bool>true</bool>
-          </property>
-          <property name="flat">
-           <bool>true</bool>
-          </property>
          </widget>
         </item>
         <item>
-         <widget class="QPushButton" name="side_contact_btn">
-          <property name="styleSheet">
-           <string notr="true">QPushButton { border: none; border-radius: 8px; background: transparent; }
-QPushButton:hover { background-color: rgba(255,255,255,36); }
-QPushButton:checked { background-color: rgba(255,255,255,72); }</string>
-          </property>
+         <widget class="StateWidget" name="side_contact_lb" native="true">
           <property name="minimumSize">
            <size>
             <width>44</width>
@@ -221,41 +186,14 @@ QPushButton:checked { background-color: rgba(255,255,255,72); }</string>
             <width>44</width>
             <height>44</height>
            </size>
-          </property>
-          <property name="cursor">
-           <cursorShape>PointingHandCursor</cursorShape>
           </property>
           <property name="toolTip">
            <string>联系人</string>
           </property>
-          <property name="icon">
-           <iconset resource="resource.qrc">
-            <normaloff>:/res/contact_list.png</normaloff>:/res/contact_list.png</iconset>
-          </property>
-          <property name="iconSize">
-           <size>
-            <width>28</width>
-            <height>28</height>
-           </size>
-          </property>
-          <property name="checkable">
-           <bool>true</bool>
-          </property>
-          <property name="autoExclusive">
-           <bool>true</bool>
-          </property>
-          <property name="flat">
-           <bool>true</bool>
-          </property>
          </widget>
         </item>
         <item>
-         <widget class="QPushButton" name="side_setting_btn">
-          <property name="styleSheet">
-           <string notr="true">QPushButton { border: none; border-radius: 8px; background: transparent; }
-QPushButton:hover { background-color: rgba(255,255,255,36); }
-QPushButton:checked { background-color: rgba(255,255,255,72); }</string>
-          </property>
+         <widget class="StateWidget" name="side_settings_lb" native="true">
           <property name="minimumSize">
            <size>
             <width>44</width>
@@ -268,30 +206,8 @@ QPushButton:checked { background-color: rgba(255,255,255,72); }</string>
             <height>44</height>
            </size>
           </property>
-          <property name="cursor">
-           <cursorShape>PointingHandCursor</cursorShape>
-          </property>
           <property name="toolTip">
            <string>设置</string>
-          </property>
-          <property name="icon">
-           <iconset resource="resource.qrc">
-            <normaloff>:/res/settings.png</normaloff>:/res/settings.png</iconset>
-          </property>
-          <property name="iconSize">
-           <size>
-            <width>28</width>
-            <height>28</height>
-           </size>
-          </property>
-          <property name="checkable">
-           <bool>true</bool>
-          </property>
-          <property name="autoExclusive">
-           <bool>true</bool>
-          </property>
-          <property name="flat">
-           <bool>true</bool>
           </property>
          </widget>
         </item>
@@ -654,6 +570,11 @@ QPushButton:pressed { background-color: #059a4c; }</string>
    <class>MessageTextEdit</class>
    <extends>QTextEdit</extends>
    <header location="global">messagetextedit.h</header>
+  </customwidget>
+  <customwidget>
+   <class>StateWidget</class>
+   <extends>QWidget</extends>
+   <header location="global">statewidget.h</header>
   </customwidget>
  </customwidgets>
  <resources>

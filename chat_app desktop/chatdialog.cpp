@@ -1,5 +1,6 @@
 #include "chatdialog.h"
 #include "ui_chatdialog.h"
+#include "statewidget.h"
 #include <QAction>
 #include <QIcon>
 #include <QLineEdit>
@@ -42,17 +43,24 @@ ChatDialog::ChatDialog(QWidget *parent)
     ui->search_edit->setPlaceholderText(QStringLiteral("搜索"));
     // 同样的，清除动作也可以这么做
 
-    // 侧边栏：聊天按钮 -> 聊天列表（索引0）
-    connect(ui->side_chat_btn, &QPushButton::clicked, this, [this]{
-        _cur_mode = 0;
-        ui->list_stack->setCurrentIndex(0);
-    });
+    // 侧边栏按钮统一设置六种状态（外观在 stylesheet.qss 里按 state 切换）
+    ui->side_chat_lb->SetState("normal", "hover", "pressed",
+                               "selected", "selected_hover", "selected_pressed");
+    ui->side_contact_lb->SetState("normal", "hover", "pressed",
+                                  "selected", "selected_hover", "selected_pressed");
+    ui->side_settings_lb->SetState("normal", "hover", "pressed",
+                                   "selected", "selected_hover", "selected_pressed");
 
-    // 侧边栏：好友按钮 -> 好友列表（索引1）
-    connect(ui->side_contact_btn, &QPushButton::clicked, this, [this]{
-        _cur_mode = 1;
-        ui->list_stack->setCurrentIndex(1);
-    });
+    // 加入互斥组：一次只能高亮一个
+    AddLBGroup(ui->side_chat_lb);
+    AddLBGroup(ui->side_contact_lb);
+    AddLBGroup(ui->side_settings_lb);
+
+    connect(ui->side_chat_lb, &StateWidget::clicked, this, &ChatDialog::slot_side_chat);
+    connect(ui->side_contact_lb, &StateWidget::clicked, this, &ChatDialog::slot_side_contact);
+    connect(ui->side_settings_lb, &StateWidget::clicked, this, &ChatDialog::slot_side_setting);
+
+    ui->side_chat_lb->SetSelected(true); // 默认选中聊天
 
     // 搜索框有内容 -> 切到搜索列表（索引2）；清空 -> 回到当前模式对应的列表
     connect(ui->search_edit, &QLineEdit::textChanged, this, [this](const QString &text){
@@ -199,6 +207,41 @@ void ChatDialog::on_send_btn_clicked()
         {
             pChatItem->setWidget(pBubble);
             ui->chat_data->appendChatItem(pChatItem);
+        }
+    }
+}
+
+void ChatDialog::slot_side_chat()
+{
+    ClearLabelState(ui->side_chat_lb);
+    _cur_mode = 0;
+    ui->list_stack->setCurrentIndex(0); // 聊天列表
+}
+
+void ChatDialog::slot_side_contact()
+{
+    ClearLabelState(ui->side_contact_lb);
+    _cur_mode = 1;
+    ui->list_stack->setCurrentIndex(1); // 好友列表
+}
+
+void ChatDialog::slot_side_setting()
+{
+    // 设置页还没有实现：不切换页面，也不让按钮一直停留在选中态
+    ClearLabelState(ui->side_settings_lb);
+    ui->side_settings_lb->ClearState();
+}
+
+void ChatDialog::AddLBGroup(StateWidget *lb)
+{
+    _lb_list.push_back(lb);
+}
+
+void ChatDialog::ClearLabelState(StateWidget *lb)
+{
+    for (auto *ele : _lb_list) {
+        if (ele != lb) {
+            ele->ClearState();
         }
     }
 }

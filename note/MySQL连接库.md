@@ -29,7 +29,7 @@
 ```
 [Mysql]
 host = 127.0.0.1
-port = 33060      ← X Protocol 端口，不是 3306！
+port = 33060      ← X Protocol 端口，不是 3306
 ```
 
 **为什么用 X DevAPI 而不是经典 API**：
@@ -39,7 +39,7 @@ port = 33060      ← X Protocol 端口，不是 3306！
 3. 除了 SQL，还支持 NoSQL 风格的 Collection 操作（本项目没用，但库支持）；
 4. 官方推荐的新接口，llfc 老项目用的经典 API，新版也逐步迁移到 X DevAPI。
 
-> 连 3306 用经典 API，连 33060 用 X DevAPI，**两边混用会连不上**。
+> 连 3306 用经典 API，连 33060 用 X DevAPI
 
 
 
@@ -151,7 +151,7 @@ bool MysqlMgr::CheckPwd(const std::string &name, const std::string &pwd, UserInf
 知识点：
 
 * **`fetchOne()` 取一行，`fetchAll()` 取全部**（返回行列表）。本项目查询都是"查一条用户"，所以只用 `fetchOne`；
-* **`Row` 可以直接当 bool 用**：`Row` 内部实现了 `operator bool()`（等价于 `!isNull()`），所以 `if (!rows)` 就是"没查到"；这是我从 9.7.0 头文件里确认过的，不是玄学；
+* **`Row` 可以直接当 bool 用**：`Row` 内部实现了 `operator bool()`（等价于 `!isNull()`），所以 `if (!rows)` 就是"没查到"；
 * **`row[i]` 按下标取列，`Value::get<T>()` 转类型**：`rows[0].get<int>()`、`rows[3].get<std::string>()`；
 * **列下标从 0 开始，必须和 SELECT 的列顺序一一对应**：`SELECT uid, name, email, pwd` → 0=uid、1=name、2=email、3=pwd。改 SQL 时忘了同步下标，是这类代码最常见的 bug；
 * `get<T>()` 类型不匹配会抛异常（比如拿字符串列调 `get<int>`），正好被 catch 兜住返回 false。
@@ -257,24 +257,6 @@ this->poolSize_ = std::stoi(config["Mysql"]["poolsize"]);
 ```
 
 好处：换数据库、调并发（poolsize）都不用重新编译。注意 `poolsize` 是字符串，要 `std::stoi` 转数字。
-
-
-
-### 和 llfc 经典 API 的对照
-
-llfc 参考项目用的是经典 API（`sql::Connection`、`PreparedStatement`、`ResultSet`），理解它能帮你读旧代码：
-
-| 经典 API | X DevAPI（本项目） |
-| --- | --- |
-| `sql::Connection` | `mysqlx::Session` |
-| `prepareStatement(sql)` | `session->sql(sql)` |
-| `stmt->setString(1, val)` | `.bind(val)` |
-| `stmt->executeQuery()` | `.execute()` |
-| `ResultSet::next()` + `getInt(i)` / `getString(i)` | `Row` + `row[i].get<int>()` / `get<std::string>()` |
-| 列下标从 1 开始 | 列下标从 0 开始 |
-| 经典协议 3306 | X Protocol 33060 |
-
-> **经典 API 列从 1 开始，X DevAPI 从 0 开始**。看 llfc 的代码用 `getString(3)`，搬到 X DevAPI 要改成 `rows[2]`。
 
 
 
