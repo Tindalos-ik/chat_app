@@ -43,6 +43,8 @@ void StateWidget::ClearState()
 {
     _curstate = ClickLbState::Normal;
     setState(_normal);
+    repolish(this);
+    update();
 }
 
 void StateWidget::SetSelected(bool bselected)

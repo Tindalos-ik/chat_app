@@ -341,7 +341,7 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }</string>
            </property>
           </widget>
-          <widget class="ChatUserList" name="search_list">
+          <widget class="SearchList" name="search_list">
            <property name="styleSheet">
             <string notr="true">background-color: transparent; border: none;
 QScrollBar:vertical { background: transparent; width: 6px; margin: 0; }
@@ -560,6 +560,11 @@ QPushButton:pressed { background-color: #059a4c; }</string>
    <class>ConUserList</class>
    <extends>QListWidget</extends>
    <header location="global">conuserlist.h</header>
+  </customwidget>
+  <customwidget>
+   <class>SearchList</class>
+   <extends>QListWidget</extends>
+   <header location="global">searchlist.h</header>
   </customwidget>
   <customwidget>
    <class>ChatView</class>

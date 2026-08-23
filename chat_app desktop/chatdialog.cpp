@@ -67,6 +67,13 @@ ChatDialog::ChatDialog(QWidget *parent)
         ui->list_stack->setCurrentIndex(text.isEmpty() ? _cur_mode : 2);
     });
 
+    // 搜索列表：点"查找用户"提示项时拿到搜索框文字
+    // TODO: 拿到文字后发 TCP 搜索请求（客户端搜索协议还没实现）
+    ui->search_list->SetSearchEdit(ui->search_edit);
+    connect(ui->search_list, &SearchList::sig_add_friend_clicked, this, [this](const QString &searchText){
+        qDebug() << "add friend clicked, search text =" << searchText;
+    });
+
     // 聊天列表滚到底部 -> 加载更多（ChatUserList 只负责发信号，数据由这里补）
     connect(ui->session_list, &ChatUserList::sig_loading_chat_user,
             this, &ChatDialog::slot_loading_chat_user);
@@ -227,9 +234,8 @@ void ChatDialog::slot_side_contact()
 
 void ChatDialog::slot_side_setting()
 {
-    // 设置页还没有实现：不切换页面，也不让按钮一直停留在选中态
+    // 设置页还没有实现：先不切换页面，但按钮保持选中态（与聊天/好友一致）
     ClearLabelState(ui->side_settings_lb);
-    ui->side_settings_lb->ClearState();
 }
 
 void ChatDialog::AddLBGroup(StateWidget *lb)
