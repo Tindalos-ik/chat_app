@@ -71,9 +71,6 @@ ChatDialog::ChatDialog(QWidget *parent)
     // 搜索列表：点"查找用户"提示项时拿到搜索框文字
     // TODO: 拿到文字后发 TCP 搜索请求（客户端搜索协议还没实现）
     ui->search_list->SetSearchEdit(ui->search_edit);
-    connect(ui->search_list, &SearchList::sig_add_friend_clicked, this, [this](const QString &searchText){
-        qDebug() << "add friend clicked, search text =" << searchText;
-    });
 
     // 聊天列表滚到底部 -> 加载更多（ChatUserList 只负责发信号，数据由这里补）
     connect(ui->session_list, &ChatUserList::sig_loading_chat_user,

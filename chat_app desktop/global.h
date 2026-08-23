@@ -31,6 +31,7 @@ enum ReqId{
     ID_RESETPASSWORD = 1004, //重置密码
     ID_CHAT_LOGIN, //登录聊天服务器
     ID_CHAT_LOGIN_RSP, //登录聊天服务器回包
+    ID_SEARCH_USER_REQ, // 搜索用户请求
 };
 
 enum Modules{

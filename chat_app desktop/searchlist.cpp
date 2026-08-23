@@ -1,34 +1,45 @@
 #include "searchlist.h"
 #include "adduseritem.h"
+#include "findsuccessdlg.h"
 #include <QLineEdit>
+#include <QDebug>
+#include <QJsonObject>
+#include <QJsonDocument>
+#include <tcpmgr.h>
+#include <global.h>
+
 
 SearchList::SearchList(QWidget *parent)
-    : QListWidget(parent)
+    : QListWidget(parent),_send_pending(false)
 {
     this->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     this->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     // 安装事件过滤器：悬浮时显示滚动条、滚轮自定义滚动
     this->viewport()->installEventFilter(this);
 
-    // 顶部先放一个"查找用户"提示项
+    // 添加搜索列表条目，比如添加好友
     addTipItem();
 
-    // 点击提示项 -> 把搜索框文字发出去（协议就绪后在这里发 TCP 请求）
-    connect(this, &QListWidget::itemClicked, this, [this](QListWidgetItem *item) {
-        if (item != _tipItem) {
-            return;
-        }
-        QString searchText;
-        if (auto *edit = qobject_cast<QLineEdit*>(_search_edit)) {
-            searchText = edit->text();
-        }
-        emit sig_add_friend_clicked(searchText);
-    });
+    // 连接条目点击的信号和槽
+    connect(this, &QListWidget::itemClicked, this, &SearchList::slot_item_clicked);
 }
 
 void SearchList::SetSearchEdit(QWidget *edit)
 {
     _search_edit = edit;
+}
+
+void SearchList::waitpending(bool flag)
+{
+
+}
+
+void SearchList::CloseFindDlg()
+{
+    if(_find_dlg){
+        _find_dlg->hide();
+        _find_dlg = nullptr;
+    }
 }
 
 void SearchList::addTipItem()
@@ -48,6 +59,54 @@ void SearchList::addTipItem()
     _tipItem->setSizeHint(tip->sizeHint());
     this->addItem(_tipItem);
     this->setItemWidget(_tipItem, tip);
+}
+
+void SearchList::slot_item_clicked(QListWidgetItem *item)
+{
+    // 获取自定义widget对象
+    QWidget *widget = this->itemWidget(item);
+    if(!widget){
+        qDebug() << "slot item clicked widget is nullptr";
+        return;
+    }
+
+    // 对自定义widget进行操作，将item转化为ListItemBase
+    ListItemBase *customItem = qobject_cast<ListItemBase*>(widget);
+    if(!customItem){
+        qDebug() << "slot item clicked widget is nullptr";
+        return;
+    }
+
+    // 获取item类型
+    auto itemType = customItem->GetItemType();
+    if(itemType == ListItemType::INVALID_ITEM){
+        return;
+    }
+
+    if(itemType == ListItemType::ADD_USER_TIP_ITEM){
+        /*if(_send_pending){
+            return;
+        }
+        waitpending(true);
+        auto *edit = qobject_cast<QLineEdit*>(_search_edit);
+        auto uid_str = edit->text();
+        // 发送请求给server
+        QJsonObject jsonObj;
+        jsonObj["uid"] = uid_str;
+        QJsonDocument doc(jsonObj);
+        QString jsonString = doc.toJson(QJsonDocument::Indented);
+        // 发送tcp请求给chat_server
+        emit TcpMgr::GetInstance()->sig_send_data(ReqId::ID_SEARCH_USER_REQ, jsonString);
+        */
+        _find_dlg = std::make_shared<FindSuccessDlg>(this);
+        _find_dlg->show();
+        //std::dynamic_pointer_cast<FindSuccessDlg>(_find_dlg)->setSearchInfo(si);
+        return; // 已经弹窗了，别走到下面的 CloseFindDlg 把它关掉
+    }
+
+    // 没有对应的类型
+    // 清除弹出框
+    CloseFindDlg();
 }
 
 bool SearchList::eventFilter(QObject *watched, QEvent *event)

@@ -42,6 +42,7 @@ qt_add_executable(chat_app
     searchlist.h searchlist.cpp
     userdata.h userdata.cpp
     adduseritem.h adduseritem.cpp adduseritem.ui
+    findsuccessdlg.h findsuccessdlg.cpp findsuccessdlg.ui
 
     #ini、ui、qrc直接加入可执行文件
 )
@@ -63,6 +64,10 @@ install(TARGETS chat_app
 
 #复制配置文件到构建目录，然后去main.cpp中读取配置
 file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/config.ini
+     DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
+
+#复制static资源目录到构建目录，运行时按 exe 同目录/static 读取头像等资源
+file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/static
      DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
 
 qt_generate_deploy_app_script(
