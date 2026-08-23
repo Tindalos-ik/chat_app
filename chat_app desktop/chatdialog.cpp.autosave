@@ -16,6 +16,7 @@
 #include "textbubble.h"
 #include "messagetextedit.h"
 #include "chatitembase.h"
+#include <QMouseEvent>
 
 namespace {
 // 示例头像资源，循环使用
@@ -243,7 +244,19 @@ void ChatDialog::slot_side_setting()
 
 bool ChatDialog::eventFilter(QObject *watched, QEvent *event)
 {
+    // 鼠标点击事件
+    if(event->type() == QEvent::MouseButtonPress){
+        QMouseEvent* mouseEvent = static_cast<QMouseEvent*>(event);
+        handleGlobalMousePress(mouseEvent);
+    }
+    return QDialog::eventFilter(watched, event);
+}
 
+void ChatDialog::handleGlobalMousePress(QMouseEvent *mouseEvent)
+{
+    // 实现点击位置判断和处理逻辑
+    // 先判断目前是否处于搜索模式，如果不处于搜索模式直接返回
+        
 }
 
 void ChatDialog::AddLBGroup(StateWidget *lb)

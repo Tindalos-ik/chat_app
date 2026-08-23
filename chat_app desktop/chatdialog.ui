@@ -319,7 +319,7 @@ QLineEdit:focus { border-color: #07c160; }</string>
         <item>
          <widget class="QStackedWidget" name="list_stack">
           <property name="currentIndex">
-           <number>1</number>
+           <number>2</number>
           </property>
           <widget class="ChatUserList" name="session_list">
            <property name="styleSheet">
@@ -450,44 +450,44 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: trans
            </property>
           </widget>
           <widget class="QWidget" name="input_wid" native="true">
-          <property name="minimumSize">
-           <size>
-            <width>0</width>
-            <height>80</height>
-           </size>
-          </property>
-          <property name="maximumSize">
-           <size>
-            <width>16777215</width>
-            <height>300</height>
-           </size>
-          </property>
-          <property name="styleSheet">
-           <string notr="true">background-color: #ffffff; border-top: 1px solid #e5e5e5;</string>
-          </property>
-          <layout class="QVBoxLayout" name="input_layout">
-           <property name="spacing">
-            <number>8</number>
+           <property name="minimumSize">
+            <size>
+             <width>0</width>
+             <height>80</height>
+            </size>
            </property>
-           <property name="leftMargin">
-            <number>12</number>
+           <property name="maximumSize">
+            <size>
+             <width>16777215</width>
+             <height>300</height>
+            </size>
            </property>
-           <property name="topMargin">
-            <number>10</number>
+           <property name="styleSheet">
+            <string notr="true">background-color: #ffffff; border-top: 1px solid #e5e5e5;</string>
            </property>
-           <property name="rightMargin">
-            <number>12</number>
-           </property>
-           <property name="bottomMargin">
-            <number>10</number>
-           </property>
-           <item>
-            <widget class="MessageTextEdit" name="input_edit">
-             <property name="styleSheet">
-              <string notr="true">background-color: #ffffff; border: none;</string>
-             </property>
-             <property name="html">
-              <string>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
+           <layout class="QVBoxLayout" name="input_layout">
+            <property name="spacing">
+             <number>8</number>
+            </property>
+            <property name="leftMargin">
+             <number>12</number>
+            </property>
+            <property name="topMargin">
+             <number>10</number>
+            </property>
+            <property name="rightMargin">
+             <number>12</number>
+            </property>
+            <property name="bottomMargin">
+             <number>10</number>
+            </property>
+            <item>
+             <widget class="MessageTextEdit" name="input_edit">
+              <property name="styleSheet">
+               <string notr="true">background-color: #ffffff; border: none;</string>
+              </property>
+              <property name="html">
+               <string>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
 &lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;meta charset=&quot;utf-8&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
 p, li { white-space: pre-wrap; }
 hr { height: 1px; border-width: 0; }
@@ -495,54 +495,54 @@ li.unchecked::marker { content: &quot;\2610&quot;; }
 li.checked::marker { content: &quot;\2612&quot;; }
 &lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Microsoft YaHei UI'; font-size:9pt; font-weight:400; font-style:normal;&quot;&gt;
 &lt;p style=&quot;-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;br /&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
-             </property>
-             <property name="placeholderText">
-              <string>输入消息...</string>
-             </property>
-            </widget>
-           </item>
-           <item>
-            <layout class="QHBoxLayout" name="send_layout">
-             <item>
-              <spacer name="send_spacer">
-               <property name="orientation">
-                <enum>Qt::Orientation::Horizontal</enum>
-               </property>
-               <property name="sizeHint" stdset="0">
-                <size>
-                 <width>40</width>
-                 <height>20</height>
-                </size>
-               </property>
-              </spacer>
-             </item>
-             <item>
-              <widget class="QPushButton" name="send_btn">
-               <property name="minimumSize">
-                <size>
-                 <width>80</width>
-                 <height>32</height>
-                </size>
-               </property>
-               <property name="cursor">
-                <cursorShape>PointingHandCursor</cursorShape>
-               </property>
-               <property name="styleSheet">
-                <string notr="true">QPushButton { background-color: #07c160; color: #ffffff; border: none; border-radius: 4px; font-size: 14px; }
+              </property>
+              <property name="placeholderText">
+               <string>输入消息...</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <layout class="QHBoxLayout" name="send_layout">
+              <item>
+               <spacer name="send_spacer">
+                <property name="orientation">
+                 <enum>Qt::Orientation::Horizontal</enum>
+                </property>
+                <property name="sizeHint" stdset="0">
+                 <size>
+                  <width>40</width>
+                  <height>20</height>
+                 </size>
+                </property>
+               </spacer>
+              </item>
+              <item>
+               <widget class="QPushButton" name="send_btn">
+                <property name="minimumSize">
+                 <size>
+                  <width>80</width>
+                  <height>32</height>
+                 </size>
+                </property>
+                <property name="cursor">
+                 <cursorShape>PointingHandCursor</cursorShape>
+                </property>
+                <property name="styleSheet">
+                 <string notr="true">QPushButton { background-color: #07c160; color: #ffffff; border: none; border-radius: 4px; font-size: 14px; }
 QPushButton:hover { background-color: #06ad56; }
 QPushButton:pressed { background-color: #059a4c; }</string>
-               </property>
-               <property name="text">
-                <string>发 送</string>
-               </property>
-              </widget>
-             </item>
-            </layout>
-           </item>
-          </layout>
+                </property>
+                <property name="text">
+                 <string>发 送</string>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </item>
+           </layout>
+          </widget>
          </widget>
-        </widget>
-       </item>
+        </item>
        </layout>
       </widget>
      </item>
@@ -562,11 +562,6 @@ QPushButton:pressed { background-color: #059a4c; }</string>
    <header location="global">conuserlist.h</header>
   </customwidget>
   <customwidget>
-   <class>SearchList</class>
-   <extends>QListWidget</extends>
-   <header location="global">searchlist.h</header>
-  </customwidget>
-  <customwidget>
    <class>ChatView</class>
    <extends>QWidget</extends>
    <header location="global">chatview.h</header>
@@ -580,6 +575,11 @@ QPushButton:pressed { background-color: #059a4c; }</string>
    <class>StateWidget</class>
    <extends>QWidget</extends>
    <header location="global">statewidget.h</header>
+  </customwidget>
+  <customwidget>
+   <class>SearchList</class>
+   <extends>QListWidget</extends>
+   <header location="global">searchlist.h</header>
   </customwidget>
  </customwidgets>
  <resources>
