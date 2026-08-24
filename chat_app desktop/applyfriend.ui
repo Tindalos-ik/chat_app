@@ -321,9 +321,6 @@ QLineEdit:focus { border-color: #07c160; background-color: #ffffff; }</string>
                 </property>
                 <item>
                  <widget class="ClickedOnceLabel" name="tip_lb">
-                  <property name="styleSheet">
-                   <string notr="true">font-size: 12px; color: #999999;</string>
-                  </property>
                   <property name="text">
                    <string>点击此处添加标签</string>
                   </property>

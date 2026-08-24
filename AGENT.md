@@ -28,23 +28,6 @@
 | 单例 | HttpMgr / TcpMgr / MysqlMgr 等用 Singleton 模板基类：构造私有 + friend，不要破坏 |
 | 密码学相关 | token 生成、密码哈希若要"认真做"，先跟用户确认方案（当前是教学级实现） |
 
-## 已知坑（遇到直接修，不要当新发现重复报告）
-
-1. ~~`RegUser` 没分配 uid~~：已修复——改为事务里 `UPDATE user_id SET id=id+1` 分配 uid 再插入（三份 MysqlMgr 同步）；依赖 `user_id` 表存在并初始化，建表脚本见 `sql/create_tables.sql`。
-2. ChatServer `LoginHandler` 的 `GetUserInfo(uid)` 已实现但没接进登录回包（TODO，注意回包别带 pwd）。
-3. token 存 StatusServer 内存 map：重启全失效、无 TTL、多实例不一致。
-4. TcpMgr `_b_recy_pending` 声明未赋值：半包状态没真正记录，遇到半包会解析错位。
-5. Qt 客户端 `slot_send_data` 用 `data.size()` 算包长，中文会错，应改用 `dataByte.size()`。
-6. TimerBtn 手动 `emit clicked()` 且基类还会再发一次，可能重复触发。
-7. RegisterDialog 用 `QEventLoop::exec` 阻塞 3 秒，期间 UI 卡死。
-8. GateServer 注册是"先查重再插入"，无事务，并发下可能重复注册。
-9. 跨 ChatServer 消息路由缺失，A 服务器的用户发不了 B 服务器的用户。
-10. ~~聊天列表"加载更多"链路没接上~~：已修复——ChatDialog 补 `connect(sig_loading_chat_user → slot_loading_chat_user)` 和槽函数（防抖 + 追加一批），并给"滚到底"判断加了 10px 余量和"有滚动余地才触发"的守卫。
-11. ~~ChatUserList 看不到滚动条~~：已修复——事件过滤器把非 Enter 事件全当 Leave（`else`），滚动条策略被立刻改回 AlwaysOff；已改为 `else if (QEvent::Leave)` 精确匹配，实现"悬浮显示、移开隐藏"。
-12. ~~ChatView 滚动条永不显示~~：已修复——事件过滤器装到 `m_pScrollArea` 自己身上收不到 Enter/Leave（鼠标实际悬浮在 viewport），应装到 `m_pScrollArea->viewport()` 上。
-13. ~~ChatView 提升后链接失败~~：已修复——头文件声明了 `paintEvent` 但 .cpp 没实现，虚函数缺失导致 undefined reference；`eventFilter` 也是声明了没实现。
-14. ~~Ninja dependency cycle（客户端构建）~~：已修复——CMakeLists 里源文件重复列出 + 构建目录 `.ninja_deps`/`.ninja_log` 残留过期依赖导致；去重后删除这两个文件重建即可。
-
 ## 文档规范
 
 * 文档风格：中文、叙述式、带"为什么"、表格 + 代码块 + `>` 提示，参考 note/ 现有笔记。

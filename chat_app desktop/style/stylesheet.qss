@@ -175,6 +175,15 @@ QListWidget#search_list::item:selected{
     border-image: url(:/res/arowdown.png); /* "更多"下拉箭头 */
 }
 
+#input_tip_wid {
+    background: #d3eaf8;
+}
+
+#apply_wid #tip_lb {
+    padding-left: 2px;
+    color: rgb(153,153,153);
+}
+
 #gridWidget {
     background: #fdfdfd;
 }
