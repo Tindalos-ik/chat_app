@@ -1,6 +1,7 @@
 #include "friendlabel.h"
 #include "ui_friendlabel.h"
 #include "clickedlabel.h"
+#include <QPainter>
 #include <QFontMetrics>
 
 FriendLabel::FriendLabel(QWidget *parent)
@@ -10,11 +11,6 @@ FriendLabel::FriendLabel(QWidget *parent)
     , _height(0)
 {
     ui->setupUi(this);
-
-    // QFrame 默认不绘制样式表背景，加上这个属性后 #FriendLabel 的
-    // 浅绿底色 + 圆角才会真正渲染出来
-    setAttribute(Qt::WA_StyledBackground, true);
-    setFrameShape(QFrame::NoFrame); // 样式表已经做了圆角背景，不需要默认边框
 
     connect(ui->close_lb, &ClickedLabel::Clicked, this, &FriendLabel::slot_close);
 
@@ -33,13 +29,27 @@ void FriendLabel::SetText(const QString &text)
     ui->tip_lb->setText(text); // 显示文字
 
     // 用字体度量计算文字实际宽度：
-    // 文字宽度 + 右侧关闭叉区域(25) + 左右留白(20)，让胶囊刚好包住内容
+    // 文字宽度 + 右侧关闭叉区域(20) + 左右留白(16)，让胶囊刚好包住内容
     QFontMetrics metrics(ui->tip_lb->font());
-    _width = metrics.horizontalAdvance(text) + 25 + 20;
-    _height = 43;
+    _width = metrics.horizontalAdvance(text) + 20 + 16;
+    _height = 20; // 和 ApplyFriend 里的标签输入框（lb_ed）高度保持一致
 
     // 按算好的尺寸固定自身，外部布局（ApplyFriend 的 lb_list）就能直接摆放
     setFixedSize(_width, _height);
+}
+
+void FriendLabel::paintEvent(QPaintEvent *event)
+{
+    Q_UNUSED(event);
+    // 用代码画浅绿圆角胶囊背景：
+    // QFrame 的 QSS background 渲染不稳定（可能出现背景不显示/错位），
+    // 直接 paint 最可靠，文字和关闭叉由子控件正常绘制
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor("#daf6e7"));
+    // 圆角取高度一半：无论胶囊多高都保持"全圆角药丸"造型
+    painter.drawRoundedRect(rect(), height() / 2, height() / 2);
 }
 
 int FriendLabel::Width() const

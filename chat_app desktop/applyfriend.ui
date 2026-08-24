@@ -271,7 +271,7 @@ QLineEdit:focus { border-color: #07c160; background-color: #ffffff; }</string>
                <property name="maximumSize">
                 <size>
                  <width>16777215</width>
-                 <height>40</height>
+                 <height>16777215</height>
                 </size>
                </property>
                <widget class="QLineEdit" name="lb_ed">
@@ -279,7 +279,7 @@ QLineEdit:focus { border-color: #07c160; background-color: #ffffff; }</string>
                  <rect>
                   <x>0</x>
                   <y>2</y>
-                  <width>108</width>
+                  <width>181</width>
                   <height>35</height>
                  </rect>
                 </property>
@@ -290,7 +290,7 @@ QLineEdit:focus { border-color: #07c160; background-color: #ffffff; }</string>
                  </size>
                 </property>
                 <property name="placeholderText">
-                 <string>添加标签</string>
+                 <string>搜索，添加标签</string>
                 </property>
                </widget>
               </widget>
@@ -422,7 +422,7 @@ QLineEdit:focus { border-color: #07c160; background-color: #ffffff; }</string>
                  </spacer>
                 </item>
                 <item>
-                 <widget class="QLabel" name="more_lb">
+                 <widget class="ClickedOnceLabel" name="more_lb">
                   <property name="minimumSize">
                    <size>
                     <width>25</width>

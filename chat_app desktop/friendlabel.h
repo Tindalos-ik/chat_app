@@ -27,6 +27,9 @@ public:
     int Height() const;
     QString Text() const;
 
+protected:
+    void paintEvent(QPaintEvent *event) override; // 自己画浅绿圆角背景，不依赖 QSS
+
 public slots:
     void slot_close();                 // 点关闭叉：发 sig_close，由外部负责删除自己
 
@@ -37,7 +40,7 @@ private:
     Ui::FriendLabel *ui;
     QString _text;  // 标签文字
     int _width;     // 文字排版后的宽度（记录供外部排列标签时使用）
-    int _height;    // 标签高度（固定 43，和 ui 一致）
+    int _height;    // 标签高度（固定 20，和标签输入框一致）
 };
 
 #endif // FRIENDLABEL_H

@@ -1,18 +1,16 @@
 #include "clickedoncelabel.h"
 
-ClickedOnceLabel::ClickedOnceLabel(QWidget *parent):QLabel(parent)
+ClickedOnceLabel::ClickedOnceLabel(QWidget *parent)
+    : QLabel(parent)
 {
-    setCursor(Qt::PointingHandCursor);
+    setCursor(Qt::PointingHandCursor); // 小手光标，提示可点击
 }
 
-
-void ClickedOnceLabel::mouseReleaseEvent(QMouseEvent *event)
+void ClickedOnceLabel::mouseReleaseEvent(QMouseEvent *ev)
 {
-    if (event->button() == Qt::LeftButton) {
-        emit clicked(this->text());
+    if (ev->button() == Qt::LeftButton) {
+        emit clicked(this->text()); // 左键松开：带文字发信号
         return;
     }
-    // 调用基类的mousePressEvent以保证正常的事件处理
-    QLabel::mousePressEvent(event);
+    QLabel::mouseReleaseEvent(ev); // 其他按键走默认处理
 }
-

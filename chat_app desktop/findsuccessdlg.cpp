@@ -1,6 +1,7 @@
 #include "findsuccessdlg.h"
 #include "ui_findsuccessdlg.h"
 #include <QDir>
+
 FindSuccessDlg::FindSuccessDlg(QWidget *parent)
     : QDialog(parent)
     , ui(new Ui::FindSuccessDlg)
@@ -38,6 +39,13 @@ void FindSuccessDlg::setSearchInfo(std::shared_ptr<SearchInfo> si)
 
 void FindSuccessDlg::on_add_friend_btn_clicked()
 {
-    // 添加好友界面弹出
+    // 每次点击都新建一个 ApplyFriend：
+    // 它确认/取消后会 deleteLater 自毁，不能复用同一个实例
+    auto *applyFriendDlg = new ApplyFriend(_parent);
+    applyFriendDlg->SetSearchInfo(_si); // 把搜索到的用户信息传给申请界面
+    applyFriendDlg->setModal(true);
+    applyFriendDlg->show();
+
+    this->hide();
 }
 

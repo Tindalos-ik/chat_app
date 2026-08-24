@@ -77,3 +77,24 @@ ClickLbState ClickedLabel::GetCurState()
 {
     return _curstate;
 }
+
+bool ClickedLabel::SetCurState(ClickLbState state)
+{
+    _curstate = state;
+    if (_curstate == ClickLbState::Normal) {
+        setProperty("state", _normal);
+    } else {
+        setProperty("state", _selected);
+    }
+    repolish(this); // 刷新样式表，让 [state=...] 选择器重新生效
+    update();
+    return true;
+}
+
+void ClickedLabel::ResetNormalState()
+{
+    _curstate = ClickLbState::Normal;
+    setProperty("state", _normal);
+    repolish(this);
+    update();
+}

@@ -4,6 +4,8 @@
 #include <QDialog>
 #include <userdata.h>
 #include <memory>
+#include "applyfriend.h"
+
 namespace Ui {
 class FindSuccessDlg;
 }

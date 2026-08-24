@@ -7,30 +7,23 @@
     <x>0</x>
     <y>0</y>
     <width>150</width>
-    <height>43</height>
+    <height>20</height>
    </rect>
   </property>
   <property name="minimumSize">
    <size>
     <width>0</width>
-    <height>43</height>
+    <height>20</height>
    </size>
   </property>
   <property name="maximumSize">
    <size>
     <width>16777215</width>
-    <height>43</height>
+    <height>20</height>
    </size>
   </property>
   <property name="windowTitle">
    <string>Form</string>
-  </property>
-  <property name="styleSheet">
-   <string notr="true">#FriendLabel {
-    background: #daf6e7;
-    color: #48bf56;
-    border-radius: 10px;
-}</string>
   </property>
   <layout class="QHBoxLayout" name="horizontalLayout">
    <property name="spacing">
@@ -63,7 +56,7 @@
       </size>
      </property>
      <property name="styleSheet">
-      <string notr="true">font-size: 13px; font-weight: bold;</string>
+      <string notr="true">font-size: 13px; font-weight: bold; color: #48bf56; background: transparent;</string>
      </property>
      <property name="text">
       <string>标签</string>
@@ -74,15 +67,18 @@
     <widget class="QWidget" name="close_wid" native="true">
      <property name="minimumSize">
       <size>
-       <width>25</width>
-       <height>25</height>
+       <width>20</width>
+       <height>20</height>
       </size>
      </property>
      <property name="maximumSize">
       <size>
-       <width>25</width>
-       <height>25</height>
+       <width>20</width>
+       <height>20</height>
       </size>
+     </property>
+     <property name="styleSheet">
+      <string notr="true">background: transparent;</string>
      </property>
      <layout class="QHBoxLayout" name="horizontalLayout_2">
       <property name="spacing">
@@ -104,14 +100,14 @@
        <widget class="ClickedLabel" name="close_lb">
         <property name="minimumSize">
          <size>
-          <width>15</width>
-          <height>15</height>
+          <width>14</width>
+          <height>14</height>
          </size>
         </property>
         <property name="maximumSize">
          <size>
-          <width>15</width>
-          <height>15</height>
+          <width>14</width>
+          <height>14</height>
          </size>
         </property>
         <property name="cursor">

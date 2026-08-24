@@ -24,6 +24,11 @@ public:
 
     ClickLbState GetCurState();
 
+    // 直接设置选中/未选中状态（ApplyFriend 推荐标签用：标绿/恢复灰色）
+    bool SetCurState(ClickLbState state);
+    // 恢复未选中状态
+    void ResetNormalState();
+
 private:
     QString _normal;
     QString _normal_hover;

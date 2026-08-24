@@ -22,6 +22,7 @@ qt_add_executable(chat_app
     config.ini
     timerbtn.h timerbtn.cpp
     clickedlabel.h clickedlabel.cpp
+    clickedoncelabel.h clickedoncelabel.cpp
     tcpmgr.h tcpmgr.cpp
     resetdialog.cpp resetdialog.h resetdialog.ui
     usermgr.h usermgr.cpp
