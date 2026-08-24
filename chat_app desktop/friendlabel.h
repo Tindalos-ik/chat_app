@@ -9,7 +9,7 @@ class FriendLabel;
 
 // 好友标签（添加好友申请时填写的"标签"小胶囊）
 // 外形：浅绿圆角胶囊 + 标签文字 + 右上角关闭叉
-// 典型用法（ApplyFriend 里）：
+// 用法（ApplyFriend 里）：
 //   auto *label = new FriendLabel(this);
 //   label->SetText("同事");                     // 设置标签文字
 //   connect(label, &FriendLabel::sig_close, this,
@@ -23,9 +23,9 @@ public:
     ~FriendLabel();
 
     void SetText(const QString &text); // 设置标签文字，并按文字重新计算胶囊尺寸
-    int Width() const;                 // 标签宽度（布局换行时用）
-    int Height() const;                // 标签高度
-    QString Text() const;              // 标签文字
+    int Width() const;
+    int Height() const;
+    QString Text() const;
 
 public slots:
     void slot_close();                 // 点关闭叉：发 sig_close，由外部负责删除自己

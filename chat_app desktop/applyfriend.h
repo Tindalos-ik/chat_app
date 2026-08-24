@@ -4,7 +4,7 @@
 #include <QDialog>
 #include "clickedlabel.h"
 #include "userdata.h"
-//#include "friendLabel.h"
+#include "friendLabel.h"
 
 namespace Ui {
 class ApplyFriend;

@@ -16,7 +16,6 @@ FriendLabel::FriendLabel(QWidget *parent)
     setAttribute(Qt::WA_StyledBackground, true);
     setFrameShape(QFrame::NoFrame); // 样式表已经做了圆角背景，不需要默认边框
 
-    // 点关闭叉 -> 发 sig_close 信号（Clicked 是 ClickedLabel 的点击信号）
     connect(ui->close_lb, &ClickedLabel::Clicked, this, &FriendLabel::slot_close);
 
     // 用 ui 里的默认文字先把尺寸算好，避免刚创建时尺寸是 0
