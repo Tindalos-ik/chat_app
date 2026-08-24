@@ -1,6 +1,7 @@
 #include "chatdialog.h"
 #include "ui_chatdialog.h"
 #include "statewidget.h"
+#include <QApplication>
 #include <QAction>
 #include <QIcon>
 #include <QLineEdit>
@@ -86,8 +87,9 @@ ChatDialog::ChatDialog(QWidget *parent)
     addChatUserList();
     addConUserList();
 
-    // 检测鼠标点击位置判断是否要清空搜索框
-    this->installEventFilter(this); // 根据事件过滤器实现
+    // 全局监听鼠标点击，判断是否要清空搜索框
+    // 注意：必须挂在 qApp 上，挂在 this 上收不到子控件（搜索框/列表/按钮）的点击事件
+    qApp->installEventFilter(this);
 
 }
 
@@ -251,20 +253,31 @@ bool ChatDialog::eventFilter(QObject *watched, QEvent *event)
 
 void ChatDialog::handleGlobalMousePress(QMouseEvent *mouseEvent)
 {
-    // 实现点击位置判断和处理逻辑
-    // 先判断目前是否处于搜索模式，如果不处于搜索模式直接返回
-    if(_cur_mode != 2){
+    // 只有搜索框里有内容时才需要处理（_cur_mode 只表示聊天/好友，不表示搜索态）
+    if (ui->search_edit->text().isEmpty()) {
         return;
     }
 
-    // 将鼠标点击位置转换为搜索列表坐标系中的位置
-    QPointF posInSearchList = ui->search_list->mapFromGlobal(mouseEvent->globalPosition());
-    // 判断点击位置是否在聊天列表的范围内
-    if(!ui->search_list->rect().contains(posInSearchList.toPoint())){
-        // 如果不在搜索框
-        ui->search_list->clear();
-        ui->list_stack->setCurrentIndex(0); // 回到聊天界面
+    // 有模态弹窗打开（比如 FindSuccessDlg）时不处理，避免点弹窗也清掉搜索框
+    if (QApplication::activeModalWidget() != nullptr) {
+        return;
     }
+
+    // 点击搜索框本身：不清理，方便继续编辑搜索内容
+    QPoint posInSearchEdit = ui->search_edit->mapFromGlobal(mouseEvent->globalPosition().toPoint());
+    if (ui->search_edit->rect().contains(posInSearchEdit)) {
+        return;
+    }
+
+    // 点击搜索列表内部（比如"查找用户"提示项）：不清理
+    QPoint posInSearchList = ui->search_list->mapFromGlobal(mouseEvent->globalPosition().toPoint());
+    if (ui->search_list->rect().contains(posInSearchList)) {
+        return;
+    }
+
+    // 点击了搜索列表之外：清空搜索框
+    // textChanged 信号会触发，自动切回 _cur_mode 对应的列表（聊天/好友）
+    ui->search_edit->clear();
 }
 
 void ChatDialog::AddLBGroup(StateWidget *lb)
@@ -280,4 +293,3 @@ void ChatDialog::ClearLabelState(StateWidget *lb)
         }
     }
 }
-
