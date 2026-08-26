@@ -69,6 +69,7 @@ enum ListItemType{
     CONTACT_USER_ITEM, // 联系人用户
     SEARCH_USER_ITEM, // 搜索到的用户
     ADD_USER_TIP_ITEM, // 显示添加用户
+    APPLY_FRIEND_ITEM, // 好友申请入口（联系人页的"新的朋友"）
     INVALID_ITEM, // 不可点击条目
     GRUOP_TIP_ITEM, // 分组显示条目
 };

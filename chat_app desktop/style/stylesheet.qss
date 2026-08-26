@@ -141,6 +141,27 @@ QListWidget#search_list::item:selected{
 }
 
 
+/* ================= 联系人列表 ================= */
+/* "联系人"分组标题 */
+#group_tip {
+    background-color: #f0f1f2;
+}
+
+QLabel#group_tip_lb {
+    color: #999999;
+    font-size: 13px;
+}
+
+/* 整行悬停/选中高亮 */
+QListWidget#contact_list::item:hover{
+   background-color: rgb(206,207,208);
+}
+
+QListWidget#contact_list::item:selected{
+   background-color: rgb(211,215,212);
+}
+
+
 /* ================= ApplyFriend 添加好友弹窗 ================= */
 #ApplyFriend {
     border: 2px solid #f1f1f1;

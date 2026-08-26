@@ -80,6 +80,31 @@ ChatDialog::ChatDialog(QWidget *parent)
     connect(ui->contact_list, &ConUserList::sig_loading_con_user,
             this, &ChatDialog::slot_loading_con_user);
 
+    // 联系人列表："新的朋友"入口点击 -> 好友申请页（TODO: 页面未实现，先占位）
+    connect(ui->contact_list, &ConUserList::sig_switch_apply_friend_page, this, [this]{
+        qDebug() << "switch apply friend page (TODO)";
+    });
+
+    // 联系人列表：点好友 -> 右侧切到好友信息页并填充数据
+    // 测试数据：性别按名字哈希奇偶，昵称/备注基于名字拼接（等后端数据模型就绪后替换）
+    connect(ui->contact_list, &ConUserList::sig_switch_friend_info_page, this, [this](ConUserWid *wid){
+        if (wid == nullptr) {
+            return;
+        }
+        const QString name = wid->GetName();
+        const QString icon = wid->GetIcon();
+        const int sex = qHash(name) % 2; // 0=男 1=女
+        ui->friend_info_page->SetUserInfo(icon, name, sex,
+                                          name + QStringLiteral("的昵称"),
+                                          name + QStringLiteral("的备注"));
+        ui->chat_stack->setCurrentWidget(ui->friend_info_page); // 切到好友信息页
+    });
+
+    // 好友信息页点"发消息"：先回到聊天页（TODO: 真正跳转到该好友的会话）
+    connect(ui->friend_info_page, &FriendInfoPage::sig_jump_chat_item, this, [this]{
+        ui->chat_stack->setCurrentWidget(ui->chat_page);
+    });
+
     // 输入框回车（不带 Shift）→ 发送
     connect(ui->input_edit, &MessageTextEdit::send,
             this, &ChatDialog::on_send_btn_clicked);
@@ -136,6 +161,7 @@ void ChatDialog::addConUserWid(QListWidget *list, const QString &name, const QSt
 {
     auto *item = new QListWidgetItem;
     auto *wid = new ConUserWid;
+    wid->SetItemType(ListItemType::CONTACT_USER_ITEM); // 标记为普通好友，点击时才能分发到好友信息页
     wid->SetUserName(name);
     wid->SetHeadIcon(icon);
     item->setSizeHint(wid->sizeHint());

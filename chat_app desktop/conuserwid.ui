@@ -89,6 +89,37 @@
        <set>Qt::AlignmentFlag::AlignCenter</set>
       </property>
      </widget>
+     <widget class="QLabel" name="red_point">
+      <property name="geometry">
+       <rect>
+        <x>30</x>
+        <y>2</y>
+        <width>18</width>
+        <height>18</height>
+       </rect>
+      </property>
+      <property name="minimumSize">
+       <size>
+        <width>18</width>
+        <height>18</height>
+       </size>
+      </property>
+      <property name="maximumSize">
+       <size>
+        <width>18</width>
+        <height>18</height>
+       </size>
+      </property>
+      <property name="visible">
+       <bool>false</bool>
+      </property>
+      <property name="styleSheet">
+       <string notr="true">border-image: url(:/res/red_point.png);</string>
+      </property>
+      <property name="text">
+       <string/>
+      </property>
+     </widget>
     </widget>
    </item>
    <item>

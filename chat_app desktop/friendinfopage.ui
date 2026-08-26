@@ -1,0 +1,476 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>FriendInfoPage</class>
+ <widget class="QWidget" name="FriendInfoPage">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>789</width>
+    <height>511</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Form</string>
+  </property>
+  <property name="styleSheet">
+   <string notr="true">QWidget#FriendInfoPage { background-color: #ffffff; }
+
+QLabel#name_lb { font-size: 22px; font-weight: bold; color: #161616; }
+
+QLabel#nick_tip, QLabel#nick_lb, QLabel#bak_tip, QLabel#bak_lb {
+    font-size: 14px;
+    color: #888888;
+}
+
+QPushButton#msg_chat {
+    border: none;
+    border-image: url(:/res/msg_chat_normal.png);
+}
+QPushButton#msg_chat:hover { border-image: url(:/res/msg_chat_hover.png); }
+QPushButton#msg_chat:pressed { border-image: url(:/res/msg_chat_press.png); }
+
+QPushButton#voice_chat {
+    border: none;
+    border-image: url(:/res/voice_chat_normal.png);
+}
+QPushButton#voice_chat:hover { border-image: url(:/res/voice_chat_hover.png); }
+QPushButton#voice_chat:pressed { border-image: url(:/res/voice_chat_press.png); }
+
+QPushButton#video_chat {
+    border: none;
+    border-image: url(:/res/video_chat_normal.png);
+}
+QPushButton#video_chat:hover { border-image: url(:/res/video_chat_hover.png); }
+QPushButton#video_chat:pressed { border-image: url(:/res/video_chat_press.png); }</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <property name="leftMargin">
+    <number>100</number>
+   </property>
+   <property name="topMargin">
+    <number>100</number>
+   </property>
+   <property name="rightMargin">
+    <number>100</number>
+   </property>
+   <property name="bottomMargin">
+    <number>60</number>
+   </property>
+   <item>
+    <widget class="QWidget" name="user_info_wid" native="true">
+     <layout class="QHBoxLayout" name="user_info_layout">
+      <property name="spacing">
+       <number>20</number>
+      </property>
+      <property name="leftMargin">
+       <number>0</number>
+      </property>
+      <property name="topMargin">
+       <number>0</number>
+      </property>
+      <property name="rightMargin">
+       <number>0</number>
+      </property>
+      <property name="bottomMargin">
+       <number>0</number>
+      </property>
+      <item>
+       <widget class="QLabel" name="icon_lb">
+        <property name="minimumSize">
+         <size>
+          <width>85</width>
+          <height>85</height>
+         </size>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>85</width>
+          <height>85</height>
+         </size>
+        </property>
+        <property name="text">
+         <string/>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QWidget" name="detail_wid" native="true">
+        <layout class="QVBoxLayout" name="detail_layout">
+         <property name="spacing">
+          <number>6</number>
+         </property>
+         <property name="leftMargin">
+          <number>0</number>
+         </property>
+         <property name="topMargin">
+          <number>0</number>
+         </property>
+         <property name="rightMargin">
+          <number>0</number>
+         </property>
+         <property name="bottomMargin">
+          <number>0</number>
+         </property>
+         <item>
+          <widget class="QWidget" name="name_wid" native="true">
+           <property name="minimumSize">
+            <size>
+             <width>0</width>
+             <height>40</height>
+            </size>
+           </property>
+           <property name="maximumSize">
+            <size>
+             <width>16777215</width>
+             <height>40</height>
+            </size>
+           </property>
+           <layout class="QHBoxLayout" name="name_layout">
+            <property name="spacing">
+             <number>8</number>
+            </property>
+            <property name="leftMargin">
+             <number>0</number>
+            </property>
+            <property name="topMargin">
+             <number>0</number>
+            </property>
+            <property name="rightMargin">
+             <number>0</number>
+            </property>
+            <property name="bottomMargin">
+             <number>0</number>
+            </property>
+            <item>
+             <widget class="QLabel" name="name_lb">
+              <property name="minimumSize">
+               <size>
+                <width>40</width>
+                <height>0</height>
+               </size>
+              </property>
+              <property name="text">
+               <string>名字</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QLabel" name="sex_lb">
+              <property name="minimumSize">
+               <size>
+                <width>40</width>
+                <height>40</height>
+               </size>
+              </property>
+              <property name="maximumSize">
+               <size>
+                <width>40</width>
+                <height>40</height>
+               </size>
+              </property>
+              <property name="text">
+               <string/>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <spacer name="name_spacer">
+              <property name="orientation">
+               <enum>Qt::Orientation::Horizontal</enum>
+              </property>
+              <property name="sizeHint" stdset="0">
+               <size>
+                <width>40</width>
+                <height>20</height>
+               </size>
+              </property>
+             </spacer>
+            </item>
+           </layout>
+          </widget>
+         </item>
+         <item>
+          <widget class="QWidget" name="nick_wid" native="true">
+           <property name="minimumSize">
+            <size>
+             <width>0</width>
+             <height>30</height>
+            </size>
+           </property>
+           <property name="maximumSize">
+            <size>
+             <width>16777215</width>
+             <height>30</height>
+            </size>
+           </property>
+           <layout class="QHBoxLayout" name="nick_layout">
+            <property name="leftMargin">
+             <number>0</number>
+            </property>
+            <property name="topMargin">
+             <number>0</number>
+            </property>
+            <property name="rightMargin">
+             <number>0</number>
+            </property>
+            <property name="bottomMargin">
+             <number>0</number>
+            </property>
+            <item>
+             <widget class="QLabel" name="nick_tip">
+              <property name="minimumSize">
+               <size>
+                <width>0</width>
+                <height>30</height>
+               </size>
+              </property>
+              <property name="maximumSize">
+               <size>
+                <width>50</width>
+                <height>30</height>
+               </size>
+              </property>
+              <property name="text">
+               <string>昵称：</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QLabel" name="nick_lb">
+              <property name="text">
+               <string>昵称</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <spacer name="nick_spacer">
+              <property name="orientation">
+               <enum>Qt::Orientation::Horizontal</enum>
+              </property>
+              <property name="sizeHint" stdset="0">
+               <size>
+                <width>40</width>
+                <height>20</height>
+               </size>
+              </property>
+             </spacer>
+            </item>
+           </layout>
+          </widget>
+         </item>
+         <item>
+          <widget class="QWidget" name="bak_wid" native="true">
+           <property name="minimumSize">
+            <size>
+             <width>0</width>
+             <height>30</height>
+            </size>
+           </property>
+           <property name="maximumSize">
+            <size>
+             <width>16777215</width>
+             <height>30</height>
+            </size>
+           </property>
+           <layout class="QHBoxLayout" name="bak_layout">
+            <property name="leftMargin">
+             <number>0</number>
+            </property>
+            <property name="topMargin">
+             <number>0</number>
+            </property>
+            <property name="rightMargin">
+             <number>0</number>
+            </property>
+            <property name="bottomMargin">
+             <number>0</number>
+            </property>
+            <item>
+             <widget class="QLabel" name="bak_tip">
+              <property name="minimumSize">
+               <size>
+                <width>0</width>
+                <height>30</height>
+               </size>
+              </property>
+              <property name="maximumSize">
+               <size>
+                <width>50</width>
+                <height>30</height>
+               </size>
+              </property>
+              <property name="text">
+               <string>备注：</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QLabel" name="bak_lb">
+              <property name="text">
+               <string>备注</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <spacer name="bak_spacer">
+              <property name="orientation">
+               <enum>Qt::Orientation::Horizontal</enum>
+              </property>
+              <property name="sizeHint" stdset="0">
+               <size>
+                <width>40</width>
+                <height>20</height>
+               </size>
+              </property>
+             </spacer>
+            </item>
+           </layout>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QWidget" name="action_wid" native="true">
+     <layout class="QHBoxLayout" name="action_layout">
+      <property name="spacing">
+       <number>40</number>
+      </property>
+      <property name="leftMargin">
+       <number>0</number>
+      </property>
+      <property name="topMargin">
+       <number>0</number>
+      </property>
+      <property name="rightMargin">
+       <number>0</number>
+      </property>
+      <property name="bottomMargin">
+       <number>0</number>
+      </property>
+      <item>
+       <spacer name="action_left_spacer">
+        <property name="orientation">
+         <enum>Qt::Orientation::Horizontal</enum>
+        </property>
+        <property name="sizeHint" stdset="0">
+         <size>
+          <width>40</width>
+          <height>20</height>
+         </size>
+        </property>
+       </spacer>
+      </item>
+      <item>
+       <widget class="QPushButton" name="msg_chat">
+        <property name="minimumSize">
+         <size>
+          <width>50</width>
+          <height>50</height>
+         </size>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>50</width>
+          <height>50</height>
+         </size>
+        </property>
+        <property name="cursor">
+         <cursorShape>PointingHandCursor</cursorShape>
+        </property>
+        <property name="toolTip">
+         <string>发消息</string>
+        </property>
+        <property name="text">
+         <string/>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="voice_chat">
+        <property name="minimumSize">
+         <size>
+          <width>50</width>
+          <height>50</height>
+         </size>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>50</width>
+          <height>50</height>
+         </size>
+        </property>
+        <property name="cursor">
+         <cursorShape>PointingHandCursor</cursorShape>
+        </property>
+        <property name="toolTip">
+         <string>语音通话</string>
+        </property>
+        <property name="text">
+         <string/>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="video_chat">
+        <property name="minimumSize">
+         <size>
+          <width>50</width>
+          <height>50</height>
+         </size>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>50</width>
+          <height>50</height>
+         </size>
+        </property>
+        <property name="cursor">
+         <cursorShape>PointingHandCursor</cursorShape>
+        </property>
+        <property name="toolTip">
+         <string>视频通话</string>
+        </property>
+        <property name="text">
+         <string/>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <spacer name="action_right_spacer">
+        <property name="orientation">
+         <enum>Qt::Orientation::Horizontal</enum>
+        </property>
+        <property name="sizeHint" stdset="0">
+         <size>
+          <width>40</width>
+          <height>20</height>
+         </size>
+        </property>
+       </spacer>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <spacer name="verticalSpacer">
+     <property name="orientation">
+      <enum>Qt::Orientation::Vertical</enum>
+     </property>
+     <property name="sizeHint" stdset="0">
+      <size>
+       <width>20</width>
+       <height>40</height>
+      </size>
+     </property>
+    </spacer>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
