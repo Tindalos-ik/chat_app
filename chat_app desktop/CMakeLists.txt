@@ -45,6 +45,8 @@ qt_add_executable(chat_app
     adduseritem.h adduseritem.cpp adduseritem.ui
     findsuccessdlg.h findsuccessdlg.cpp findsuccessdlg.ui
     friendinfopage.h friendinfopage.cpp friendinfopage.ui
+    applyfriendpage.h applyfriendpage.cpp applyfriendpage.ui
+    applyfrienditem.h applyfrienditem.cpp applyfrienditem.ui
     applyfriend.h applyfriend.cpp applyfriend.ui
     clickedoncelabel.h clickedoncelabel.cpp
     friendlabel.h friendlabel.cpp friendlabel.ui

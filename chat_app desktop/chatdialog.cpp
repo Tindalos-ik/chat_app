@@ -80,9 +80,9 @@ ChatDialog::ChatDialog(QWidget *parent)
     connect(ui->contact_list, &ConUserList::sig_loading_con_user,
             this, &ChatDialog::slot_loading_con_user);
 
-    // 联系人列表："新的朋友"入口点击 -> 好友申请页（TODO: 页面未实现，先占位）
+    // 联系人列表："新的朋友"入口点击 -> 右侧切到好友申请页（已添加/未添加好友列表）
     connect(ui->contact_list, &ConUserList::sig_switch_apply_friend_page, this, [this]{
-        qDebug() << "switch apply friend page (TODO)";
+        ui->chat_stack->setCurrentWidget(ui->apply_friend_page);
     });
 
     // 联系人列表：点好友 -> 右侧切到好友信息页并填充数据
@@ -136,10 +136,20 @@ void ChatDialog::addChatUserList()
 
 void ChatDialog::addConUserList()
 {
+    // 测试数据：循环使用一组中文名，超过 10 个加序号区分
+    static const QString kTestNames[] = {
+        QStringLiteral("小明"), QStringLiteral("小红"), QStringLiteral("小刚"),
+        QStringLiteral("小丽"), QStringLiteral("阿伟"), QStringLiteral("婷婷"),
+        QStringLiteral("大壮"), QStringLiteral("翠花"), QStringLiteral("老张"),
+        QStringLiteral("老王")
+    };
+
     for (int i = _loaded_con_count; i <= _loaded_con_count+30; ++i) {
-        addConUserWid(ui->contact_list,
-                       QStringLiteral("用户%1").arg(i),
-                       kHeadIcons[i % 5]);
+        QString name = kTestNames[i % 10];
+        if (i >= 10) {
+            name += QString::number(i / 10); // 重名时加序号
+        }
+        addConUserWid(ui->contact_list, name, kHeadIcons[i % 5]);
     }
 }
 
@@ -161,9 +171,7 @@ void ChatDialog::addConUserWid(QListWidget *list, const QString &name, const QSt
 {
     auto *item = new QListWidgetItem;
     auto *wid = new ConUserWid;
-    wid->SetItemType(ListItemType::CONTACT_USER_ITEM); // 标记为普通好友，点击时才能分发到好友信息页
-    wid->SetUserName(name);
-    wid->SetHeadIcon(icon);
+    wid->SetInfo(0, name, icon); // 联系人信息接口：类型 + 名字 + 头像一步到位
     item->setSizeHint(wid->sizeHint());
     list->addItem(item);
     list->setItemWidget(item, wid);

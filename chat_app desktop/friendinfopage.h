@@ -30,7 +30,7 @@ private slots:
 
 private:
     Ui::FriendInfoPage *ui;
-    QString _icon; // 当前好友头像路径，跳聊天页时用
+    QString _icon; // 当前好友头像路径
 };
 
 #endif // FRIENDINFOPAGE_H

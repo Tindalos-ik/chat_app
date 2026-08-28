@@ -568,6 +568,7 @@ QPushButton:pressed { background-color: #059a4c; }</string>
        </layout>
       </widget>
       <widget class="FriendInfoPage" name="friend_info_page" native="true"/>
+      <widget class="ApplyFriendPage" name="apply_friend_page" native="true"/>
      </widget>
     </item>
    </layout>
@@ -602,6 +603,11 @@ QPushButton:pressed { background-color: #059a4c; }</string>
    <class>FriendInfoPage</class>
    <extends>QWidget</extends>
    <header location="global">friendinfopage.h</header>
+  </customwidget>
+  <customwidget>
+   <class>ApplyFriendPage</class>
+   <extends>QWidget</extends>
+   <header location="global">applyfriendpage.h</header>
   </customwidget>
   <customwidget>
    <class>StateWidget</class>
