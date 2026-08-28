@@ -53,3 +53,6 @@ Thumbs.db
 # 笔记中的图片文件
 note/assets
 note/assets/*
+
+# 代码审查
+preview.md

@@ -32,10 +32,12 @@ message GetVarifyRsp { // 定义一个响应消息
     string code = 3;
 }
 
+// 获取聊天服务器请求消息
 message GetChatServerReq {
     int32 uid = 1;
 }
 
+// 获取聊天服务器回包消息
 message GetChatServerRsp {
     int32 error = 1;
     string host = 2;
@@ -58,5 +60,89 @@ service StatusService {
     rpc GetChatServer (GetChatServerReq) returns (GetChatServerRsp) {}
     rpc Login (LoginReq) returns (LoginRsp) {}
 }
+
+
+// 聊天服务器之间的rpc通信
+
+// 添加好友请求
+message AddFriendReq {
+    int32 applyuid = 1; // 申请用户id
+    string name = 2;
+    string desc = 3;
+    int32 touid = 4; // 被申请用户id
+}
+
+message AddFriendRsp {
+    int32 error = 1;
+    int32 applyuid = 2;
+    string name = 3;
+}
+
+// 处理好友申请
+message RplyFriendReq{
+    int32 rplyuid = 1;
+    bool agree = 2;
+    int32 touid = 3;
+}
+
+message RplyFriendRsp{
+    int32 error = 1;
+    int32 rplyuid = 2;
+    bool touid = 3;
+}
+
+// 发送消息
+message SendChatMsgReq{
+    int32 fromuid = 1;
+    int32 touid = 2;
+    string message = 3;
+}
+
+message SendChatMsgRsp{
+    int32 error = 1;
+    int32 fromuid = 2;
+    int32 touid = 3;
+}
+
+// 好友认证通知，告诉对端我同意/拒绝了好友申请
+message AuthFriendReq{
+    int32 uid = 1;
+    int32 touid = 2;
+}
+
+message AuthFriendRsp{
+    int32 error = 1;
+    int32 uid = 2;
+    int32 touid = 3;
+}
+
+message TextChatMsgReq{
+    int32 fromuid = 1;
+    int32 touid = 2;
+    repeated TextChatData textmsgs = 3;
+}
+
+message TextChatMsgRsp{
+    int32 error = 1;
+    int32 fromuid = 2;
+    int32 touid = 3;
+}
+
+// 文本消息数据
+message TextChatData{
+    string msgid = 1;
+    string msgcontent = 2;
+}
+
+// 聊天服务器的服务
+service ChatService {
+    rpc NotifyAddFriend (AddFriendReq) returns (AddFriendRsp) {} // 发起好友申请
+    rpc RplyAddFriend (RplyFriendReq) returns (RplyFriendRsp) {} // 处理好友申请
+    rpc SendChatMsg (SendChatMsgReq) returns (SendChatMsgRsp) {} // 发送聊天信息
+    rpc NotifyAuthFriend (AuthFriendReq) returns (AuthFriendRsp) {} // 好友认证通知
+    rpc NotifyTextChatMsg (TextChatMsgReq) returns (TextChatMsgRsp) {} // 批量推送聊天消息
+}
+
+
 
 
