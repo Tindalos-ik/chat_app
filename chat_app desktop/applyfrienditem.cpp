@@ -23,6 +23,9 @@ QSize ApplyFriendItem::sizeHint() const
 
 void ApplyFriendItem::SetInfo(const QString &name, const QString &icon, const QString &status)
 {
+    _name = name;
+    _icon = icon;
+    _status = status;
     ui->user_name_lb->setText(name);
 
     // 圆形头像（和列表头像同一套画法）
@@ -48,4 +51,31 @@ void ApplyFriendItem::SetInfo(const QString &name, const QString &icon, const QS
     } else {
         ui->status_lb->setStyleSheet(QStringLiteral("color: #999999;"));
     }
+}
+
+void ApplyFriendItem::SetStatus(const QString &status)
+{
+    _status = status;
+    ui->status_lb->setText(status);
+    // 可操作的"好友申请"用主题绿提示，其余灰色
+    if (status == QStringLiteral("好友申请")) {
+        ui->status_lb->setStyleSheet(QStringLiteral("color: #07c160;"));
+    } else {
+        ui->status_lb->setStyleSheet(QStringLiteral("color: #999999;"));
+    }
+}
+
+QString ApplyFriendItem::GetName() const
+{
+    return _name;
+}
+
+QString ApplyFriendItem::GetIcon() const
+{
+    return _icon;
+}
+
+QString ApplyFriendItem::GetStatus() const
+{
+    return _status;
 }

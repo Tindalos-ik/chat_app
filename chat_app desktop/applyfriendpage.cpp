@@ -1,6 +1,7 @@
 #include "applyfriendpage.h"
 #include "ui_applyfriendpage.h"
 #include "applyfrienditem.h"
+#include "authenfriend.h"
 #include <QListWidgetItem>
 
 ApplyFriendPage::ApplyFriendPage(QWidget *parent)
@@ -8,6 +9,25 @@ ApplyFriendPage::ApplyFriendPage(QWidget *parent)
     , ui(new Ui::ApplyFriendPage)
 {
     ui->setupUi(this);
+
+    // 点击条目：只有"好友申请"（别人申请添加我）能打开同意弹窗
+    connect(ui->friend_list, &QListWidget::itemClicked, this, [this](QListWidgetItem *item){
+        auto *wid = qobject_cast<ApplyFriendItem*>(ui->friend_list->itemWidget(item));
+        if (wid == nullptr || wid->GetStatus() != QStringLiteral("好友申请")) {
+            return;
+        }
+
+        auto *dlg = new AuthenFriend(this);
+        dlg->SetApplyInfo(wid->GetName(), wid->GetIcon(),
+                          QStringLiteral("你好，我是%1，想加你为好友。").arg(wid->GetName()));
+        // 同意后：测试行为——条目状态改成"已添加"（等后端协议就绪后换成真正的加好友逻辑）
+        connect(dlg, &AuthenFriend::sig_auth_agreed, this, [this, wid](const QString &name){
+            Q_UNUSED(name);
+            wid->SetStatus(QStringLiteral("已添加"));
+        });
+        dlg->show();
+    });
+
     LoadTestData(); // 进来就能看到测试数据
 }
 

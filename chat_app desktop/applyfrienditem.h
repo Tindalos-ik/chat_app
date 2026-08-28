@@ -22,9 +22,17 @@ public:
 
     // 设置条目内容：名字、头像、右侧状态
     void SetInfo(const QString &name, const QString &icon, const QString &status);
+    // 更新右侧状态（同意申请后改成"已添加"）
+    void SetStatus(const QString &status);
+    QString GetName() const;   // 取名字（同意弹窗用）
+    QString GetIcon() const;   // 取头像（同意弹窗用）
+    QString GetStatus() const; // 取状态（判断是否可同意）
 
 private:
     Ui::ApplyFriendItem *ui;
+    QString _name;   // 名字
+    QString _icon;   // 头像路径
+    QString _status; // 状态：已添加/好友申请/等待对方同意
 };
 
 #endif // APPLYFRIENDITEM_H
