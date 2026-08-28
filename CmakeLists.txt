@@ -6,7 +6,8 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # 添加子项目目录，可以理解成一个个模块
-add_subdirectory(ChatServer)
+add_subdirectory(ChatServer1)
+add_subdirectory(ChatServer2)
 add_subdirectory(GateServer)
 add_subdirectory(StatusServer)
 

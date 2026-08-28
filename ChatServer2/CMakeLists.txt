@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(ChatServer)
+project(ChatServer2)
 
 add_compile_options(/utf-8 /wd4819) #忽略编码警告
 
