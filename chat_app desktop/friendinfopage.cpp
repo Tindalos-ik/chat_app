@@ -20,6 +20,7 @@ FriendInfoPage::~FriendInfoPage()
 void FriendInfoPage::SetUserInfo(const QString &icon, const QString &name, int sex,
                                  const QString &nick, const QString &bak)
 {
+    _name = name;
     _icon = icon;
 
     // 头像：加载并裁剪成圆形（和列表头像同一套画法）
@@ -50,7 +51,7 @@ void FriendInfoPage::SetUserInfo(const QString &icon, const QString &name, int s
 
 void FriendInfoPage::on_msg_chat_clicked()
 {
-    // 点"发消息"：跳到与该好友的聊天界面（TODO: 聊天页切换逻辑未实现）
-    qDebug() << "msg chat btn clicked, icon =" << _icon;
-    emit sig_jump_chat_item();
+    // 点"发消息"：把好友名字/头像带出去，由 ChatDialog 切聊天页并更新标题
+    qDebug() << "msg chat btn clicked:" << _name;
+    emit sig_jump_chat_item(_name, _icon);
 }

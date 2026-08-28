@@ -23,13 +23,15 @@ public:
                      const QString &nick, const QString &bak);
 
 signals:
-    void sig_jump_chat_item(); // 点"发消息"：跳转到与该好友的聊天页（TODO: 未实现）
+    // 点"发消息"：携带好友名字/头像，跳转到与该好友的聊天页（TODO: 加载历史消息）
+    void sig_jump_chat_item(const QString &name, const QString &icon);
 
 private slots:
     void on_msg_chat_clicked();
 
 private:
     Ui::FriendInfoPage *ui;
+    QString _name; // 当前好友名字，跳聊天页时用
     QString _icon; // 当前好友头像路径
 };
 

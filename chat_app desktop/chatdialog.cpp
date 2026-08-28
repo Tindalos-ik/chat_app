@@ -110,8 +110,10 @@ ChatDialog::ChatDialog(QWidget *parent)
         ui->chat_stack->setCurrentWidget(ui->friend_info_page); // 切到好友信息页
     });
 
-    // 好友信息页点"发消息"：先回到聊天页（TODO: 真正跳转到该好友的会话）
-    connect(ui->friend_info_page, &FriendInfoPage::sig_jump_chat_item, this, [this]{
+    // 好友信息页点"发消息"：聊天标题换成该好友并切到聊天页（TODO: 加载历史消息）
+    connect(ui->friend_info_page, &FriendInfoPage::sig_jump_chat_item, this, [this](const QString &name, const QString &icon){
+        Q_UNUSED(icon); // 头像后续做会话头像时用
+        ui->chat_title_label->setText(name); // 标题显示对应联系人
         ui->chat_stack->setCurrentWidget(ui->chat_page);
     });
 
