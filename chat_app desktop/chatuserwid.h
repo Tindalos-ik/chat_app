@@ -26,9 +26,13 @@ public:
     void SetTime(const QString &time);
     void SetHeadIcon(const QString &icon_path); // 加载头像并裁剪成圆形
     void ShowRedPoint(bool show);              // 未读红点
+    QString GetName() const; // 取联系人名字（点击条目后聊天标题用）
+    QString GetIcon() const; // 取头像路径
 
 private:
     Ui::ChatUserWid *ui;
+    QString _name; // 联系人名字
+    QString _icon; // 头像资源路径
 };
 
 #endif // CHATUSERWID_H

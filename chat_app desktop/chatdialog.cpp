@@ -77,6 +77,16 @@ ChatDialog::ChatDialog(QWidget *parent)
     connect(ui->session_list, &ChatUserList::sig_loading_chat_user,
             this, &ChatDialog::slot_loading_chat_user);
 
+    // 点击聊天列表条目 -> 聊天标题换成对应联系人，并切回聊天页
+    connect(ui->session_list, &QListWidget::itemClicked, this, [this](QListWidgetItem *item){
+        auto *wid = qobject_cast<ChatUserWid*>(ui->session_list->itemWidget(item));
+        if (wid == nullptr) {
+            return;
+        }
+        ui->chat_title_label->setText(wid->GetName()); // 标题显示联系人名字
+        ui->chat_stack->setCurrentWidget(ui->chat_page); // 回到聊天页
+    });
+
     connect(ui->contact_list, &ConUserList::sig_loading_con_user,
             this, &ChatDialog::slot_loading_con_user);
 
