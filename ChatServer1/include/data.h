@@ -15,4 +15,12 @@ struct UserInfo {
     std::string icon;
 };
 
+struct ApplyInfo {
+    int _uid;
+    std::string _user;
+    std::string _desc;
+    std::string _icon;
+    std::string _nick;
+};
+
 #endif // DATA_H

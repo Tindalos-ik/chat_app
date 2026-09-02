@@ -1,6 +1,7 @@
 #include "CServer.h"
 #include "AsioIOServicePool.h"
 #include <iostream>
+#include "UserMgr.h"
 
 using boost::asio::ip::tcp;
 
@@ -46,10 +47,12 @@ void CServer::HandleAccept(std::shared_ptr<CSession> new_session,
 
 // 会话断开/异常时调用：从 map 中移除会话
 void CServer::ClearSession(std::string session_id) {
-    std::lock_guard<std::mutex> lock(_mutex);
-    auto it = _sessions.find(session_id);
-    if (it != _sessions.end()) {
-        _sessions.erase(it);
-        std::cout << "session cleared, id = " << session_id << std::endl;
+    if(_sessions.find(session_id) != _sessions.end()) {
+        // 移除用户与session的关联
+        UserMgr::GetInstance()->RmvUserSession(_sessions[session_id]->GetUserId());
+    }
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        _sessions.erase(session_id);
     }
 }
