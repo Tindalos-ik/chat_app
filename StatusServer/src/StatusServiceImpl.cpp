@@ -86,7 +86,7 @@ Status StatusServiceImpl::Login(ServerContext *context, const LoginReq *request,
 }
 
 
-ChatServer& StatusServiceImpl::getChatServer()
+ChatServer StatusServiceImpl::getChatServer()
 {
     std::lock_guard<std::mutex> lock(_server_mtx);
     auto minServer = _servers.begin()->second;

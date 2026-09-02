@@ -68,7 +68,7 @@ private:
      * 
      * @return ChatServer 选中的聊天服务器信息
      */
-    ChatServer& getChatServer();
+    ChatServer getChatServer();
 
     std::unordered_map<std::string,ChatServer> _servers;    // 这里得用哈希表存服务器列表，服务器名字->服务器信息，因为服务器是结构体，没有哈希函数
 
