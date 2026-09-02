@@ -2,6 +2,10 @@ cmake_minimum_required(VERSION 3.10)
 project(chat_app)
 
 # 设置一些全局变量，所有子项目都能看见
+if(MSVC)
+    add_compile_options(/utf-8 /wd4819)
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 

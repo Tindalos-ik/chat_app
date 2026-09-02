@@ -137,7 +137,24 @@ target_link_libraries(chat_proto PUBLIC
 )
 ```
 
-`GateServer`、`StatusServer`、`ChatServer1` 和 `ChatServer2` 只需要链接 `chat_proto`，不再自行调用 `protoc`，也不再把生成源码重复加入自己的目标。
+`chat_proto` 使用 `PUBLIC` 方式暴露 `PROTO_GEN_DIR`，因此链接它的服务会自动获得生成头文件的搜索路径。四个服务的 CMake 不需要再手动添加 `${PROTO_GEN_DIR}`，只需要链接公共协议库：
+
+```cmake
+target_link_libraries(${PROJECT_NAME}
+    chat_proto
+    gRPC::grpc++
+    protobuf::libprotobuf
+)
+```
+
+源码中仍然直接引用生成头文件即可：
+
+```cpp
+#include "message.grpc.pb.h"
+#include "message.pb.h"
+```
+
+`GateServer`、`StatusServer`、`ChatServer1` 和 `ChatServer2` 不再自行调用 `protoc`，也不再把生成源码重复加入自己的目标。这样既能保证 include 路径正确，也能避免服务继续依赖已经删除的旧 `proto_gen` 目录。
 
 ---
 

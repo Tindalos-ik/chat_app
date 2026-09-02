@@ -8,12 +8,8 @@ add_compile_options(/utf-8 /wd4819) #忽略编码警告
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(redis++ CONFIG REQUIRED)
-
 # 指定 vcpkg 工具链路径
 set(CMAKE_TOOLCHAIN_FILE "D:/cppsoft/vcpkg/scripts/buildsystems/vcpkg.cmake" CACHE PATH "")
-
-# 依赖由顶层 CMake 查找，StatusServer 只声明自身额外依赖。
 find_package(redis++ CONFIG REQUIRED)
 
 
@@ -44,7 +40,6 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     "C:/local/boost_1_91_0"
     ${CMAKE_CURRENT_SOURCE_DIR}/jsoncpp/json
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${PROTO_GEN_DIR}  # 生成的头文件路径
     "D:/cppsoft/vcpkg/installed/x64-windows/include"   # 添加 vcpkg 的 include 路径
 )
 
