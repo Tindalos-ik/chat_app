@@ -8,6 +8,9 @@ void MainWindow::SlotSwitchReg()
     // 使用堆叠窗口的setCurrentWidget方法切换到注册界面
     // 这个方法会自动隐藏当前界面，显示目标界面，不会删除任何组件
     _stacked_widget->setCurrentWidget(_reg_dlg);
+    _chat_dlg->setMinimumSize(0, 0);
+    setMinimumSize(300, 500);
+    resize(300, 500);
 }
 
 // 切换到登录界面的槽函数实现
@@ -15,17 +18,24 @@ void MainWindow::SlotSwitchLogin()
 {
     // 使用堆叠窗口的setCurrentWidget方法切换回登录界面
     _stacked_widget->setCurrentWidget(_login_dlg);
+    _chat_dlg->setMinimumSize(0, 0);
+    setMinimumSize(300, 500);
     resize(300, 500);
 }
 
 void MainWindow::SlotSwitchReset()
 {
     _stacked_widget->setCurrentWidget(_reset_dlg);
+    _chat_dlg->setMinimumSize(0, 0);
+    setMinimumSize(300, 500);
+    resize(300, 500);
 }
 
 void MainWindow::SlotSwitchChat()
 {
     _stacked_widget->setCurrentWidget(_chat_dlg);
+    _chat_dlg->setMinimumSize(800, 600);
+    setMinimumSize(800, 600);
     resize(1000, 750);
 }
 
@@ -57,6 +67,9 @@ MainWindow::MainWindow(QWidget *parent)
     // setCurrentWidget()方法会显示指定的部件，隐藏其他所有部件
     // 这里设置登录对话框为初始显示界面
     _stacked_widget->setCurrentWidget(_login_dlg);
+    _chat_dlg->setMinimumSize(0, 0);
+    setMinimumSize(300, 500);
+    resize(300, 500);
 
     // 当登录对话框发出switchRegister信号时，执行切换到注册界面的槽函数
     connect(_login_dlg, &LoginDialog::switchRegister, this, &MainWindow::SlotSwitchReg);
@@ -71,7 +84,7 @@ MainWindow::MainWindow(QWidget *parent)
     //当接收到登录成功信息的时候，切换聊天界面
     connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_switch_chatdlg, this, &MainWindow::SlotSwitchChat);
 
-    emit TcpMgr::GetInstance()->sig_switch_chatdlg();
+    //emit TcpMgr::GetInstance()->sig_switch_chatdlg();
 
 }
 
