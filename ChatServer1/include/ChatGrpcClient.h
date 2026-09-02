@@ -1,4 +1,4 @@
-#pragma
+#pragma once
 #ifndef CHAT_GRPC_CLIENT_H
 #define CHAT_GRPC_CLIENT_H
 #include "const.h"
