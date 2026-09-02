@@ -12,6 +12,7 @@ cmake_install.cmake
 *.sln
 *.tlog
 *.lastbuildstate
+CMakePresets.json
 
 # ==================== IDE / 编辑器 ====================
 .vscode/

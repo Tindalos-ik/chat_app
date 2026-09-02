@@ -30,7 +30,7 @@
 
 ## 文档规范
 
-* 文档风格：中文、叙述式、带"为什么"、表格 + 代码块 + `>` 提示，参考 note/ 现有笔记。
+* 文档风格：中文、叙述式、带"为什么"、表格 + 代码块 + `>` 提示，参考 note/ 现有笔记，笔记风格简约，不需要太多粗笔
 * 新文档放 note/，文件名用中文；写完后更新 AGENT.md 文末索引。
 
 ## 文档索引
@@ -49,3 +49,4 @@
 | [MySQL连接库.md](note/MySQL连接库.md) | X DevAPI / mysqlcppconnx |
 | [Qt知识点.md](note/Qt知识点.md) | Qt 类设计、信号槽、事件 |
 | [Qt网络编程.md](note/Qt网络编程.md) | HTTP/TCP 编程、粘包 |
+| [json.md](note/json.md) | JSON 在客户端、C++ 服务端和 Node.js 配置中的使用 |
