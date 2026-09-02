@@ -27,7 +27,8 @@ std::string generate_unique_string(){
 StatusServiceImpl::StatusServiceImpl()
 {
     auto& config = ConfigMgr::Inst();
-    auto server_list = config["ChatServers"]["servers"];
+    // config.ini 里 [ChatServers] 下的键是 name（name = ChatServer1,ChatServer2）
+    auto server_list = config["ChatServers"]["name"];
 
     // 将字符串按逗号分隔
     std::vector<std::string> words;
@@ -40,7 +41,7 @@ StatusServiceImpl::StatusServiceImpl()
 
     for(auto& name : words){
         if(config[name]["name"].empty()) continue;
-        ChatServer server = {config[name]["host"], config[name]["port"], word, 0};
+        ChatServer server = {config[name]["host"], config[name]["port"], config[name]["name"], 0};
         _servers[name] = server;
     }
 
