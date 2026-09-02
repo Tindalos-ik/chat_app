@@ -5,6 +5,59 @@ project(chat_app)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# ==================== 公共 protobuf/gRPC 代码生成 ====================
+# 所有 C++ 服务共用根目录下这一份协议，避免每个子项目重复调用 protoc。
+find_package(gRPC CONFIG REQUIRED)
+find_package(Protobuf CONFIG REQUIRED)
+
+get_target_property(Protobuf_PROTOC_EXECUTABLE protobuf::protoc IMPORTED_LOCATION_RELEASE)
+if(NOT Protobuf_PROTOC_EXECUTABLE)
+    get_target_property(Protobuf_PROTOC_EXECUTABLE protobuf::protoc IMPORTED_LOCATION)
+endif()
+
+get_target_property(gRPC_CPP_PLUGIN gRPC::grpc_cpp_plugin IMPORTED_LOCATION_RELEASE)
+if(NOT gRPC_CPP_PLUGIN)
+    get_target_property(gRPC_CPP_PLUGIN gRPC::grpc_cpp_plugin IMPORTED_LOCATION)
+endif()
+
+set(PROTO_SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/proto/message.proto)
+set(PROTO_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/proto_gen)
+set(PROTO_GENERATED_FILES
+    ${PROTO_GEN_DIR}/message.pb.cc
+    ${PROTO_GEN_DIR}/message.pb.h
+    ${PROTO_GEN_DIR}/message.grpc.pb.cc
+    ${PROTO_GEN_DIR}/message.grpc.pb.h
+)
+
+add_custom_command(
+    OUTPUT ${PROTO_GENERATED_FILES}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${PROTO_GEN_DIR}
+    COMMAND ${Protobuf_PROTOC_EXECUTABLE}
+        --cpp_out=${PROTO_GEN_DIR}
+        --proto_path=${CMAKE_CURRENT_SOURCE_DIR}/proto
+        ${PROTO_SOURCE}
+    COMMAND ${Protobuf_PROTOC_EXECUTABLE}
+        --grpc_out=${PROTO_GEN_DIR}
+        --plugin=protoc-gen-grpc=${gRPC_CPP_PLUGIN}
+        --proto_path=${CMAKE_CURRENT_SOURCE_DIR}/proto
+        ${PROTO_SOURCE}
+    DEPENDS ${PROTO_SOURCE}
+    VERBATIM
+)
+
+add_custom_target(proto_codegen DEPENDS ${PROTO_GENERATED_FILES})
+
+# 公共协议库：生成代码只编译一次，所有服务直接链接此库。
+add_library(chat_proto STATIC
+    ${PROTO_GENERATED_FILES}
+)
+add_dependencies(chat_proto proto_codegen)
+target_include_directories(chat_proto PUBLIC ${PROTO_GEN_DIR})
+target_link_libraries(chat_proto PUBLIC
+    gRPC::grpc++
+    protobuf::libprotobuf
+)
+
 # 添加子项目目录，可以理解成一个个模块
 add_subdirectory(ChatServer1)
 add_subdirectory(ChatServer2)

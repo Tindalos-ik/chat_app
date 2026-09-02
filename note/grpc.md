@@ -55,7 +55,7 @@ ChatServer (8090/8091, C++)
 
 ## 3. `.proto` 契约文件
 
-所有服务的接口都定义在 `proto/message.proto` 里（各服务目录各有一份，内容一致）：
+所有服务的接口统一定义在项目根目录的 `proto/message.proto` 中。各服务不再维护自己的协议副本，避免多个文件逐渐产生差异：
 
 ```protobuf
 syntax = "proto3";          // 使用 proto3 语法
@@ -92,7 +92,52 @@ service StatusService {
 - `message.pb.h / message.pb.cc`：消息类的序列化代码；
 - `message.grpc.pb.h / message.grpc.pb.cc`：**服务端 Service 基类** + **客户端 Stub 代理类**。
 
-> 生成的代码放在各服务的 `proto_gen/` 目录，由 CMake 在配置阶段自动执行 protoc 生成。
+> 根目录的 `.proto` 是唯一源文件。修改协议后只需要重新生成这一套代码，所有 C++ 服务和 Node.js 服务都会使用同一份定义。
+
+### 3.1 C++ 服务共用一套生成代码
+
+顶层 `CmakeLists.txt` 负责查找 `protoc` 和 gRPC 插件，并为根目录协议定义一次生成规则：
+
+```cmake
+set(PROTO_SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/proto/message.proto)
+set(PROTO_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/proto_gen)
+
+add_custom_command(
+    OUTPUT ${PROTO_GENERATED_FILES}
+    COMMAND ${Protobuf_PROTOC_EXECUTABLE}
+        --cpp_out=${PROTO_GEN_DIR}
+        --proto_path=${CMAKE_CURRENT_SOURCE_DIR}/proto
+        ${PROTO_SOURCE}
+    COMMAND ${Protobuf_PROTOC_EXECUTABLE}
+        --grpc_out=${PROTO_GEN_DIR}
+        --plugin=protoc-gen-grpc=${gRPC_CPP_PLUGIN}
+        --proto_path=${CMAKE_CURRENT_SOURCE_DIR}/proto
+        ${PROTO_SOURCE}
+    DEPENDS ${PROTO_SOURCE}
+)
+```
+
+生成的四个文件放在构建目录的 `proto_gen/`：
+
+```text
+message.pb.h
+message.pb.cc
+message.grpc.pb.h
+message.grpc.pb.cc
+```
+
+为了避免四个服务分别编译同一组 `.pb.cc`，顶层 CMake 还把它们编译成公共静态库：
+
+```cmake
+add_library(chat_proto STATIC ${PROTO_GENERATED_FILES})
+target_include_directories(chat_proto PUBLIC ${PROTO_GEN_DIR})
+target_link_libraries(chat_proto PUBLIC
+    gRPC::grpc++
+    protobuf::libprotobuf
+)
+```
+
+`GateServer`、`StatusServer`、`ChatServer1` 和 `ChatServer2` 只需要链接 `chat_proto`，不再自行调用 `protoc`，也不再把生成源码重复加入自己的目标。
 
 ---
 
@@ -100,9 +145,10 @@ service StatusService {
 
 ### 4.1 Node.js 版（VarifyServer，跨语言）
 
-`proto.js` 负责加载 `.proto` 并解析出服务对象：
+`proto.js` 负责加载根目录的 `.proto` 并解析出服务对象：
 
 ```js
+const PROTO_PATH = path.join(__dirname, '..', 'proto', 'message.proto');
 const packageDefinition = protoLoader.loadSync(PROTO_PATH, {...});
 const protoDescriptor = grpc.loadPackageDefinition(packageDefinition);
 const message_proto = protoDescriptor.message;   // 包名 message
@@ -329,22 +375,30 @@ token 在这里的作用：GateServer 登录时由 StatusServer 签发，ChatSer
 ## 7. CMake 构建配置
 
 ```cmake
-find_package(gRPC CONFIG REQUIRED)
-find_package(Protobuf CONFIG REQUIRED)
+# 顶层只生成一次根目录 proto/message.proto
+add_custom_target(proto_codegen DEPENDS ${PROTO_GENERATED_FILES})
+add_library(chat_proto STATIC ${PROTO_GENERATED_FILES})
+add_dependencies(chat_proto proto_codegen)
 
-# 配置阶段用 protoc 生成代码到 proto_gen/
-execute_process(COMMAND ${Protobuf_PROTOC_EXECUTABLE}
-    --cpp_out=${PROTO_GEN_DIR} --proto_path=${PROTO_DIR} ${PROTO_FILE})
-execute_process(COMMAND ${Protobuf_PROTOC_EXECUTABLE}
-    --grpc_out=${PROTO_GEN_DIR}
-    --plugin=protoc-gen-grpc=${gRPC_CPP_PLUGIN}
-    --proto_path=${PROTO_DIR} ${PROTO_FILE})
-
-# 链接 gRPC 和 protobuf 库
-target_link_libraries(${PROJECT_NAME} gRPC::grpc++ protobuf::libprotobuf ...)
+# 子服务只链接公共协议库
+target_link_libraries(${PROJECT_NAME} chat_proto ...)
 ```
 
-生成的文件（`proto_gen/message.pb.*`、`message.grpc.pb.*`）直接加入源码列表参与编译。
+构建依赖关系如下：
+
+```text
+proto/message.proto
+        |
+        v
+proto_codegen -> chat_proto（只编译一次）
+        |
+        +--> GateServer
+        +--> StatusServer
+        +--> ChatServer1
+        +--> ChatServer2
+```
+
+这样只有协议源文件发生变化时才会重新运行 `protoc`；普通增量编译不会重复生成或重复编译协议代码。
 
 ---
 
@@ -356,4 +410,5 @@ target_link_libraries(${PROJECT_NAME} gRPC::grpc++ protobuf::libprotobuf ...)
 4. **Stub 用完必须归还连接池**：项目里用 `Defer` 或显式 `ReleaseConnection(std::move(stub))`，漏归还会导致连接池慢慢耗尽。
 5. **跨语言版本**：C++ 用 gRPC 1.x，Node.js 用 `@grpc/grpc-js`（纯 JS 实现，不需要原生编译），只要 proto 一致就能互通。
 6. **同步调用的位置**：本项目客户端都是同步一元调用，放在 LogicSystem 的业务线程里，不阻塞 IO 线程。
-7. **后续扩展**：多台 ChatServer 之间还需要互相通信（跨服转发好友申请、聊天消息、踢人下线），参考项目在后续开发中加了 `ChatService`（`ChatGrpcClient` + `ChatServiceImpl`），让 ChatServer 也同时扮演 gRPC 服务端——模式与 StatusServer 完全一致。
+7. **统一协议源**：协议文件放在根目录的 `proto/message.proto`，C++ 端通过公共 `chat_proto` 静态库复用生成代码；Node.js 端通过相对路径加载同一份文件，避免各服务协议副本不一致。
+8. **后续扩展**：多台 ChatServer 之间还需要互相通信（跨服转发好友申请、聊天消息、踢人下线），参考项目在后续开发中加了 `ChatService`（`ChatGrpcClient` + `ChatServiceImpl`），让 ChatServer 也同时扮演 gRPC 服务端——模式与 StatusServer 完全一致。

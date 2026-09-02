@@ -47,6 +47,7 @@ chat_app/
 ├── StatusServer/             # 状态服务（C++/gRPC）
 ├── ChatServer/               # 聊天服务器（C++/Asio）
 ├── VarifyServer/             # 验证码服务（Node.js/gRPC）
+├── proto/                    # 所有服务共用的 protobuf/gRPC 协议源文件
 ├── chat_app desktop/         # Qt 客户端
 └── note/                     # 学习文档（TCP/连接池/gRPC/登录/部署）
 ```

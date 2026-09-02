@@ -4,7 +4,7 @@ const grpc = require('@grpc/grpc-js');  // 使用 @grpc/grpc-js，不是 'grpc'
 const protoLoader = require('@grpc/proto-loader');
 
 // .proto 文件路径
-const PROTO_PATH = path.join(__dirname, 'message.proto');
+const PROTO_PATH = path.join(__dirname, '..', 'proto', 'message.proto');
 
 // 解析 .proto 文件
 const packageDefinition = protoLoader.loadSync(PROTO_PATH, {
