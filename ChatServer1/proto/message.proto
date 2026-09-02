@@ -62,85 +62,95 @@ service StatusService {
 }
 
 
-// 聊天服务器之间的rpc通信
+// 聊天服务器之间的 RPC 通信
+//
+// ChatServer 通过这些 gRPC 接口把业务转发给另一台 ChatServer：
+// 例如，好友或聊天消息的接收方不在当前服务器时，当前服务器调用
+// 对端的接口，由对端找到对应的在线会话并通知客户端。
 
-// 添加好友请求
+// 当前服务器向目标用户所在的 ChatServer 发起好友申请。
 message AddFriendReq {
-    int32 applyuid = 1; // 申请用户id
-    string name = 2;
-    string desc = 3;
-    int32 touid = 4; // 被申请用户id
+    int32 applyuid = 1; // 申请好友的用户 id
+    string name = 2; // 申请用户的昵称，用于展示好友申请
+    string desc = 3; // 好友申请附言
+    int32 touid = 4; // 被申请用户 id
 }
 
 message AddFriendRsp {
-    int32 error = 1;
-    int32 applyuid = 2;
-    string name = 3;
+    int32 error = 1; // 业务处理结果，0 表示成功
+    int32 applyuid = 2; // 申请用户 id，用于匹配本次申请
+    string name = 3; // 申请用户昵称，用于通知接收方
 }
 
-// 处理好友申请
+// 当前服务器向申请方所在的 ChatServer 转发好友申请处理结果。
 message RplyFriendReq{
-    int32 rplyuid = 1;
-    bool agree = 2;
-    int32 touid = 3;
+    int32 rplyuid = 1; // 回复申请的用户 id
+    bool agree = 2; // 是否同意好友申请
+    int32 touid = 3; // 原好友申请的申请用户 id
 }
 
 message RplyFriendRsp{
-    int32 error = 1;
-    int32 rplyuid = 2;
-    bool touid = 3;
+    int32 error = 1; // 业务处理结果，0 表示成功
+    int32 rplyuid = 2; // 回复申请的用户 id
+    bool touid = 3; // 预留字段，保留现有协议定义
 }
 
-// 发送消息
+// 当前服务器向目标用户所在的 ChatServer 转发聊天消息。
 message SendChatMsgReq{
-    int32 fromuid = 1;
-    int32 touid = 2;
-    string message = 3;
+    int32 fromuid = 1; // 消息发送者 id
+    int32 touid = 2; // 消息接收者 id
+    string message = 3; // 聊天消息内容
 }
 
 message SendChatMsgRsp{
-    int32 error = 1;
-    int32 fromuid = 2;
-    int32 touid = 3;
+    int32 error = 1; // 业务处理结果，0 表示成功
+    int32 fromuid = 2; // 消息发送者 id
+    int32 touid = 3; // 消息接收者 id
 }
 
-// 好友认证通知，告诉对端我同意/拒绝了好友申请
+// 好友认证通知：告诉对端 ChatServer，当前用户已同意或拒绝好友申请。
 message AuthFriendReq{
-    int32 uid = 1;
-    int32 touid = 2;
+    int32 uid = 1; // 处理申请的用户 id
+    int32 touid = 2; // 原好友申请的申请用户 id
 }
 
 message AuthFriendRsp{
-    int32 error = 1;
-    int32 uid = 2;
-    int32 touid = 3;
+    int32 error = 1; // 业务处理结果，0 表示成功
+    int32 uid = 2; // 处理申请的用户 id
+    int32 touid = 3; // 原好友申请的申请用户 id
 }
 
+// 批量转发文本聊天消息，适用于离线期间积压消息或多条消息的集中推送。
 message TextChatMsgReq{
-    int32 fromuid = 1;
-    int32 touid = 2;
-    repeated TextChatData textmsgs = 3;
+    int32 fromuid = 1; // 消息发送者 id
+    int32 touid = 2; // 消息接收者 id
+    repeated TextChatData textmsgs = 3; // 待推送的文本消息列表
 }
 
 message TextChatMsgRsp{
-    int32 error = 1;
-    int32 fromuid = 2;
-    int32 touid = 3;
+    int32 error = 1; // 业务处理结果，0 表示成功
+    int32 fromuid = 2; // 消息发送者 id
+    int32 touid = 3; // 消息接收者 id
 }
 
 // 文本消息数据
 message TextChatData{
-    string msgid = 1;
-    string msgcontent = 2;
+    string msgid = 1; // 消息唯一标识，用于去重或确认消息
+    string msgcontent = 2; // 文本消息内容
 }
 
-// 聊天服务器的服务
+// 聊天服务器之间的 gRPC 服务定义。
 service ChatService {
-    rpc NotifyAddFriend (AddFriendReq) returns (AddFriendRsp) {} // 发起好友申请
-    rpc RplyAddFriend (RplyFriendReq) returns (RplyFriendRsp) {} // 处理好友申请
-    rpc SendChatMsg (SendChatMsgReq) returns (SendChatMsgRsp) {} // 发送聊天信息
-    rpc NotifyAuthFriend (AuthFriendReq) returns (AuthFriendRsp) {} // 好友认证通知
-    rpc NotifyTextChatMsg (TextChatMsgReq) returns (TextChatMsgRsp) {} // 批量推送聊天消息
+    // 转发好友申请，由接收方所在服务器通知目标用户。
+    rpc NotifyAddFriend (AddFriendReq) returns (AddFriendRsp) {}
+    // 转发好友申请的同意或拒绝结果，由申请方所在服务器通知申请用户。
+    rpc RplyAddFriend (RplyFriendReq) returns (RplyFriendRsp) {}
+    // 转发单条聊天消息，由接收方所在服务器推送给目标用户。
+    rpc SendChatMsg (SendChatMsgReq) returns (SendChatMsgRsp) {}
+    // 转发好友认证结果，通知申请用户双方已建立或未建立好友关系。
+    rpc NotifyAuthFriend (AuthFriendReq) returns (AuthFriendRsp) {}
+    // 批量转发文本聊天消息，由接收方所在服务器推送给目标用户。
+    rpc NotifyTextChatMsg (TextChatMsgReq) returns (TextChatMsgRsp) {}
 }
 
 

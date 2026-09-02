@@ -78,6 +78,9 @@ set(SOURCE_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/RedisMgr.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/StatusGrpcClient.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/CSession.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/ChatGrpcClient.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/UserMgr.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/ChatServiceImpl.cpp
 )
 
 link_directories("D:/cppsoft/vcpkg/installed/x64-windows/lib") # 添加 vcpkg 的 lib 路径，库文件搜索路径
@@ -88,7 +91,6 @@ add_executable(${PROJECT_NAME}
     ${JSONCPP_SOURCES}  
     ${SOURCE_FILES}
     ${GENERATED_FILES}
-    include/MsgNode.h
 )
 
 # ==================== 头文件搜索路径 ====================

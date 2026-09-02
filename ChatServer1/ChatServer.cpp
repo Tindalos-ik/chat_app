@@ -25,7 +25,7 @@ int main(){
             pool->Stop(); //其实析构也会调用Stop，这里只是保险起见
         }); //捕捉到退出信号后，停止主线程和IO线程池
         
-        auto port_str = config["SelfServer"]["port"];
+        auto port_str = config["SelfChatServer"]["port"];
         CServer server(io_context, std::stoi(port_str));
         io_context.run(); //主线程开始运行，等待退出信号
 
