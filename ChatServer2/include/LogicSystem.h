@@ -6,6 +6,7 @@
 #include "StatusGrpcClient.h"
 #include "CSession.h"
 #include "const.h"
+#include "data.h"
 #include <queue>
 #include <map>
 #include <thread>
@@ -37,6 +38,8 @@ private:
     void RegisterCallBacks();    // 注册 消息id -> 处理函数 的映射
 
     void LoginHandler(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data); // 登录处理
+
+    bool GetBaseInfo(std::string base_key, int uid, std::shared_ptr<UserInfo>& userinfo);
 
     std::thread _worker_thread;                    // 消费队列的工作线程
     std::queue<std::shared_ptr<LogicNode>> _msg_que; // 消息队列

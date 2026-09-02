@@ -10,6 +10,7 @@
 #include <atomic>
 #include <string>
 #include "singleton.h"
+#include "data.h"
 
 /**
  * @class MySqlPool
@@ -86,17 +87,6 @@ private:
     mutable std::mutex mutex_;                           
     std::condition_variable cond_;                   
     std::atomic<bool> b_stop_;                      
-};
-
-struct UserInfo{
-    std::string user;
-    std::string email;
-    std::string passwd;
-    int uid; // 用户ID
-    std::string nick; // 昵称
-    std::string desc; // 个性签名
-    int sex;          // 0未知 1男 2女
-    std::string icon; // 头像
 };
 
 //数据库操作类
