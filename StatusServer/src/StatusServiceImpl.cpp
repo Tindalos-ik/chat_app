@@ -5,6 +5,7 @@
 #include <random>
 #include <chrono>
 #include <iomanip>
+#include "RedisMgr.h"
 
 std::string generate_unique_string(){
     static std::random_device rd;
@@ -26,22 +27,23 @@ std::string generate_unique_string(){
 StatusServiceImpl::StatusServiceImpl()
 {
     auto& config = ConfigMgr::Inst();
-    
-    ChatServer server;
-    server.host = config["ChatServer1"]["host"];
-    server.port = config["ChatServer1"]["port"];
-    server.name = config["ChatServer1"]["name"];
-    server.con_count = 0;
-    _servers[server.name] = server;
+    auto server_list = config["ChatServers"]["servers"];
 
-    if (!config["ChatServer2"]["name"].empty()) {
-        ChatServer server2;
-        server2.host = config["ChatServer2"]["host"];
-        server2.port = config["ChatServer2"]["port"];
-        server2.name = config["ChatServer2"]["name"];
-        server2.con_count = 0;
-        _servers[server2.name] = server2;
+    // 将字符串按逗号分隔
+    std::vector<std::string> words;
+    std::stringstream ss(server_list);
+    std::string word;
+
+    while(std::getline(ss, word, ',')){
+        words.push_back(word);
     }
+
+    for(auto& name : words){
+        if(config[name]["name"].empty()) continue;
+        ChatServer server = {config[name]["host"], config[name]["port"], word, 0};
+        _servers[name] = server;
+    }
+
 }
 
 Status StatusServiceImpl::GetChatServer(ServerContext *context, const GetChatServerReq *request, GetChatServerRsp *reply)
@@ -52,23 +54,7 @@ Status StatusServiceImpl::GetChatServer(ServerContext *context, const GetChatSer
     reply->set_port(server.port);
     reply->set_token(generate_unique_string());
     reply->set_error(ErrorCode::Success); //reply设置好后，grpc会自动返回
-    {
-        std::lock_guard<std::mutex> lock(_token_mtx);
-        _tokens[request->uid()] = reply->token();
-    }
-    {
-        std::lock_guard<std::mutex> lock(_server_mtx);
-        _token_to_server[reply->token()] = server.name;
-        auto last = _server_tokens.find(server.name);
-        if(last == _server_tokens.end()){
-            //第一次登录插入即可
-            _server_tokens[server.name] = reply->token();
-        }else{
-            _server_tokens[server.name] = reply->token();
-            //清除旧的token
-            _token_to_server.erase(last->second);
-        }
-    }
+    insertToken(request->uid(), reply->token()); // 将token插入redis
     return Status::OK;
 }
 
@@ -76,35 +62,60 @@ Status StatusServiceImpl::Login(ServerContext *context, const LoginReq *request,
 {
     auto uid = request->uid();
     auto token = request->token();
-    std::lock_guard<std::mutex> lock(_token_mtx);
-    auto iter = _tokens.find(uid);
-    if(iter == _tokens.end()){
+    // token 存在 redis 中
+    std::string uid_str = std::to_string(uid);
+    std::string token_key = USERTOKENFREFIX + uid_str;
+    std::string token_value = "";
+    bool success = RedisMgr::GetInstance()->Get(token_key, token_value);
+    
+    if(!success){
         reply->set_error(ErrorCode::UidInvalid);
         return Status::OK;
     }
-    if(iter->second != token){
+
+    if(token_value != token){
         reply->set_error(ErrorCode::TokenInvalid);
         return Status::OK;
     }
+
     reply->set_error(ErrorCode::Success);
-    reply->set_token(token);
     reply->set_uid(uid);
+    reply->set_token(token); // grpc会自动返回reply
     return Status::OK;
+   
 }
 
 
 ChatServer& StatusServiceImpl::getChatServer()
 {
     std::lock_guard<std::mutex> lock(_server_mtx);
-    
-    // 找到最小负载的服务器
-    auto minIt = _servers.begin();
-    for (auto it = _servers.begin(); it != _servers.end(); ++it) {
-        if (it->second.con_count < minIt->second.con_count) {
-            minIt = it;
+    auto minServer = _servers.begin()->second;
+    // redis中获取服务器的连接数
+    auto count_str = RedisMgr::GetInstance()->HGet(LOGIN_COUNT, minServer.name);
+    if(count_str.empty()){
+        // 不存在则默认设置为最大
+        minServer.con_count = INT_MAX;
+    }else{
+        minServer.con_count = std::stoi(count_str);
+    }
+
+    for(auto& server : _servers){
+        if(server.second.name == minServer.name) continue;
+        auto count_str = RedisMgr::GetInstance()->HGet(LOGIN_COUNT, server.second.name);
+        if(count_str.empty()){
+            server.second.con_count = INT_MAX;
+        }else{
+            server.second.con_count = std::stoi(count_str);
+        }
+
+        if(server.second.con_count < minServer.con_count){
+            minServer = server.second;
         }
     }
-    
-    minIt->second.con_count++;
-    return minIt->second;
+    return minServer;
+}
+
+
+void StatusServiceImpl::insertToken(int uid, std::string token){
+    RedisMgr::GetInstance()->Set(USERTOKENFREFIX + std::to_string(uid), token);
 }

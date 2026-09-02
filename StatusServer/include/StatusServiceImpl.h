@@ -56,6 +56,8 @@ public:
      */
     Status Login(ServerContext* context, const LoginReq* request, LoginRsp* reply) override;
 
+    void insertToken(int uid, std::string token);
+
 private:
 
     /**
@@ -68,16 +70,9 @@ private:
      */
     ChatServer& getChatServer();
 
-    
-    std::unordered_map<int, std::string> _tokens;           // 用户ID -> token 映射表（用户会话管理）
     std::unordered_map<std::string,ChatServer> _servers;    // 这里得用哈希表存服务器列表，服务器名字->服务器信息，因为服务器是结构体，没有哈希函数
-    std::unordered_map<std::string, std::string> _token_to_server; // token->服务器名称的映射表
-    std::unordered_map<std::string,std::string> _server_tokens;     // 服务器->token的映射表
-    
-    std::mutex _server_mtx; 
-    std::mutex _token_mtx;   
 
-    
+    std::mutex _server_mtx; 
 };
 
 #endif // STATUS_SERVICE_IMPL_H

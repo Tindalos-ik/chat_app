@@ -37,5 +37,13 @@ private:
 };
 
 
+// redis key
+#define LOGIN_COUNT "login_count"
+#define USERIPPREFIX "uip_"
+#define USERTOKENFREFIX "utoken_"
+#define UIPCOUNTPREFIX "ipcount_"
+#define USER_BASE_INFO "ubaseinfo_"
+
+
 #endif // !_CONST_H_
 
