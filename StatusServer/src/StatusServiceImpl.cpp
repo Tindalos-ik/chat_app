@@ -5,6 +5,7 @@
 #include <random>
 #include <chrono>
 #include <iomanip>
+#include <limits>
 #include "RedisMgr.h"
 
 std::string generate_unique_string(){
@@ -51,6 +52,11 @@ Status StatusServiceImpl::GetChatServer(ServerContext *context, const GetChatSer
 {
     std::cout << "StatusServer has been called to get chatserver" << std::endl;
     ChatServer server = getChatServer();
+    if (server.host.empty() || server.port.empty()) {
+        // 配置里没有可用的 ChatServer，让 GateServer 按"获取聊天服务器失败"处理
+        reply->set_error(ErrorCode::RPCFaild);
+        return Status::OK;
+    }
     reply->set_host(server.host);
     reply->set_port(server.port);
     reply->set_token(generate_unique_string());
@@ -83,37 +89,46 @@ Status StatusServiceImpl::Login(ServerContext *context, const LoginReq *request,
     reply->set_uid(uid);
     reply->set_token(token); // grpc会自动返回reply
     return Status::OK;
-   
+    
 }
 
 
 ChatServer StatusServiceImpl::getChatServer()
 {
     std::lock_guard<std::mutex> lock(_server_mtx);
-    auto minServer = _servers.begin()->second;
-    // redis中获取服务器的连接数
-    auto count_str = RedisMgr::GetInstance()->HGet(LOGIN_COUNT, minServer.name);
-    if(count_str.empty()){
-        // 不存在则默认设置为最大
-        minServer.con_count = INT_MAX;
-    }else{
-        minServer.con_count = std::stoi(count_str);
+    if (_servers.empty()) {
+        return ChatServer{}; // 调用方看到空 host/port 会返回 RPCFaild
     }
 
-    for(auto& server : _servers){
-        if(server.second.name == minServer.name) continue;
-        auto count_str = RedisMgr::GetInstance()->HGet(LOGIN_COUNT, server.second.name);
-        if(count_str.empty()){
-            server.second.con_count = INT_MAX;
-        }else{
-            server.second.con_count = std::stoi(count_str);
+    // 负载 = redis 哈希 login_count 中各服务器实时上报的在线数
+    // 读不到计数的服务器视为"负载最大"，不优先分配（可能还没启动/没上报过）
+    long long min_count = std::numeric_limits<long long>::max();
+    std::vector<std::string> candidates;
+    for (const auto& item : _servers) {
+        const auto& server = item.second;
+        auto count_str = RedisMgr::GetInstance()->HGet(LOGIN_COUNT, server.name);
+        long long count = std::numeric_limits<long long>::max();
+        if (!count_str.empty()) {
+            try {
+                count = std::stoll(count_str);
+            } catch (...) {
+                count = std::numeric_limits<long long>::max();
+            }
         }
 
-        if(server.second.con_count < minServer.con_count){
-            minServer = server.second;
+        if (count < min_count) {
+            min_count = count;
+            candidates.clear();
+            candidates.push_back(server.name);
+        } else if (count == min_count) {
+            candidates.push_back(server.name);
         }
     }
-    return minServer;
+
+    // 负载相同（例如刚启动大家都是 0）时轮询选择，避免永远偏向 map 里的第一台
+    auto name = candidates[_round_index % candidates.size()];
+    ++_round_index;
+    return _servers[name];
 }
 
 

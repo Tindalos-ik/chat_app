@@ -343,3 +343,45 @@ bool RedisMgr::ExistsKey(const std::string &key)
     _connectionPool->returnConnection(connect);
     return true;
 }
+
+bool RedisMgr::HDel(const std::string& key, const std::string& field){
+    auto connect = _connectionPool->getConnection();
+    if (connect == nullptr) {
+        std::cout << "Execut command [ HDel " << key << " " << field << " ] failure ! no connection" << std::endl;
+        return false;
+    }
+
+    redisReply* reply = (redisReply*)redisCommand(connect, "HDEL %s %s", key.c_str(), field.c_str());
+    if (reply == nullptr || reply->type != REDIS_REPLY_INTEGER) {
+        std::cout << "Execut command [ HDel " << key << " " << field << " ] failure ! " << std::endl;
+        freeReplyObject(reply);
+        _connectionPool->returnConnection(connect);
+        return false;
+    }
+
+    std::cout << "Execut command [ HDel " << key << " " << field << " ] success ! " << std::endl;
+    freeReplyObject(reply);
+    _connectionPool->returnConnection(connect);
+    return true;
+}
+
+bool RedisMgr::HIncrBy(const std::string& key, const std::string& field, int incr){
+    auto connect = _connectionPool->getConnection();
+    if (connect == nullptr) {
+        std::cout << "Execut command [ HIncrBy " << key << " " << field << " " << incr << " ] failure ! no connection" << std::endl;
+        return false;
+    }
+
+    redisReply* reply = (redisReply*)redisCommand(connect, "HINCRBY %s %s %d", key.c_str(), field.c_str(), incr);
+    if (reply == nullptr || reply->type != REDIS_REPLY_INTEGER) {
+        std::cout << "Execut command [ HIncrBy " << key << " " << field << " " << incr << " ] failure ! " << std::endl;
+        freeReplyObject(reply);
+        _connectionPool->returnConnection(connect);
+        return false;
+    }
+
+    std::cout << "Execut command [ HIncrBy " << key << " " << field << " " << incr << " ] success ! " << std::endl;
+    freeReplyObject(reply);
+    _connectionPool->returnConnection(connect);
+    return true;
+}

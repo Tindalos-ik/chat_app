@@ -73,6 +73,7 @@ private:
     std::unordered_map<std::string,ChatServer> _servers;    // 这里得用哈希表存服务器列表，服务器名字->服务器信息，因为服务器是结构体，没有哈希函数
 
     std::mutex _server_mtx; 
+    size_t _round_index = 0; // 多台服务器负载相同时轮询选择，避免永远选第一台
 };
 
 #endif // STATUS_SERVICE_IMPL_H

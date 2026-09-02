@@ -11,6 +11,7 @@
 - GateServer（C++，HTTP 网关）需要向验证服务器要验证码；
 - GateServer 需要向状态服务器查询"该给用户分配哪台聊天服务器"；
 - ChatServer 需要向状态服务器校验用户的 token。
+- ChatServer 需要向**另一台 ChatServer** 转发跨服业务：两个登录用户可能被负载均衡到不同的聊天服务器上，好友申请、好友认证、聊天消息都要经过"服务器 → 服务器"这一段。
 
 这些"服务调用服务"的场景可以用 gRPC 解决，原因是：
 
@@ -34,6 +35,8 @@
 | `VarifyService` | VarifyServer（Node.js） | 50051 | `GetVarifyCode` | 生成验证码、存 Redis、发邮件 |
 | `StatusService` | StatusServer（C++） | 50052 | `GetChatServer` | 负载均衡选聊天服务器 + 发 token |
 | `StatusService` | StatusServer（C++） | 50052 | `Login` | 校验 uid/token 是否匹配 |
+| `ChatService` | ChatServer1（C++） | 50055 | `NotifyAddFriend`、`RplyAddFriend`、`SendChatMsg`、`NotifyAuthFriend`、`NotifyTextChatMsg` | 接收 ChatServer2 转来的好友申请/认证/消息，推给本机用户 |
+| `ChatService` | ChatServer2（C++） | 50056 | 同上 | 接收 ChatServer1 转来的好友申请/认证/消息，推给本机用户 |
 
 ### 2.2 谁调用谁
 
@@ -45,11 +48,13 @@ GateServer (8080, C++)
    │  gRPC  ──────────────►  VarifyServer (50051, Node.js) ──► Redis + 163邮箱
    │  gRPC  ──────────────►  StatusServer (50052, C++)  ──► 选择 ChatServer + 生成token
    ▼  TCP 长连接
-ChatServer (8090/8091, C++)
+ChatServer1 (8090 / rpc 50055, C++)
+   │  gRPC ChatService ──►  ChatServer2 (8091 / rpc 50056, C++)
+   ◄──────────────────────  gRPC ChatService
    │  gRPC  ──────────────►  StatusServer (50052) ──► Login(uid, token) 校验
 ```
 
-可以看到 **GateServer 和 ChatServer 是 gRPC 客户端，VarifyServer 和 StatusServer 是 gRPC 服务端**。
+角色分三类：GateServer 是纯 gRPC 客户端；VarifyServer、StatusServer 是纯 gRPC 服务端；**ChatServer 最特殊——既是 gRPC 客户端（调 StatusServer、调对端 ChatServer），又是 gRPC 服务端（在 rpcport 接收对端转发）**。
 
 ---
 
@@ -86,6 +91,20 @@ service StatusService {
     rpc Login (LoginReq) returns (LoginRsp) {}
 }
 ```
+
+再往后是专门给**聊天服务器之间转发**用的 `ChatService`：
+
+```protobuf
+service ChatService {
+    rpc NotifyAddFriend (AddFriendReq) returns (AddFriendRsp) {}        // 转发好友申请
+    rpc RplyAddFriend (RplyFriendReq) returns (RplyFriendRsp) {}        // 回传同意/拒绝结果
+    rpc SendChatMsg (SendChatMsgReq) returns (SendChatMsgRsp) {}        // 转发单条聊天消息
+    rpc NotifyAuthFriend (AuthFriendReq) returns (AuthFriendRsp) {}     // 好友认证通知
+    rpc NotifyTextChatMsg (TextChatMsgReq) returns (TextChatMsgRsp) {}  // 批量转发文本消息
+}
+```
+
+请求/响应里的 `applyuid / touid / fromuid` 等字段，作用是告诉对端"这条业务涉及你机器上的哪个用户"，对端据此找到对应 session 做推送。
 
 用 `protoc` 编译后自动生成：
 
@@ -252,6 +271,47 @@ server->Wait();                 // 阻塞等待，收到信号后 Shutdown()
 
 ---
 
+### 4.3 C++ 版（ChatServer 之间互相通信）
+
+ChatServer 是项目里唯一"既当服务端又当客户端"的角色：
+
+- **服务端**：每台 ChatServer 启动时，除了监听 TCP 长连接端口（8090/8091），还会额外起一个 gRPC 服务，监听自己的 `rpcport`（ChatServer1=50055、ChatServer2=50056），注册 `ChatServiceImpl`；
+- **客户端**：同时持有 `ChatGrpcClient` 单例，按照 `config.ini` 里 `[PeerServer] servers` 的对端列表，给每台对端 ChatServer 建好 Stub 连接池。
+
+main 里启动 gRPC 服务端（每台 ChatServer 各一份）：
+
+```cpp
+// 监听地址 = SelfChatServer.host + rpcport，例如 127.0.0.1:50055
+std::string server_address(config["SelfChatServer"]["host"] + ":" + config["SelfChatServer"]["rpcport"]);
+ChatServiceImpl service;
+grpc::ServerBuilder builder;
+builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
+builder.RegisterService(&service);
+
+std::unique_ptr<grpc::Server> grpc_server(builder.BuildAndStart());
+if (!grpc_server) { // 端口被占 / 地址不合法时返回空指针，必须判空，否则后面 Wait() 会崩
+    std::cerr << "rpc server start failed on " << server_address << std::endl;
+    return 1;
+}
+std::cout << "rpc server listening on " << server_address << std::endl;
+
+// gRPC 服务放在独立线程里阻塞等待，主线程继续跑 Asio 的 TCP 长连接
+std::thread grpc_server_thread([&grpc_server]() {
+    grpc_server->Wait();
+});
+```
+
+`ChatServiceImpl` 继承生成的 `ChatService::Service`，每个方法都对应一类跨服转发：
+
+| 方法 | 什么时候被对端调 | 服务端应该做的下一步 |
+| --- | --- | --- |
+| `NotifyAddFriend` | 申请方所在服务器转发好友申请 | 通知本机被申请用户，弹出好友申请 |
+| `RplyAddFriend` | 被申请方所在服务器回传同意/拒绝 | 通知本机申请用户，刷新申请状态 |
+| `SendChatMsg` / `NotifyTextChatMsg` | 发消息方所在服务器转发聊天内容 | 找到本机目标用户的 session 并推送 |
+| `NotifyAuthFriend` | 好友关系建立后的认证通知 | 刷新双方好友列表 |
+
+> 现状提醒：本仓库目前把"通道"铺好了，但业务还没接完——`ChatServiceImpl` 里 `NotifyAddFriend`、`NotifyAuthFriend`、`NotifyTextChatMsg` 是空实现（直接 `return Status::OK`），`RplyAddFriend`、`SendChatMsg` 还没重写；`ChatGrpcClient` 对应方法也只是返回空响应。真正实现跨服加好友/聊天/踢人时，填充这些方法即可，模式与 StatusServer 完全一样。
+
 ## 5. 客户端实现（C++）
 
 ### 5.1 一次 RPC 调用的三个固定步骤
@@ -316,7 +376,7 @@ class RPConPool {
 - 每次调用 `GetConnection()` 借用、用完 `ReleaseConnection()` 归还，**必须成对出现**（项目里有的用 `Defer` 保证归还）；
 - 池大小在构造函数里配置：GateServer 调 VarifyServer 用 5 个，调 StatusServer 用 10 个。
 
-### 5.3 项目里的两个实际调用点
+### 5.3 项目里的实际调用点
 
 **场景 1：GateServer 获取验证码**（`/get_varifycode` 路由）
 
@@ -348,6 +408,38 @@ if (rsp.error() == ErrorCode::Success) {
 }
 session->Send(return_str, MSG_CHAT_LOGIN_RSP);
 ```
+
+**场景 4：ChatServer 跨服调用另一台 ChatServer**（`ChatGrpcClient`）
+
+对端连接池在构造函数里初始化——读 `[PeerServer] servers` 拆出对端 section 名，为每个对端建一个池：
+
+```cpp
+auto server_list = cfg["PeerServer"]["servers"];   // 例如 ChatServer2
+// 按逗号拆出对端 section 名后：
+for (auto& name : words) {
+    _pools[cfg[name]["name"]] = std::make_unique<ChatConPool>(5, cfg[name]["host"], cfg[name]["port"]);
+}
+```
+
+业务层需要转发时，按"目标用户在哪个服务器"选池，借 Stub → 同步调用 → 归还：
+
+```cpp
+AddFriendRsp ChatGrpcClient::NotifyAddFriend(std::string server_name, const AddFriendReq& request) {
+    auto& pool = _pools[server_name];
+    ClientContext context;
+    auto stub = pool->getConnection();
+    Defer defer([&stub, &pool]() { pool->returnConnection(std::move(stub)); });
+
+    AddFriendRsp rsp;
+    Status status = stub->NotifyAddFriend(&context, request, &rsp);
+    if (!status.ok()) {
+        rsp.set_error(ErrorCode::RPCFaild);   // 网络层失败
+    }
+    return rsp;
+}
+```
+
+> 端口坑：跨服 gRPC 要连的是对端的 **rpcport**（50055/50056），不是对端给客户端用的 TCP 端口（8090/8091）。当前 `ChatGrpcClient` 构造函数里读的是 `cfg[name]["port"]`，等真正接跨服业务时记得改成 `cfg[name]["rpcport"]`；llfcchat 参考项目是直接把 peer section 的 `Port` 填成对端 RPC 端口，殊途同归，别混用。
 
 ---
 
@@ -383,6 +475,13 @@ session->Send(return_str, MSG_CHAT_LOGIN_RSP);
                        ▼
                   StatusServer ──► token 匹配则返回 Success
                        └────────► ChatServer 回包 MSG_CHAT_LOGIN_RSP
+
+5. 跨服转发（A 登录在 ChatServer1，B 登录在 ChatServer2）
+   用户A ──TCP──► ChatServer1
+                       │ 按 B 所在服务器路由
+                       │ gRPC NotifyTextChatMsg / NotifyAddFriend（ChatService）
+                       ▼
+                  ChatServer2 ──► 找到 B 的 session，TCP 推送给 B
 ```
 
 token 在这里的作用：GateServer 登录时由 StatusServer 签发，ChatServer 再向 StatusServer 校验，**保证只有经过 HTTP 网关登录的用户才能建立 TCP 长连接**。
@@ -428,4 +527,6 @@ proto_codegen -> chat_proto（只编译一次）
 5. **跨语言版本**：C++ 用 gRPC 1.x，Node.js 用 `@grpc/grpc-js`（纯 JS 实现，不需要原生编译），只要 proto 一致就能互通。
 6. **同步调用的位置**：本项目客户端都是同步一元调用，放在 LogicSystem 的业务线程里，不阻塞 IO 线程。
 7. **统一协议源**：协议文件放在根目录的 `proto/message.proto`，C++ 端通过公共 `chat_proto` 静态库复用生成代码；Node.js 端通过相对路径加载同一份文件，避免各服务协议副本不一致。
-8. **后续扩展**：多台 ChatServer 之间还需要互相通信（跨服转发好友申请、聊天消息、踢人下线），参考项目在后续开发中加了 `ChatService`（`ChatGrpcClient` + `ChatServiceImpl`），让 ChatServer 也同时扮演 gRPC 服务端——模式与 StatusServer 完全一致。
+8. **ChatServer 是唯一"双重角色"服务**：既当 gRPC 客户端（调 StatusServer、调对端 ChatServer），又当 gRPC 服务端（`ChatServiceImpl` 监听 rpcport 50055/50056）。启动时 `BuildAndStart()` 可能返回空指针（端口被占、host 缺失等），必须先判空再 `Wait()`。
+9. **跨服通信已铺路、业务还没接**：`ChatService` 在 proto 里已定义，`ChatServiceImpl` / `ChatGrpcClient` 两端也已生成并注册，但方法体目前多是占位；跨服加好友、聊天、踢人下线的具体逻辑是后续要填的。
+10. **分清 TCP 端口和 gRPC 端口**：ChatServer 的 `port`（8090/8091）是客户端连的 TCP 长连接口，`rpcport`（50055/50056）是给另一台 ChatServer 连的 gRPC 口。`ChatGrpcClient` 当前读的是对端 section 的 `port`，真正跨服调用前要改成 `rpcport`，别照抄 llfcchat 的 peer 配置写法。

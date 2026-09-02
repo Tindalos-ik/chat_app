@@ -209,6 +209,17 @@ public:
      */
     bool Del(const std::string& key);
 
+    bool HDel(const std::string& key, const std::string& field);
+
+    /**
+     * @brief 原子增加哈希表中字段的值（Redis HINCRBY，避免读改写丢更新）
+     * @param key 哈希表键名
+     * @param field 字段名
+     * @param incr 增量，可为负数
+     * @return true 成功，false 失败
+     */
+    bool HIncrBy(const std::string& key, const std::string& field, int incr);
+
     /**
      * @brief 检查 key 是否存在
      * @param key 键名

@@ -2,6 +2,8 @@
 #include "AsioIOServicePool.h"
 #include <iostream>
 #include "UserMgr.h"
+#include "RedisMgr.h"
+#include "ConfigMgr.h"
 
 using boost::asio::ip::tcp;
 
@@ -45,14 +47,25 @@ void CServer::HandleAccept(std::shared_ptr<CSession> new_session,
     StartAccept();
 }
 
-// 会话断开/异常时调用：从 map 中移除会话
+// 会话断开/异常时调用：从 map 中移除会话，并把本服务器在线人数减一
 void CServer::ClearSession(std::string session_id) {
-    if(_sessions.find(session_id) != _sessions.end()) {
-        // 移除用户与session的关联
-        UserMgr::GetInstance()->RmvUserSession(_sessions[session_id]->GetUserId());
-    }
+    int uid = 0;
     {
         std::lock_guard<std::mutex> lock(_mutex);
-        _sessions.erase(session_id);
+        auto iter = _sessions.find(session_id);
+        if (iter != _sessions.end()) {
+            uid = iter->second->GetUserId();
+            if (uid != 0) {
+                // 移除用户与session的关联
+                UserMgr::GetInstance()->RmvUserSession(uid);
+            }
+            _sessions.erase(iter);
+        }
+    }
+
+    // 之前登录成功过的会话（uid != 0）断开时，在线人数减一，保证负载均衡的计数是"当前在线"
+    if (uid != 0) {
+        auto server_name = ConfigMgr::Inst()["SelfChatServer"]["name"];
+        RedisMgr::GetInstance()->HIncrBy(LOGIN_COUNT, server_name, -1);
     }
 }

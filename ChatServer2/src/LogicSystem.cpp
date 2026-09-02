@@ -145,17 +145,9 @@ void LogicSystem::LoginHandler(std::shared_ptr<CSession> session, const short &m
 
     // 从数据库获取好友列表，存在本地
 
-    auto server_name = ConfigMgr::Inst()["SelfServer"]["name"];
-    // 将登录数量增加
-    auto rd_res = RedisMgr::GetInstance()->HGet(LOGIN_COUNT, server_name);
-    int count = 0;
-    if(! rd_res.empty()){
-        count = std::stoi(rd_res); // 不为空
-    }
-    count++;
-    // 更新登录数量
-    auto count_str = std::to_string(count);
-    RedisMgr::GetInstance()->HSet(LOGIN_COUNT, server_name, count_str);
+    auto server_name = ConfigMgr::Inst()["SelfChatServer"]["name"];
+    // 原子地给本服务器在线人数 +1（HINCRBY 避免并发读改写丢更新）
+    RedisMgr::GetInstance()->HIncrBy(LOGIN_COUNT, server_name, 1);
 
     // session 绑定用户uid
     session->SetUserId(uid);
