@@ -8,6 +8,8 @@
 #include <QJsonDocument>
 #include <QDebug>
 #include <algorithm>
+#include <usermgr.h>
+#include "tcpmgr.h"
 
 namespace {
 // 推荐标签排版参数（放匿名命名空间，避免污染全局）
@@ -344,32 +346,31 @@ void ApplyFriend::slot_remove_friend_label(const QString &text)
 
 void ApplyFriend::slot_apply_sure()
 {
-    // 拼好友申请数据（TODO: 后端协议就绪后通过 TcpMgr 发送）
+    // 拼好友申请数据，根据后端写
     QJsonObject jsonObj;
-    QString name = ui->name_ed->text();
-    if (name.isEmpty()) {
+    auto uid  = UserMgr::GetInstance()->GetUid();
+    jsonObj["uid"] = uid;
+
+    auto name = ui->name_ed->text();
+    if(name.isEmpty()){
         name = ui->name_ed->placeholderText();
     }
-    jsonObj["applyname"] = name;
 
-    QString bakname = ui->back_ed->text();
-    if (bakname.isEmpty()) {
+    auto bakname = ui->back_ed->text(); //备注名
+    if(bakname.isEmpty()){
         bakname = ui->back_ed->placeholderText();
     }
-    jsonObj["bakname"] = bakname;
 
-    if (_si) {
-        jsonObj["touid"] = _si->_uid;
-    }
+    jsonObj["bakname"] = bakname;
+    jsonObj["touid"] = _si->_uid; // 获取搜索到的用户的uid
 
     QJsonDocument doc(jsonObj);
-    QString jsonData = doc.toJson(QJsonDocument::Compact);
-    qDebug() << "apply friend request:" << jsonData;
+    QByteArray jsonData  = doc.toJson(QJsonDocument::Compact);
 
-    // TODO: TcpMgr::GetInstance()->sig_send_data(ReqId::ID_ADD_FRIEND_REQ, jsonData);
-    //       ID_ADD_FRIEND_REQ 待加入 global.h 的 ReqId
+    // 发送tcp请求给chatserver
+    emit TcpMgr::GetInstance()->sig_send_data(ReqId::ID_ADD_FRIEND_REQ, jsonData);
 
-    hide();
+    this->hide();
     deleteLater();
 }
 
