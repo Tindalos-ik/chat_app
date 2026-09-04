@@ -6,7 +6,9 @@
 #include <QWheelEvent>
 #include <QScrollBar>
 #include <memory>
-#include "findsuccessdlg.h"
+#include "loadingdlg.h"
+
+struct SearchInfo;
 
 // 搜索列表：顶部固定一个"查找用户"提示项（AddUserItem）
 // 点击提示项 = 用搜索框内容发起添加好友请求（TCP 搜索协议未实现，先发信号占位）
@@ -19,9 +21,7 @@ public:
 
     void SetSearchEdit(QWidget *edit); // 记录搜索框，点击提示项时取里面的文字
 
-    void waitpending(bool flag);
-
-    void CloseFindDlg();
+    void waitpending(bool pending);
 
 
 protected:
@@ -33,12 +33,13 @@ private:
     QWidget *_search_edit = nullptr;
     QListWidgetItem *_tipItem = nullptr;
 
-    std::shared_ptr<FindSuccessDlg> _find_dlg;
-
     bool _send_pending;
+
+    LoadingDlg* _loadingDlg;
 
 public slots:
     void slot_item_clicked(QListWidgetItem* item);
+    void slot_show_search_result(std::shared_ptr<SearchInfo>& si);
 
 };
 

@@ -68,7 +68,7 @@ void ResetDialog::on_reset_btn_clicked()
     json_obj["passwd"] = xorString(ui->newpwd_edit->text());
     json_obj["varifycode"] = ui->varifycode_edit->text();
     HttpMgr::GetInstance()->PostHttpReq(QUrl(gate_url_prefix+"/user_resetpassword"),json_obj,
-                                        ReqId::ID_RESETPASSWORD,Modules::RESETMOD);
+                                        ReqId::ID_RESET_PWD,Modules::RESETMOD);
 }
 
 void ResetDialog::slot_reset_mod_finish(ReqId id, QString res, ErrorCodes err)
@@ -126,7 +126,7 @@ void ResetDialog::on_get_code_clicked()
         QJsonObject json_obj;
         json_obj["email"] = email;
         HttpMgr::GetInstance()->PostHttpReq(QUrl(gate_url_prefix + "/get_varifycode"),
-                                            json_obj,ReqId::ID_GET_VERIFY_CODE,Modules::RESETMOD);
+                                            json_obj,ReqId::ID_GET_VARIFY_CODE,Modules::RESETMOD);
         showtip(tr("已成功发送验证码"),"normal");
     }
     else{
@@ -137,7 +137,7 @@ void ResetDialog::on_get_code_clicked()
 void ResetDialog::initHttpHandlers()
 {
     //注册获取验证码回包的逻辑
-    _handlers.insert(ReqId::ID_GET_VERIFY_CODE, [this](const QJsonObject& jsonObj){
+    _handlers.insert(ReqId::ID_GET_VARIFY_CODE, [this](const QJsonObject& jsonObj){
         int error = jsonObj["error"].toInt(); //json对象有一个键是error，我们将它转化为int
 
         if(error == ErrorCodes::DuplicateRequest){
@@ -156,7 +156,7 @@ void ResetDialog::initHttpHandlers()
     });
 
     //重置密码回包的逻辑
-    _handlers.insert(ReqId::ID_RESETPASSWORD,[this](const QJsonObject& jsonObj){
+    _handlers.insert(ReqId::ID_RESET_PWD,[this](const QJsonObject& jsonObj){
         int error = jsonObj["error"].toInt();
 
         if(error == ErrorCodes::Error_UserNotMatchEamil){

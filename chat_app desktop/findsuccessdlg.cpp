@@ -46,6 +46,8 @@ void FindSuccessDlg::on_add_friend_btn_clicked()
     applyFriendDlg->setModal(true);
     applyFriendDlg->show();
 
+    // 自己也用完即毁：SearchList 不需要持有弹窗成员
     this->hide();
+    this->deleteLater();
 }
 

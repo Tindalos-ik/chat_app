@@ -4,6 +4,7 @@
 #include <QJsonObject>
 #include "mainwindow.h"
 #include "usermgr.h"
+#include "userdata.h"
 
 TcpMgr::~TcpMgr()
 {
@@ -100,7 +101,7 @@ void TcpMgr::initHandlers()
     //登录聊天服务器回包，这一块是和tcp服务通信，和logindialog里面的不一样
     _handler.insert(ReqId::ID_CHAT_LOGIN_RSP, [this](ReqId id, int len, QByteArray data){
         Q_UNUSED(len);
-        qDebug() << "handle if is " << id << "data is " << data;
+        qDebug() << "handle id is " << id << "data is " << data;
 
         //将字节流转换为json文档
         QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
@@ -135,6 +136,56 @@ void TcpMgr::initHandlers()
 
         emit sig_switch_chatdlg();
     });
+
+    // 搜索列表搜索回包
+    _handler.insert(ReqId::ID_SEARCH_USER_REQ, [this](ReqId id, int len, QByteArray data){
+        Q_UNUSED(len);
+        qDebug() << "handle id is " << id << "data is " << data;
+
+        // 搜索失败统一走 sig_user_search(nullptr)，让 SearchList 弹 FindFailDlg
+        auto emit_search_fail = [this]{
+            std::shared_ptr<SearchInfo> null_si;
+            emit sig_user_search(null_si);
+        };
+
+        //将字节流转换为json文档
+        QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
+
+        //检查转换是否成功
+        if(jsonDoc.isNull()){
+            qDebug() << "failed to create QJsonDocument";
+            emit_search_fail();
+            return;
+        }
+
+        //将json文档转换为json对象
+        QJsonObject json_obj = jsonDoc.object();
+
+        if(!json_obj.contains("error")){ //正常解析成功会有error键
+            int err = ErrorCodes::ERR_JSON;
+            qDebug() << "Search Failed, err is Json Parse Err" << err;
+            emit_search_fail();
+            return;
+        }
+
+        int err = json_obj["error"].toInt();
+
+        if(err != ErrorCodes::SUCCESS){
+            qDebug() << "Search Failed, err is" << err;
+            emit_search_fail();
+            return;
+        }
+
+        auto si = std::make_shared<SearchInfo>(json_obj["uid"].toInt(),
+                                               json_obj["name"].toString(),
+                                               json_obj["nick"].toString(),
+                                               json_obj["desc"].toString(),
+                                               json_obj["sex"].toInt());
+
+        emit sig_user_search(si);
+    });
+
+
 }
 
 void TcpMgr::slot_tcp_connect(ServerInfo si)
@@ -148,16 +199,12 @@ void TcpMgr::slot_tcp_connect(ServerInfo si)
 
 
 
-void TcpMgr::slot_send_data(ReqId reqId, QString data)
+void TcpMgr::slot_send_data(ReqId reqId, QByteArray dataByte)
 {
     uint16_t id = reqId;
 
-    //序列化
-    //将字符串转换为utf-8编码的字节数组
-    QByteArray dataByte = data.toUtf8();
-
-    //计算长度，使用网络字节序转换，quint是qt提供的一系列跨平台的整数类型
-    quint16 len = static_cast<quint16>(data.size());
+    // 计算长度，使用网络字节序转换
+    quint16 len = static_cast<quint16>(dataByte.size());
 
     //创建一个QByteArray用于存储要发送的所有数据，也就是拼接一下
     QByteArray block;

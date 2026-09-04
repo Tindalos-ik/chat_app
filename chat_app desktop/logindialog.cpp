@@ -106,12 +106,12 @@ void LoginDialog::on_login_btn_clicked()
     enabledBtn(false);
 
 
-    //发送http请求注册用户
+    //发送http请求登录
     QJsonObject json_obj;
     json_obj["user"] = ui->user_edit->text();
     json_obj["passwd"] = xorString(ui->pwd_edit->text());
     HttpMgr::GetInstance()->PostHttpReq(QUrl(gate_url_prefix+"/user_login"),json_obj,
-                                        ReqId::ID_LOGIN,Modules::LOGINMOD);
+                                        ReqId::ID_CHAT_LOGIN,Modules::LOGINMOD);
 
 
 }
@@ -153,17 +153,17 @@ void LoginDialog::slot_tcp_con_success(bool success)
     json_obj["token"] = _token;
 
     QJsonDocument doc(json_obj);
-    QString jsonString = doc.toJson(QJsonDocument::Indented);
+    QByteArray jsonData = doc.toJson(QJsonDocument::Compact); // 压缩发送
 
     //发送tcp请求给chatserver
-    TcpMgr::GetInstance()->sig_send_data(ReqId::ID_CHAT_LOGIN, jsonString);
+    TcpMgr::GetInstance()->sig_send_data(ReqId::ID_CHAT_LOGIN, jsonData);
 }
 
 
 void LoginDialog::initHttpHandlers()
 {
     //处理登录回包
-    _handlers.insert(ReqId::ID_LOGIN,[this](const QJsonObject& json_obj){
+    _handlers.insert(ReqId::ID_CHAT_LOGIN,[this](const QJsonObject& json_obj){
         int err = json_obj["error"].toInt();
 
         if(err == ErrorCodes::Error_Password){
