@@ -6,7 +6,8 @@ param(
     [ValidateSet('ChatServer1', 'ChatServer2')]
     [string]$Destination = 'ChatServer2',
 
-    [switch]$Apply
+    # Copy by default; use -Apply:$false for a dry-run.
+    [switch]$Apply = $true
 )
 
 $ErrorActionPreference = 'Stop'

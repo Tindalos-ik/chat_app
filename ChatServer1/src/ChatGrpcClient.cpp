@@ -26,7 +26,7 @@ ChatGrpcClient::ChatGrpcClient()
         if(cfg[word]["name"].empty()){
             continue;
         }
-        _pools[cfg[word]["name"]] = std::make_unique<ChatConPool>(5, cfg[word]["host"], cfg[word]["port"]);
+        _pools[cfg[word]["name"]] = std::make_unique<ChatConPool>(5, cfg[word]["host"], cfg[word]["rpcport"]); // 连接rpcport而不是tcpport！！！
     }
 }
 
