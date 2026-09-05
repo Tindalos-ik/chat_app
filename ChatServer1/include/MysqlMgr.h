@@ -101,13 +101,13 @@ public:
 
     // 根据用户名查找用户是否存在
     bool Checkuser(const std::string& name);
-    // 存在该用户名则将用户信息返回，返回多个用户信息
-    bool Checkuser(const std::string& name, std::vector<UserInfo>& userVec);
+    // 存在该用户名则把用户信息返回（网关保证用户名唯一，最多一条）
+    bool Checkuser(const std::string& name, UserInfo& userInfo);
 
     // 根据uid查找用户是否存在
     bool Checkuid(int uid);
-    // 存在该uid则将用户信息返回，返回多个用户信息
-    bool Checkuid(int uid, std::vector<UserInfo>& userVec);
+    // 存在该uid则把用户信息返回（uid 是唯一索引，最多一条）
+    bool Checkuid(int uid, UserInfo& userInfo);
 
     //检查用户名和邮箱是否匹配
     bool isMatch(const::std::string& name,std::string& email);

@@ -85,7 +85,7 @@ enum MSG_IDS {
 #define USERTOKENFREFIX "utoken_"
 #define UIPCOUNTPREFIX "ipcount_"
 #define USER_BASE_INFO "ubaseinfo_"
+#define USER_NAME_INFO "unameinfo_"
 
 
 #endif // !_CONST_H_
-

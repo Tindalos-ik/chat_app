@@ -1,8 +1,41 @@
 #include "MySqlMgr.h"
 #include <iostream>
 #include <vector>
+#include <sstream>
+#include <json.h>
 #include "ConfigMgr.h"
 #include "const.h"
+#include "RedisMgr.h"
+
+// 把 UserInfo 序列化成 JSON 对象，字段与登录缓存的 ubaseinfo_<uid> 保持一致
+static void FillUserJson(const UserInfo &info, Json::Value &obj)
+{
+    obj["uid"]    = info.uid;
+    obj["user"]   = info.user;
+    obj["pwd"]    = info.passwd;
+    obj["email"]  = info.email;
+    obj["nick"]   = info.nick;
+    obj["desc"]   = info.desc;
+    obj["sex"]    = info.sex;
+    obj["icon"]   = info.icon;
+}
+
+// 从 JSON 对象还原 UserInfo；格式不对返回 false，调用方忽略这份缓存
+static bool ParseUserJson(const Json::Value &obj, UserInfo &info)
+{
+    if (!obj.isObject() || !obj.isMember("uid")) {
+        return false;
+    }
+    info.uid    = obj["uid"].asInt();
+    info.user   = obj["user"].asString();
+    info.passwd = obj["pwd"].asString();
+    info.email  = obj["email"].asString();
+    info.nick   = obj["nick"].asString();
+    info.desc   = obj["desc"].asString();
+    info.sex    = obj["sex"].asInt();
+    info.icon   = obj["icon"].asString();
+    return true;
+}
 
 
 // 检查连接是否有效
@@ -218,17 +251,31 @@ bool MysqlMgr::Checkuser(const std::string & name)
 }
 
 /**
- * @brief 根据用户名查询用户，把匹配到的用户信息返回给调用方
- * @param name 要查询的用户名
- * @param userVec 输出参数：匹配到的用户信息列表（调用前内容会被清空）
- * @return true 查到至少一个用户；false 未查到或查询出错
+ * @brief 根据用户名查询用户，把用户信息返回给调用方
+ * @param name 要查询的用户名（网关保证唯一，最多返回一条）
+ * @param userInfo 输出参数：查到的用户信息
+ * @return true 查到该用户；false 未查到或查询出错
  *
- * 和单参数版 Checkuser 的区别：单参数版只回答"存不存在"，
- * 这个版本把完整的用户资料（uid/昵称/头像/签名等）一并带出来，
- * 避免调用方查到人之后还要再查一次数据库。
+ * 缓存策略：先查 Redis（unameinfo_<name>），没命中再查 MySQL，查到后写回 Redis。
+ * 和单参数版 Checkuser 的区别：单参数版只回答"存不存在"，这个版本把完整用户资料带出来。
  */
-bool MysqlMgr::Checkuser(const std::string &name, std::vector<UserInfo> &userVec)
+bool MysqlMgr::Checkuser(const std::string &name, UserInfo &userInfo)
 {
+    // 1) Redis 缓存优先：unameinfo_<name> 存的是单个 JSON 对象
+    std::string cache_key = USER_NAME_INFO + name;
+    std::string cache_str;
+    if (RedisMgr::GetInstance()->Get(cache_key, cache_str)) {
+        Json::CharReaderBuilder reader;
+        Json::Value root;
+        std::istringstream ss(cache_str);
+        std::string errs;
+        if (Json::parseFromStream(reader, ss, &root, &errs) && ParseUserJson(root, userInfo)) {
+            return true;
+        }
+        // 缓存内容损坏：忽略，落到 MySQL 重新查并回写
+    }
+
+    // 2) 缓存未命中 -> 查 MySQL（用户名唯一，fetchOne 取一行即可）
     auto con = pool_->GetConnection(); //获取连接
     Defer defer([&con, this]() { pool_->ReturnConnection(std::move(con)); }); //自动归还连接
     try{
@@ -236,30 +283,30 @@ bool MysqlMgr::Checkuser(const std::string &name, std::vector<UserInfo> &userVec
             return false;
         }
 
-        // 先清空输出容器，保证调用方拿到的是本次查询的完整结果，而不是新旧数据混在一起
-        userVec.clear();
-
-        // name 列只建了普通索引、不是唯一索引，理论上可能查到多条，所以用 fetchAll 取全部行
         // desc 是 MySQL 保留字，SQL 里必须用反引号括起来
         std::string sql = "SELECT uid, name, email, pwd, nick, `desc`, sex, icon FROM user WHERE name = ?";
         auto result = con->sql(sql).bind(name).execute();
-        auto rows = result.fetchAll();
-
-        // 逐行填充 UserInfo，列下标从 0 开始，和 SELECT 的列顺序一一对应
-        for (const auto &row : rows) {
-            UserInfo info;
-            info.uid    = row[0].get<int>();
-            info.user   = row[1].get<std::string>();
-            info.email  = row[2].get<std::string>();
-            info.passwd = row[3].get<std::string>();
-            info.nick   = row[4].get<std::string>();
-            info.desc   = row[5].get<std::string>();
-            info.sex    = row[6].get<int>();
-            info.icon   = row[7].get<std::string>();
-            userVec.push_back(std::move(info));
+        auto rows = result.fetchOne();
+        if (!rows) {
+            return false; // 用户不存在，不写缓存
         }
 
-        return !userVec.empty();
+        // 填充输出参数，列下标从 0 开始，和 SELECT 的列顺序一一对应
+        userInfo.uid    = rows[0].get<int>();
+        userInfo.user   = rows[1].get<std::string>();
+        userInfo.email  = rows[2].get<std::string>();
+        userInfo.passwd = rows[3].get<std::string>();
+        userInfo.nick   = rows[4].get<std::string>();
+        userInfo.desc   = rows[5].get<std::string>();
+        userInfo.sex    = rows[6].get<int>();
+        userInfo.icon   = rows[7].get<std::string>();
+
+        // 3) 把用户信息写回 Redis，下次直接命中，不用再查库
+        Json::Value obj;
+        FillUserJson(userInfo, obj);
+        RedisMgr::GetInstance()->Set(cache_key, obj.toStyledString());
+
+        return true;
     }catch(const std::exception &e){
         std::cout << "Exception: " << e.what() << std::endl;
         return false;
@@ -298,13 +345,33 @@ bool MysqlMgr::Checkuid(int uid)
 }
 
 /**
- * @brief 根据 uid 查询用户，把匹配到的用户信息返回给调用方
+ * @brief 根据 uid 查询用户，把用户信息返回给调用方
  * @param uid 用户ID（user 表里 uid 是唯一索引，最多返回一条）
- * @param userVec 输出参数：匹配到的用户信息列表（调用前内容会被清空）
+ * @param userInfo 输出参数：查到的用户信息
  * @return true 查到该用户；false 未查到或查询出错
+ *
+ * 缓存策略：先查 Redis（ubaseinfo_<uid>，与登录缓存共用），没命中再查 MySQL，查到后写回 Redis。
  */
-bool MysqlMgr::Checkuid(int uid, std::vector<UserInfo> &userVec)
+bool MysqlMgr::Checkuid(int uid, UserInfo &userInfo)
 {
+    // 1) Redis 缓存优先：ubaseinfo_<uid> 与登录缓存共用同一份，存的是单个 JSON 对象
+    std::string cache_key = USER_BASE_INFO + std::to_string(uid);
+    std::string cache_str;
+    if (RedisMgr::GetInstance()->Get(cache_key, cache_str)) {
+        Json::CharReaderBuilder reader;
+        Json::Value root;
+        std::istringstream ss(cache_str);
+        std::string errs;
+        if (Json::parseFromStream(reader, ss, &root, &errs) && root.isObject() &&
+            root.isMember("uid") && root["uid"].asInt() == uid) {
+            if (ParseUserJson(root, userInfo)) {
+                return true;
+            }
+        }
+        // 缓存不存在 / 内容损坏 / uid 不匹配：忽略，落到 MySQL 重新查并回写
+    }
+
+    // 2) 缓存未命中 -> 查 MySQL
     auto con = pool_->GetConnection(); //获取连接
     Defer defer([&con, this]() { pool_->ReturnConnection(std::move(con)); }); //自动归还连接
     try{
@@ -312,27 +379,29 @@ bool MysqlMgr::Checkuid(int uid, std::vector<UserInfo> &userVec)
             return false;
         }
 
-        userVec.clear();
-
         // uid 是唯一索引，实际最多返回一行；和 GetUserInfo 保持同一套列顺序
         std::string sql = "SELECT uid, name, email, pwd, nick, `desc`, sex, icon FROM user WHERE uid = ?";
         auto result = con->sql(sql).bind(uid).execute();
-        auto rows = result.fetchAll();
-
-        for (const auto &row : rows) {
-            UserInfo info;
-            info.uid    = row[0].get<int>();
-            info.user   = row[1].get<std::string>();
-            info.email  = row[2].get<std::string>();
-            info.passwd = row[3].get<std::string>();
-            info.nick   = row[4].get<std::string>();
-            info.desc   = row[5].get<std::string>();
-            info.sex    = row[6].get<int>();
-            info.icon   = row[7].get<std::string>();
-            userVec.push_back(std::move(info));
+        auto rows = result.fetchOne();
+        if (!rows) {
+            return false; // 用户不存在，不写缓存
         }
 
-        return !userVec.empty();
+        userInfo.uid    = rows[0].get<int>();
+        userInfo.user   = rows[1].get<std::string>();
+        userInfo.email  = rows[2].get<std::string>();
+        userInfo.passwd = rows[3].get<std::string>();
+        userInfo.nick   = rows[4].get<std::string>();
+        userInfo.desc   = rows[5].get<std::string>();
+        userInfo.sex    = rows[6].get<int>();
+        userInfo.icon   = rows[7].get<std::string>();
+
+        // 3) 写回 Redis（对象格式与登录缓存 ubaseinfo_<uid> 一致）
+        Json::Value obj;
+        FillUserJson(userInfo, obj);
+        RedisMgr::GetInstance()->Set(cache_key, obj.toStyledString());
+
+        return true;
     }catch(const std::exception &e){
         std::cout << "Exception: " << e.what() << std::endl;
         return false;

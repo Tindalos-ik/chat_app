@@ -201,44 +201,37 @@ void LogicSystem::UserSearchHandler(std::shared_ptr<CSession> session, const sho
         session->Send(return_str, ID_SEARCH_USER_RSP); // 发送用户搜索回包，在出作用域的时候会自动调用，防御式编程处理
     });
 
-    // 从数据库中寻找这个用户是否存在
-    std::vector<UserInfo> user_info;
-    bool b_uid = false;
+    // 从数据库中寻找这个用户是否存在：输入是纯数字时优先按 uid 查，否则按用户名查
+    // （网关保证用户名唯一，所以这里只需要单个 UserInfo，不用 vector）
+    UserInfo user_info;
+    bool found = false;
     if (is_number) {
         try {
-            b_uid = MysqlMgr::GetInstance()->Checkuid(std::stoi(uid_str), user_info);
+            found = MysqlMgr::GetInstance()->Checkuid(std::stoi(uid_str), user_info);
         } catch (const std::exception &e) {
             // uid 字符串超出 int 范围等情况：按查不到处理，不能让异常逃出工作线程
             std::cout << "Exception: " << e.what() << std::endl;
         }
     }
 
-    if(b_uid){
+    if (!found) {
+        // 输入的是用户名，或按 uid 没查到：再按用户名查一次
+        found = MysqlMgr::GetInstance()->Checkuser(uid_str, user_info);
+    }
+
+    if(found){
         // 说明客户端传来的是uid，且查到了用户
         rtvalue["error"] = ErrorCode::Success;
-        rtvalue["uid"] = user_info[0].uid;
-        rtvalue["user"] = user_info[0].user;
-        rtvalue["email"] = user_info[0].email;
-        rtvalue["nick"] = user_info[0].nick;
-        rtvalue["desc"] = user_info[0].desc;
-        rtvalue["sex"] = user_info[0].sex;
-        rtvalue["icon"] = user_info[0].icon;
-    }else{
-        // 输入的是用户名，或按 uid 没查到：再按用户名查一次
-        bool b_user = MysqlMgr::GetInstance()->Checkuser(uid_str, user_info);
-        if(b_user){
-            rtvalue["error"] = ErrorCode::Success;
-            rtvalue["uid"] = user_info[0].uid;
-            rtvalue["user"] = user_info[0].user;
-            rtvalue["email"] = user_info[0].email;
-            rtvalue["nick"] = user_info[0].nick;
-            rtvalue["desc"] = user_info[0].desc;
-            rtvalue["sex"] = user_info[0].sex;
-            rtvalue["icon"] = user_info[0].icon;
-        }else{
-            // 用户不存在
-            rtvalue["error"] = ErrorCode::SearchUserNoExist;
-        }
+        rtvalue["uid"] = user_info.uid;
+        rtvalue["user"] = user_info.user;
+        rtvalue["email"] = user_info.email;
+        rtvalue["nick"] = user_info.nick;
+        rtvalue["desc"] = user_info.desc;
+        rtvalue["sex"] = user_info.sex;
+        rtvalue["icon"] = user_info.icon;
+    } else {
+        // 用户不存在
+        rtvalue["error"] = ErrorCode::SearchUserNoExist;
     }
 }
 
