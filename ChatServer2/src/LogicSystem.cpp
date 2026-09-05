@@ -2,6 +2,7 @@
 #include <json.h>
 #include <sstream>
 #include <iostream>
+#include <cctype>
 #include "MysqlMgr.h"
 #include "RedisMgr.h"
 #include "UserMgr.h"
@@ -181,9 +182,18 @@ void LogicSystem::UserSearchHandler(std::shared_ptr<CSession> session, const sho
         return;
     }
 
-    // 客户端可以输入uid，也可以输入用户名
-    int uid = root["uid"].asInt();
-    std::string username = root["uid"].asString();
+    // 客户端搜索框传的 uid 字段永远是字符串：可能输入 uid，也可能输入用户名
+    // 先判断是不是纯数字：是纯数字才按 uid 查，否则直接按用户名查。
+    // 注意：不能对字符串直接调 asInt()，jsoncpp 会触发断言导致进程退出；
+    // 而且解析成 0 还会误命中历史遗留的 uid=0 用户。
+    std::string uid_str = root["uid"].asString();
+    bool is_number = !uid_str.empty();
+    for (char ch : uid_str) {
+        if (!std::isdigit(static_cast<unsigned char>(ch))) {
+            is_number = false;
+            break;
+        }
+    }
 
     Json::Value rtvalue;
     Defer defer([this, &rtvalue, session]{
@@ -193,11 +203,20 @@ void LogicSystem::UserSearchHandler(std::shared_ptr<CSession> session, const sho
 
     // 从数据库中寻找这个用户是否存在
     std::vector<UserInfo> user_info;
-    bool b_uid = MysqlMgr::GetInstance()->Checkuid(uid, user_info);
+    bool b_uid = false;
+    if (is_number) {
+        try {
+            b_uid = MysqlMgr::GetInstance()->Checkuid(std::stoi(uid_str), user_info);
+        } catch (const std::exception &e) {
+            // uid 字符串超出 int 范围等情况：按查不到处理，不能让异常逃出工作线程
+            std::cout << "Exception: " << e.what() << std::endl;
+        }
+    }
+
     if(b_uid){
-        // 说明客户端传来的是uid
+        // 说明客户端传来的是uid，且查到了用户
         rtvalue["error"] = ErrorCode::Success;
-        rtvalue["uid"] = uid;
+        rtvalue["uid"] = user_info[0].uid;
         rtvalue["user"] = user_info[0].user;
         rtvalue["email"] = user_info[0].email;
         rtvalue["nick"] = user_info[0].nick;
@@ -205,8 +224,8 @@ void LogicSystem::UserSearchHandler(std::shared_ptr<CSession> session, const sho
         rtvalue["sex"] = user_info[0].sex;
         rtvalue["icon"] = user_info[0].icon;
     }else{
-        // 说明客户端传来的是用户名
-        bool b_user = MysqlMgr::GetInstance()->Checkuser(username, user_info);
+        // 输入的是用户名，或按 uid 没查到：再按用户名查一次
+        bool b_user = MysqlMgr::GetInstance()->Checkuser(uid_str, user_info);
         if(b_user){
             rtvalue["error"] = ErrorCode::Success;
             rtvalue["uid"] = user_info[0].uid;
