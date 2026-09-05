@@ -37,7 +37,8 @@ private:
     void DealMsg();              // 工作线程：循环消费消息队列
     void RegisterCallBacks();    // 注册 消息id -> 处理函数 的映射
 
-    void LoginHandler(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data); // 登录处理
+    void LoginHandler(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data); // 登录服务
+    void UserSearchHandler(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data); // 查询用户服务
 
     bool GetBaseInfo(std::string base_key, int uid, std::shared_ptr<UserInfo>& userinfo);
 

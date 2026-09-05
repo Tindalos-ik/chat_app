@@ -74,11 +74,18 @@ void LogicSystem::DealMsg() {
     }
 }
 
-// 注册 消息id -> 处理函数 的映射
+// 注册 消息id -> 处理函数 的映射 诸如 登录，搜索好友，聊天，心跳等服务都在这里注册
 void LogicSystem::RegisterCallBacks() {
-    _fun_callbacks[MSG_CHAT_LOGIN] = std::bind(&LogicSystem::LoginHandler, this,
-        std::placeholders::_1, std::placeholders::_2, std::placeholders::_3);
-    // 后续消息（搜索好友、聊天、心跳等）在对应开发阶段继续注册
+    _fun_callbacks[MSG_CHAT_LOGIN] = [this](std::shared_ptr<CSession> session,
+                                            const short &msg_id,
+                                            const std::string &msg_data) {
+        LoginHandler(session, msg_id, msg_data);
+    };
+    _fun_callbacks[ID_SEARCH_USER_REQ] = [this](std::shared_ptr<CSession> session,
+                                            const short &msg_id,
+                                            const std::string &msg_data) {  
+        UserSearchHandler(session, msg_id, msg_data);
+    };
 }
 
 // 登录处理：解析uid/token -> 请求StatusServer校验 -> 把结果回包给客户端
@@ -160,6 +167,60 @@ void LogicSystem::LoginHandler(std::shared_ptr<CSession> session, const short &m
     UserMgr::GetInstance()->SetUserSession(uid, session);
 
     return;
+}
+
+void LogicSystem::UserSearchHandler(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data){
+    Json::CharReaderBuilder reader;
+    Json::Value root;
+    std::istringstream ss(msg_data);
+    std::string errs;
+    bool parse_success = Json::parseFromStream(reader, ss, &root, &errs);
+    if (!parse_success) {
+        std::cout << "Failed to parse JSON data" << std::endl;
+        std::cout << errs << std::endl;
+        return;
+    }
+
+    // 客户端可以输入uid，也可以输入用户名
+    int uid = root["uid"].asInt();
+    std::string username = root["uid"].asString();
+
+    Json::Value rtvalue;
+    Defer defer([this, &rtvalue, session]{
+        std::string return_str = rtvalue.toStyledString();
+        session->Send(return_str, ID_SEARCH_USER_RSP); // 发送用户搜索回包，在出作用域的时候会自动调用，防御式编程处理
+    });
+
+    // 从数据库中寻找这个用户是否存在
+    std::vector<UserInfo> user_info;
+    bool b_uid = MysqlMgr::GetInstance()->Checkuid(uid, user_info);
+    if(b_uid){
+        // 说明客户端传来的是uid
+        rtvalue["error"] = ErrorCode::Success;
+        rtvalue["uid"] = uid;
+        rtvalue["user"] = user_info[0].user;
+        rtvalue["email"] = user_info[0].email;
+        rtvalue["nick"] = user_info[0].nick;
+        rtvalue["desc"] = user_info[0].desc;
+        rtvalue["sex"] = user_info[0].sex;
+        rtvalue["icon"] = user_info[0].icon;
+    }else{
+        // 说明客户端传来的是用户名
+        bool b_user = MysqlMgr::GetInstance()->Checkuser(username, user_info);
+        if(b_user){
+            rtvalue["error"] = ErrorCode::Success;
+            rtvalue["uid"] = user_info[0].uid;
+            rtvalue["user"] = user_info[0].user;
+            rtvalue["email"] = user_info[0].email;
+            rtvalue["nick"] = user_info[0].nick;
+            rtvalue["desc"] = user_info[0].desc;
+            rtvalue["sex"] = user_info[0].sex;
+            rtvalue["icon"] = user_info[0].icon;
+        }else{
+            // 用户不存在
+            rtvalue["error"] = ErrorCode::SearchUserNoExist;
+        }
+    }
 }
 
 bool LogicSystem::GetBaseInfo(std::string base_key, int uid, std::shared_ptr<UserInfo>& user_info){

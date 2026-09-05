@@ -2,7 +2,6 @@
 #include <QDebug>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include "mainwindow.h"
 #include "usermgr.h"
 #include "userdata.h"
 
@@ -138,7 +137,7 @@ void TcpMgr::initHandlers()
     });
 
     // 搜索列表搜索回包
-    _handler.insert(ReqId::ID_SEARCH_USER_REQ, [this](ReqId id, int len, QByteArray data){
+    _handler.insert(ReqId::ID_SEARCH_USER_RSP, [this](ReqId id, int len, QByteArray data){
         Q_UNUSED(len);
         qDebug() << "handle id is " << id << "data is " << data;
 
@@ -177,7 +176,7 @@ void TcpMgr::initHandlers()
         }
 
         auto si = std::make_shared<SearchInfo>(json_obj["uid"].toInt(),
-                                               json_obj["name"].toString(),
+                                               json_obj["user"].toString(),
                                                json_obj["nick"].toString(),
                                                json_obj["desc"].toString(),
                                                json_obj["sex"].toInt());

@@ -9,6 +9,7 @@
 #include <condition_variable>
 #include <atomic>
 #include <string>
+#include <vector>
 #include "singleton.h"
 #include "data.h"
 
@@ -95,11 +96,18 @@ class MysqlMgr : public Singleton<MysqlMgr>{
 public:
     ~MysqlMgr(); //析构的时候先调用这个析构再去调用pool的析构，所以手动关闭连接池
 
-    //注册用户
+    // 注册用户
     bool RegUser(const std::string& name, const std::string& email, const std::string& password);
 
-    //查找用户是否存在
-    bool Checkuser(const::std::string& name);
+    // 根据用户名查找用户是否存在
+    bool Checkuser(const std::string& name);
+    // 存在该用户名则将用户信息返回，返回多个用户信息
+    bool Checkuser(const std::string& name, std::vector<UserInfo>& userVec);
+
+    // 根据uid查找用户是否存在
+    bool Checkuid(int uid);
+    // 存在该uid则将用户信息返回，返回多个用户信息
+    bool Checkuid(int uid, std::vector<UserInfo>& userVec);
 
     //检查用户名和邮箱是否匹配
     bool isMatch(const::std::string& name,std::string& email);

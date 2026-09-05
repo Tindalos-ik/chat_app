@@ -20,6 +20,7 @@ enum ErrorCode{
     Error_UserNotMatchEamil = 1010, //用户名和邮箱不匹配
     UidInvalid = 1011, //用户id无效
     TokenInvalid = 1012, //token无效
+    SearchUserNoExist = 1013, //搜索的用户不存在
 };
 
 //手动定义一个Defer类，里面有一个函数，用于在函数结束时自动执行，比如释放资源，实现类似RAII的功能   这个是go语言中的defer关键字
