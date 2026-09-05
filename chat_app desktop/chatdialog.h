@@ -5,6 +5,7 @@
 #include <QListWidget>
 #include <QVector>
 #include "statewidget.h"
+#include "userdata.h"
 
 namespace Ui {
 class ChatDialog;
@@ -25,12 +26,11 @@ public:
 private slots:
     void slot_loading_chat_user();   // 聊天列表滚到底部时加载更多
     void slot_loading_con_user();
-
     void on_send_btn_clicked();
-
     void slot_side_chat();      // 侧边栏：聊天
     void slot_side_contact();   // 侧边栏：联系人
     void slot_side_setting();   // 侧边栏：设置（页面未实现）
+    void slot_apply_friend(std::shared_ptr<AddFriendApply>& apply_info);
 
 protected:
     // 重写事件过滤器实现根据鼠标位置判断是否隐藏搜索框恢复聊天界面

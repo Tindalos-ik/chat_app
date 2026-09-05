@@ -361,6 +361,7 @@ void ApplyFriend::slot_apply_sure()
         bakname = ui->back_ed->placeholderText();
     }
 
+    jsonObj["applyname"] = name;
     jsonObj["bakname"] = bakname;
     jsonObj["touid"] = _si->_uid; // 获取搜索到的用户的uid
 

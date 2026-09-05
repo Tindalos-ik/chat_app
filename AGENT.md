@@ -49,6 +49,7 @@
 | [grpc.md](note/grpc.md) | gRPC 应用 |
 | [服务部署.md](note/服务部署.md) | Windows/Linux 部署 |
 | [数据库设计.md](note/数据库设计.md) | MySQL 用户数据设计（llfc1） |
+| [聊天服务器服务.md](note/聊天服务器服务.md) | proto 中定义的 ChatServer gRPC 服务、消息字段与跨服转发约定 |
 | [MySQL连接库.md](note/MySQL连接库.md) | X DevAPI / mysqlcppconnx |
 | [Qt知识点.md](note/Qt知识点.md) | Qt 类设计、信号槽、事件 |
 | [Qt网络编程.md](note/Qt网络编程.md) | HTTP/TCP 编程、粘包 |

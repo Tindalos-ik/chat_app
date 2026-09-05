@@ -184,6 +184,46 @@ void TcpMgr::initHandlers()
         emit sig_user_search(si);
     });
 
+    // 客户端监听服务器发来的添加好友请求，由新朋友那一栏接收信号做出反应
+    // 这个id是通知用户好友申请
+    _handler.insert(ID_NOTIFY_ADD_FRIEND_REQ, [this](ReqId id, int len, QByteArray data){
+        Q_UNUSED(len);
+        qDebug() << "handle id is " << id << "data is " << data;
+
+        //将字节流转换为json文档
+        QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
+
+        //检查转换是否成功
+        if(jsonDoc.isNull()){
+            qDebug() << "failed to create QJsonDocument";
+            return;
+        }
+
+        //将json文档转换为json对象
+        QJsonObject json_obj = jsonDoc.object();
+
+        if(!json_obj.contains("error")){ //正常解析成功会有error键
+            int err = ErrorCodes::ERR_JSON;
+            qDebug() << "Search Failed, err is Json Parse Err" << err;
+            return;
+        }
+
+        int err = json_obj["error"].toInt();
+
+        if(err != ErrorCodes::SUCCESS){
+            qDebug() << "Search Failed, err is" << err;
+            return;
+        }
+
+        auto apply_user = std::make_shared<AddFriendApply>(json_obj["uid"].toInt(),
+                                               json_obj["user"].toString(),
+                                               json_obj["nick"].toString(),
+                                               json_obj["desc"].toString(),
+                                               json_obj["sex"].toInt(),
+                                               json_obj["icon"].toString());
+        emit sig_friend_apply(apply_user);
+    });
+
 
 }
 

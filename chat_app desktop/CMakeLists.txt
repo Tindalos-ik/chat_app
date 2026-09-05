@@ -52,7 +52,6 @@ qt_add_executable(chat_app
     applyfriend.h applyfriend.cpp applyfriend.ui
     clickedoncelabel.h clickedoncelabel.cpp
     friendlabel.h friendlabel.cpp friendlabel.ui
-
     #ini、ui、qrc直接加入可执行文件
 )
 

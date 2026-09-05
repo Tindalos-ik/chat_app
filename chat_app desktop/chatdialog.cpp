@@ -18,6 +18,8 @@
 #include "messagetextedit.h"
 #include "chatitembase.h"
 #include <QMouseEvent>
+#include "tcpmgr.h"
+#include "usermgr.h"
 
 namespace {
 // 示例头像资源，循环使用
@@ -127,6 +129,8 @@ ChatDialog::ChatDialog(QWidget *parent)
     // 注意：必须挂在 qApp 上，挂在 this 上收不到子控件（搜索框/列表/按钮）的点击事件
     qApp->installEventFilter(this);
 
+    // tcp服务器发送好友申请信号，聊天界面做出响应
+    connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_friend_apply, this, &ChatDialog::slot_apply_friend);
 }
 
 ChatDialog::~ChatDialog()
@@ -284,6 +288,23 @@ void ChatDialog::slot_side_setting()
 {
     // 设置页还没有实现：先不切换页面，但按钮保持选中态（与聊天/好友一致）
     ClearLabelState(ui->side_settings_lb);
+}
+
+// 申请好友槽函数，显示新的申请信息和红点
+void ChatDialog::slot_apply_friend(std::shared_ptr<AddFriendApply> &apply)
+{
+    qDebug() << "receive apply friend slot, applyuid is " << apply->_fromuid << " name is "
+             << apply->_name << " desc is " << apply->_desc;
+
+    bool b_already = UserMgr::GetInstance()->AlreadyApply(apply->_fromuid);
+    if(b_already){
+        return;
+    }
+
+    UserMgr::GetInstance()->AddApplyList(std::make_shared<ApplyInfo>(apply));
+    ui->side_contact_lb->ShowRedPoint(true);
+    ui->contact_list->ShowRedPoint(true);
+    ui->apply_friend_page->AddNewApply(apply);
 }
 
 bool ChatDialog::eventFilter(QObject *watched, QEvent *event)
