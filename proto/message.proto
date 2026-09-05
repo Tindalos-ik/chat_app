@@ -72,7 +72,7 @@ message RplyFriendReq {
 message RplyFriendRsp {
     int32 error = 1; // 业务处理结果，0 表示成功
     int32 rplyuid = 2; // 回复申请的用户 id
-    bool touid = 3; // 预留字段，保留现有协议定义
+    int32 touid = 3; // 原好友申请的申请用户 id
 }
 
 // 当前服务器向目标用户所在的 ChatServer 转发聊天消息。
