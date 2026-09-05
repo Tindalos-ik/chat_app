@@ -53,7 +53,10 @@ message AddFriendReq {
     int32 applyuid = 1; // 申请好友的用户 id
     string name = 2; // 申请用户的昵称，用于展示好友申请
     string desc = 3; // 好友申请附言
-    int32 touid = 4; // 被申请用户 id
+    string icon = 4; // 申请好友的用户头像
+    string nick = 5; // 申请好友的昵称
+    int32 sex = 6; // 申请好友的性别
+    int32 touid = 7; // 被申请用户 id
 }
 
 message AddFriendRsp {
