@@ -106,7 +106,7 @@ public:
 
 private:
     ChatGrpcClient();
-    std::unordered_map<std::string, std::unique_ptr<ChatConPool>> _pools; // 连接池，key为server_ip
+    std::unordered_map<std::string, std::unique_ptr<ChatConPool>> _pools; // 连接池，key为server_name
 
 };
 

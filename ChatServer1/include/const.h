@@ -81,7 +81,7 @@ enum MSG_IDS {
 };
 
 #define LOGIN_COUNT "login_count"
-#define USERIPPREFIX "uip_"
+#define USERIPPREFIX "uip_"  // 用户登录的服务器
 #define USERTOKENFREFIX "utoken_"
 #define UIPCOUNTPREFIX "ipcount_"
 #define USER_BASE_INFO "ubaseinfo_"

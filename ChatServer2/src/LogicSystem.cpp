@@ -6,6 +6,7 @@
 #include "MysqlMgr.h"
 #include "RedisMgr.h"
 #include "UserMgr.h"
+#include "ChatGrpcClient.h"
 
 using namespace std;
 
@@ -86,6 +87,11 @@ void LogicSystem::RegisterCallBacks() {
                                             const short &msg_id,
                                             const std::string &msg_data) {  
         UserSearchHandler(session, msg_id, msg_data);
+    };
+    _fun_callbacks[ID_ADD_FRIEND_REQ] = [this](std::shared_ptr<CSession> session,
+                                            const short &msg_id,    
+                                            const std::string &msg_data) {
+        AddFriendApply(session, msg_id, msg_data);
     };
 }
 
@@ -283,4 +289,82 @@ bool LogicSystem::GetBaseInfo(std::string base_key, int uid, std::shared_ptr<Use
     RedisMgr::GetInstance()->Set(base_key, cache_root.toStyledString()); // 缓存到redis中
 
     return true;
+}
+
+void LogicSystem::AddFriendApply(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data){
+    Json::CharReaderBuilder reader;
+    Json::Value root;
+    std::istringstream ss(msg_data);
+    std::string errs;
+    bool parse_success = Json::parseFromStream(reader, ss, &root, &errs);
+    if (!parse_success) {
+        std::cout << "Failed to parse JSON data" << std::endl;
+        std::cout << errs << std::endl;
+        return;
+    }
+
+    auto uid = root["uid"].asInt();
+    auto applyname = root["applyname"].asString();
+    auto bakname = root["bakname"].asString();
+    auto touid = root["touid"].asInt();
+
+    Json::Value rtvalue;
+    Defer defer([this, &rtvalue, session]{
+        std::string return_str = rtvalue.toStyledString();
+        session->Send(return_str, ID_ADD_FRIEND_RSP); // 发送回包，在出作用域的时候会自动调用，防御式编程处理
+    });
+
+    // 先更新数据库中关于好友申请的数据表；写入失败时不再继续通知在线用户
+    if (!MysqlMgr::GetInstance()->AddFriendApply(uid, touid)) {
+        rtvalue["error"] = ErrorCode::RPCFaild;
+        return;
+    }
+    rtvalue["error"] = ErrorCode::Success;
+
+    // 查询redis 查询对端的服务器
+    auto touid_str = std::to_string(touid);
+    auto to_ip_key = USERIPPREFIX + touid_str;
+    std::string to_ip_value; 
+    bool b_ip = RedisMgr::GetInstance()->Get(to_ip_key, to_ip_value);
+    if (!b_ip) {
+        return;
+    }
+
+    auto self_name = ConfigMgr::Inst()["SelfChatServer"]["name"];
+
+    // 如果对端服务器就是自己，则直接发送好友申请
+    if(self_name == to_ip_value){
+        auto session = UserMgr::GetInstance()->GetSession(touid);
+        if(session){
+            // 在内存中直接发送通知对方
+            Json::Value notify;
+            notify["error"] = ErrorCode::Success;
+            notify["applyuid"] = uid;
+            notify["name"] = applyname;
+            notify["desc"] = "";
+            std::string return_str = notify.toStyledString();
+            session->Send(return_str, ID_NOTIFY_ADD_FRIEND_REQ);
+        }
+        return;
+    }
+
+    // 如果对端服务器不是自己，则转发给对端服务器
+    std::string base_key = USER_BASE_INFO + std::to_string(touid);
+    auto apply_info = std::make_shared<UserInfo>();
+    bool b_info = GetBaseInfo(base_key, touid, apply_info);
+
+    AddFriendReq add_req;
+    add_req.set_applyuid(uid);
+    add_req.set_name(applyname);
+    add_req.set_desc("");
+    add_req.set_touid(touid);
+    
+    if(b_info){
+        add_req.set_icon(apply_info->icon);
+        add_req.set_sex(apply_info->sex);
+        add_req.set_nick(apply_info->nick);
+    }
+
+    // 转发，通知对端服务器有新的好友申请
+    ChatGrpcClient::GetInstance()->NotifyAddFriend(to_ip_value, add_req);
 }

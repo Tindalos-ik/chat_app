@@ -574,3 +574,26 @@ UserInfo MysqlMgr::GetUserInfo(int uid){
         return user_info;
     }
 }
+
+
+bool MysqlMgr::AddFriendApply(int uid, int touid){
+    auto con = pool_->GetConnection(); //获取连接
+    if(con == nullptr) return false;
+    Defer defer([&con, this]() { pool_->ReturnConnection(std::move(con)); }); //自动归还连接
+
+    try{
+        if (uid <= 0 || touid <= 0 || uid == touid) {
+            return false;
+        }
+        // friend_apply 通过 (from_uid, to_uid) 唯一索引避免重复申请。
+        // 重复请求保留原有 status，不覆盖已经处理的申请。
+        const std::string sql =
+            "INSERT INTO friend_apply (from_uid, to_uid, status) VALUES (?, ?, 0) "
+            "ON DUPLICATE KEY UPDATE status = status";
+        con->sql(sql).bind(uid).bind(touid).execute();
+        return true;
+    }catch(const std::exception &e){
+        std::cout << "Exception: " << e.what() << std::endl;
+        return false;
+    }
+}

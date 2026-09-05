@@ -62,7 +62,8 @@ message AddFriendReq {
 message AddFriendRsp {
     int32 error = 1; // 业务处理结果，0 表示成功
     int32 applyuid = 2; // 申请用户 id，用于匹配本次申请
-    string name = 3; // 申请用户昵称，用于通知接收方
+    string name = 3; // 申请用户用户名，用于通知接收方
+    int32 touid = 4; // 被申请用户 id，用于匹配本次申请
 }
 
 // 当前服务器向申请方所在的 ChatServer 转发好友申请处理结果。

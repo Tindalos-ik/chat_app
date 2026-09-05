@@ -43,7 +43,34 @@ bool ChatGrpcClient::GetBaseInfo(std::string base_key, int uid, std::shared_ptr<
 }
 
 AddFriendRsp ChatGrpcClient::NotifyAddFriend(std::string server_ip, const AddFriendReq& request){
-    return AddFriendRsp();
+    AddFriendRsp rsp;
+    Defer defer([&rsp, &request](){
+        rsp.set_error(ErrorCode::Success);
+        rsp.set_applyuid(request.applyuid());
+        rsp.set_touid(request.touid());
+    });
+
+    auto find_iter = _pools.find(server_ip); // 找到对应的连接池
+    if(find_iter == _pools.end()){
+        return rsp;
+    }
+
+    auto& pool = find_iter->second;
+
+    ClientContext context;
+    // 获取连接池中的一个连接
+    auto stub = pool->getConnnection();
+    Status status = stub->NotifyAddFriend(&context, request, &rsp); // 调用远程方法
+    Defer defercon([&pool, &stub, this](){
+        pool->returnConnection(std::move(stub));
+    });
+
+    if(!status.ok()){
+        rsp.set_error(ErrorCode::RPCFaild);
+        return rsp;
+    }
+    
+    return rsp;
 }
     
 AuthFriendRsp ChatGrpcClient::NotifyAuthFriend(std::string server_ip, const AuthFriendReq& request){

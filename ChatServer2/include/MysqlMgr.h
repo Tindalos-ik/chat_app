@@ -123,6 +123,9 @@ public:
 
     UserInfo GetUserInfo(int uid);
 
+    // 保存好友申请；重复申请不产生重复记录
+    bool AddFriendApply(int uid, int touid);
+
 private:
     MysqlMgr();
 
