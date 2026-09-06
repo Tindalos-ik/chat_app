@@ -155,7 +155,13 @@ void LogicSystem::LoginHandler(std::shared_ptr<CSession> session, const short &m
     rtvalue["sex"] = user_info->sex;
     rtvalue["icon"] = user_info->icon;
 
-    // 从数据库获取申请列表，存在本地
+    // 从数据库获取用户的好友申请列表，存在本地
+    std::vector<std::shared_ptr<ApplyInfo>> apply_list;
+    bool b_apply = MysqlMgr::GetInstance()->GetFriendApplyInfo(uid, apply_list);
+    
+    if (b_apply) {
+        
+    }
 
     // 从数据库获取好友列表，存在本地
 

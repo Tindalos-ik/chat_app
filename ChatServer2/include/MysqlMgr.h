@@ -126,6 +126,11 @@ public:
     // 保存好友申请；重复申请不产生重复记录
     bool AddFriendApply(int uid, int touid);
 
+    // 获取指定接收者收到的好友申请，并以查询结果完整替换 applications。
+    bool GetFriendApplyInfo(
+        int recipientUid,
+        std::vector<std::shared_ptr<ApplyInfo>>& applications);
+
 private:
     MysqlMgr();
 

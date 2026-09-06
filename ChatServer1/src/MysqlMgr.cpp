@@ -597,3 +597,48 @@ bool MysqlMgr::AddFriendApply(int uid, int touid){
         return false;
     }
 }
+
+bool MysqlMgr::GetFriendApplyInfo(
+    int recipientUid,
+    std::vector<std::shared_ptr<ApplyInfo>>& applications){
+    if (recipientUid <= 0) {
+        return false;
+    }
+
+    auto con = pool_->GetConnection();
+    if (con == nullptr) {
+        return false;
+    }
+    Defer defer([&con, this]() { pool_->ReturnConnection(std::move(con)); });
+
+    try {
+        // friend_apply 记录申请关系和处理状态，user 提供申请方的展示资料。
+        // 使用自增 id 倒序表示最新申请优先。
+        const std::string sql =
+            "SELECT u.uid, u.name, u.`desc`, u.icon, u.nick, fa.status "
+            "FROM friend_apply AS fa "
+            "INNER JOIN user AS u ON fa.from_uid = u.uid "
+            "WHERE fa.to_uid = ? "
+            "ORDER BY fa.id DESC";
+        auto result = con->sql(sql).bind(recipientUid).execute();
+
+        // 仅在整个查询成功后更新输出参数，调用方不会看到部分结果。
+        std::vector<std::shared_ptr<ApplyInfo>> queriedApplications;
+        for (const auto& row : result.fetchAll()) {
+            auto application = std::make_shared<ApplyInfo>();
+            application->_uid = row[0].get<int>();
+            application->_user = row[1].get<std::string>();
+            application->_desc = row[2].get<std::string>();
+            application->_icon = row[3].get<std::string>();
+            application->_nick = row[4].get<std::string>();
+            application->_status = row[5].get<int>();
+            queriedApplications.push_back(std::move(application));
+        }
+
+        applications = std::move(queriedApplications);
+        return true;
+    } catch (const std::exception& e) {
+        std::cout << "Exception: " << e.what() << std::endl;
+        return false;
+    }
+}

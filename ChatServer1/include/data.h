@@ -21,6 +21,7 @@ struct ApplyInfo {
     std::string _desc;
     std::string _icon;
     std::string _nick;
+    int _status = 0;
 };
 
 #endif // DATA_H

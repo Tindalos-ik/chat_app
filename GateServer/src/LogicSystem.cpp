@@ -151,7 +151,7 @@ LogicSystem::LogicSystem()
     });
 
 
-    //实现登录的逻辑
+    //实现登录的逻辑，这里是将聊天服务器的地址返回给客户端，让客户端去连接服务器，然后客户端再向服务器发送登录请求
     RegPost("/user_login", [](std::shared_ptr<HttpConnection> connection){
         //获取post请求的body，从buffer转成string
         auto body_str = boost::beast::buffers_to_string(connection->_request.body().data());
