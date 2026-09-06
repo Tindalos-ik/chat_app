@@ -27,9 +27,21 @@ struct AddFriendApply{
     QString _icon;
 };
 
-struct ApplyInfo{
-    ApplyInfo(std::shared_ptr<AddFriendApply>& apply);
+struct ApplyInfo {
+    // status: 0 待处理，1 已同意；页面据此切换“添加”按钮和状态文本。
+    ApplyInfo(int uid, QString name, QString desc,
+              QString icon, QString nick, int sex, int status);
 
+    ApplyInfo(std::shared_ptr<AddFriendApply> addinfo);
+
+    void SetIcon(QString head);
+    int _uid;
+    QString _name;
+    QString _desc;
+    QString _icon;
+    QString _nick;
+    int _sex;
+    int _status;
 };
 
 #endif // USERDATA_H

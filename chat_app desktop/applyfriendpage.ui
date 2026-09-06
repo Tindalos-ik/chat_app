@@ -90,6 +90,21 @@
    </item>
    <item>
     <widget class="QListWidget" name="friend_list">
+     <property name="spacing">
+      <number>1</number>
+     </property>
+     <property name="frameShape">
+      <enum>QFrame::NoFrame</enum>
+     </property>
+     <property name="selectionMode">
+      <enum>QAbstractItemView::NoSelection</enum>
+     </property>
+     <property name="horizontalScrollBarPolicy">
+      <enum>Qt::ScrollBarAlwaysOff</enum>
+     </property>
+     <property name="verticalScrollMode">
+      <enum>QAbstractItemView::ScrollPerPixel</enum>
+     </property>
      <property name="styleSheet">
       <string notr="true">background-color: transparent; border: none;
 QScrollBar:vertical { background: transparent; width: 6px; margin: 0; }

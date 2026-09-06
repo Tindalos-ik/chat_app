@@ -2,65 +2,105 @@
 #include "ui_applyfriendpage.h"
 #include "applyfrienditem.h"
 #include "authenfriend.h"
+#include "usermgr.h"
+#include <QLabel>
 #include <QListWidgetItem>
 
+namespace {
+// 当前工程没有头像下载模块，服务端未返回头像时使用内置头像作为兜底。
+const QString kHeadIcons[] = {":/res/head_1.jpg", ":/res/head_2.jpg", ":/res/head_3.jpg",
+                              ":/res/head_4.jpg", ":/res/head_5.jpg"};
+}
+
 ApplyFriendPage::ApplyFriendPage(QWidget *parent)
-    : QWidget(parent)
-    , ui(new Ui::ApplyFriendPage)
+    : QWidget(parent), ui(new Ui::ApplyFriendPage)
 {
     ui->setupUi(this);
 
-    // 点击条目：只有"好友申请"（别人申请添加我）能打开同意弹窗
-    connect(ui->friend_list, &QListWidget::itemClicked, this, [this](QListWidgetItem *item){
-        auto *wid = qobject_cast<ApplyFriendItem*>(ui->friend_list->itemWidget(item));
-        if (wid == nullptr || wid->GetStatus() != QStringLiteral("好友申请")) {
-            return;
-        }
+    // 空列表时给出明确提示，收到第一条申请后自动隐藏。
+    _empty_label = new QLabel(QStringLiteral("暂无好友申请"), this);
+    _empty_label->setAlignment(Qt::AlignCenter);
+    _empty_label->setStyleSheet(QStringLiteral("color:#999999; font-size:13px;"));
+    ui->root_layout->insertWidget(1, _empty_label, 1);
 
-        auto *dlg = new AuthenFriend(this);
-        dlg->SetApplyInfo(wid->GetName(), wid->GetIcon(),
-                          QStringLiteral("你好，我是%1，想加你为好友。").arg(wid->GetName()));
-        // 同意后：测试行为——条目状态改成"已添加"（等后端协议就绪后换成真正的加好友逻辑）
-        connect(dlg, &AuthenFriend::sig_auth_agreed, this, [this, wid](const QString &name){
-            Q_UNUSED(name);
-            wid->SetStatus(QStringLiteral("已添加"));
-        });
-        dlg->show();
-    });
-
-    LoadTestData(); // 进来就能看到测试数据
+    // 页面创建可能早于 TCP 通知，因此先恢复 UserMgr 中已经缓存的申请。
+    const auto cached = UserMgr::GetInstance()->GetApplyList();
+    for (const auto &applyInfo : cached) {
+        addApplyInfo(applyInfo, false);
+    }
+    updateEmptyState();
 }
 
-ApplyFriendPage::~ApplyFriendPage()
+ApplyFriendPage::~ApplyFriendPage() { delete ui; }
+
+void ApplyFriendPage::AddNewApply(std::shared_ptr<AddFriendApply> apply)
 {
-    delete ui;
+    if (!apply || apply->_fromuid <= 0 || _apply_items.contains(apply->_fromuid)) {
+        return;
+    }
+
+    // 通知中的 icon 为空时选择稳定的本地头像，避免每次刷新头像跳变。
+    QString icon = apply->_icon;
+    if (icon.isEmpty()) {
+        icon = kHeadIcons[apply->_fromuid % (sizeof(kHeadIcons) / sizeof(kHeadIcons[0]))];
+    }
+    auto applyInfo = std::make_shared<ApplyInfo>(apply->_fromuid, apply->_name,
+                                                  apply->_desc, icon, apply->_nick,
+                                                  apply->_sex, 0);
+    addApplyInfo(applyInfo, true);
 }
 
-void ApplyFriendPage::AddFriendItem(const QString &name, const QString &icon, const QString &status)
+void ApplyFriendPage::addApplyInfo(const std::shared_ptr<ApplyInfo> &applyInfo, bool prepend)
 {
-    // 一条目 = ApplyFriendItem（头像 + 名字 + 右侧状态标签）
-    auto *wid = new ApplyFriendItem;
-    wid->SetInfo(name, icon, status);
+    if (!applyInfo || applyInfo->_uid <= 0 || _apply_items.contains(applyInfo->_uid)) {
+        return;
+    }
 
+    // 历史记录缺少头像时使用本地兜底资源。
+    if (applyInfo->_icon.isEmpty()) {
+        applyInfo->SetIcon(kHeadIcons[applyInfo->_uid % (sizeof(kHeadIcons) / sizeof(kHeadIcons[0]))]);
+    }
+
+    auto *itemWidget = new ApplyFriendItem;
+    itemWidget->SetInfo(applyInfo);
     auto *item = new QListWidgetItem;
-    item->setSizeHint(wid->sizeHint());
-    ui->friend_list->addItem(item);
-    ui->friend_list->setItemWidget(item, wid);
+    item->setSizeHint(itemWidget->sizeHint());
+    // 操作由条目里的按钮负责，列表本身不再响应选择，避免误触弹窗。
+    item->setFlags(item->flags() & ~Qt::ItemIsSelectable);
+    if (prepend) {
+        ui->friend_list->insertItem(0, item);
+    } else {
+        ui->friend_list->addItem(item);
+    }
+    ui->friend_list->setItemWidget(item, itemWidget);
+    _apply_items.insert(applyInfo->_uid, itemWidget);
+
+    connect(itemWidget, &ApplyFriendItem::sig_auth_friend, this,
+            [this, itemWidget](std::shared_ptr<ApplyInfo> info) {
+                showAuthDialog(itemWidget, info);
+            });
+    updateEmptyState();
 }
 
-void ApplyFriendPage::LoadTestData()
+void ApplyFriendPage::showAuthDialog(ApplyFriendItem *item,
+                                     const std::shared_ptr<ApplyInfo> &applyInfo)
 {
-    // 别人申请添加我：状态"好友申请"（绿色提示，待我同意）
-    AddFriendItem(QStringLiteral("张伟"), QStringLiteral(":/res/head_2.jpg"), QStringLiteral("好友申请"));
-    AddFriendItem(QStringLiteral("刘晓"), QStringLiteral(":/res/head_1.jpg"), QStringLiteral("好友申请"));
+    if (!item || !applyInfo) return;
+    auto *dialog = new AuthenFriend(this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setModal(true);
+    dialog->SetApplyInfo(applyInfo->_name, applyInfo->_icon,
+                         applyInfo->_desc.isEmpty()
+                             ? QStringLiteral("请求添加你为好友") : applyInfo->_desc);
+    // 当前认证响应协议尚未接入页面，先在认证成功信号后更新本地状态。
+    connect(dialog, &AuthenFriend::sig_auth_agreed, this,
+            [item](const QString &) { item->ShowAddBtn(false); });
+    dialog->show();
+}
 
-    // 我发出的申请：状态"等待对方同意"
-    AddFriendItem(QStringLiteral("李雷"), QStringLiteral(":/res/head_3.jpg"), QStringLiteral("等待对方同意"));
-    AddFriendItem(QStringLiteral("韩梅梅"), QStringLiteral(":/res/head_4.jpg"), QStringLiteral("等待对方同意"));
-    AddFriendItem(QStringLiteral("王小虎"), QStringLiteral(":/res/head_5.jpg"), QStringLiteral("等待对方同意"));
-
-    // 历史已添加的好友：状态"已添加"
-    AddFriendItem(QStringLiteral("小明"), QStringLiteral(":/res/head_1.jpg"), QStringLiteral("已添加"));
-    AddFriendItem(QStringLiteral("小红"), QStringLiteral(":/res/head_2.jpg"), QStringLiteral("已添加"));
-    AddFriendItem(QStringLiteral("小刚"), QStringLiteral(":/res/head_3.jpg"), QStringLiteral("已添加"));
+void ApplyFriendPage::updateEmptyState()
+{
+    if (_empty_label) {
+        _empty_label->setVisible(ui->friend_list->count() == 0);
+    }
 }

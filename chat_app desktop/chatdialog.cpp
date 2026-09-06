@@ -93,6 +93,9 @@ ChatDialog::ChatDialog(QWidget *parent)
 
     // 联系人列表："新的朋友"入口点击 -> 右侧切到好友申请页（已添加/未添加好友列表）
     connect(ui->contact_list, &ConUserList::sig_switch_apply_friend_page, this, [this]{
+        // 打开申请页即视为已读，清除联系人入口和侧栏提示红点。
+        ui->contact_list->ShowRedPoint(false);
+        ui->side_contact_lb->ShowRedPoint(false);
         ui->chat_stack->setCurrentWidget(ui->apply_friend_page);
     });
 

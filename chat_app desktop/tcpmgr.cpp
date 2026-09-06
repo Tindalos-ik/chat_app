@@ -204,26 +204,26 @@ void TcpMgr::initHandlers()
 
         if(!json_obj.contains("error")){ //正常解析成功会有error键
             int err = ErrorCodes::ERR_JSON;
-            qDebug() << "Search Failed, err is Json Parse Err" << err;
+            qDebug() << "notify friend Failed, err is Json Parse Err" << err;
             return;
         }
 
         int err = json_obj["error"].toInt();
 
         if(err != ErrorCodes::SUCCESS){
-            qDebug() << "Search Failed, err is" << err;
+            qDebug() << "notify friend Failed, err is" << err;
             return;
         }
 
-        auto apply_user = std::make_shared<AddFriendApply>(json_obj["uid"].toInt(),
-                                               json_obj["user"].toString(),
-                                               json_obj["nick"].toString(),
-                                               json_obj["desc"].toString(),
-                                               json_obj["sex"].toInt(),
-                                               json_obj["icon"].toString());
+        // 当前 ChatServer 协议字段：applyuid、name、nick、desc、sex、icon。
+        auto apply_user = std::make_shared<AddFriendApply>(json_obj.value("applyuid").toInt(),
+                                               json_obj.value("name").toString(),
+                                               json_obj.value("nick").toString(),
+                                               json_obj.value("desc").toString(),
+                                               json_obj.value("sex").toInt(),
+                                               json_obj.value("icon").toString());
         emit sig_friend_apply(apply_user);
     });
-
 
 }
 
