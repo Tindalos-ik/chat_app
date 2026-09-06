@@ -2,6 +2,7 @@
 #define AUTHENFRIEND_H
 
 #include <QDialog>
+#include "userdata.h"
 
 namespace Ui {
 class AuthenFriend;
@@ -17,8 +18,8 @@ public:
     explicit AuthenFriend(QWidget *parent = nullptr);
     ~AuthenFriend();
 
-    // 设置申请者信息：名字、头像、验证消息
-    void SetApplyInfo(const QString &name, const QString &icon, const QString &msg);
+    // 设置申请者信息
+    void SetApplyInfo(std::shared_ptr<ApplyInfo> apply);
 
 signals:
     // 点击"同意"后发出，携带申请者名字（页面据此把条目状态改成"已添加"）
@@ -30,8 +31,7 @@ private slots:
 
 private:
     Ui::AuthenFriend *ui;
-    QString _name; // 申请者名字
-    QString _icon; // 申请者头像
+    std::shared_ptr<ApplyInfo> _apply_info;
 };
 
 #endif // AUTHENFRIEND_H

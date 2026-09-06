@@ -38,7 +38,7 @@ HTTP 负责注册、登录、验证码和重置密码等短请求。登录拿到
 | 1011 | `ID_NOTIFY_ADD_FRIEND_REQ` | ChatServer 推送 `{applyuid,name,desc,nick,sex,icon}` 给被申请方 | 已实现 |
 | 1013 | `ID_AUTH_FRIEND_REQ` | 被申请方提交 `{uid,touid,agree/back}` | 协议已定义，当前服务端未注册处理 |
 | 1014 | `ID_AUTH_FRIEND_RSP` | 认证请求处理结果 | 协议已定义，当前客户端未注册 handler |
-| 1015 | `ID_NOTIFY_AUTH_FRIEND_REQ` | 通知申请方同意/拒绝结果 | 协议已定义，当前服务端未完整实现 |
+| 1015 | `ID_NOTIFY_AUTH_FRIEND_REQ` | 通知申请方同意/拒绝结果 | ChatServer1 本机通知已实现；跨服依赖对端 ChatServer 实现 |
 | 1017 | `ID_TEXT_CHAT_MSG_REQ` | TCP 文本消息请求 | ID 已定义，当前 ChatServer 未注册处理 |
 | 1018 | `ID_TEXT_CHAT_MSG_RSP` | 文本消息请求回包 | ID 已定义，当前客户端未注册 handler |
 | 1019 | `ID_NOTIFY_TEXT_CHAT_MSG_REQ` | 推送对方收到的文本消息 | ID 已定义，当前未完整实现 |
@@ -125,7 +125,10 @@ A -> ID_ADD_FRIEND_REQ
    }
 ```
 
-ChatServer 收到后向 `friend_apply(from_uid,to_uid)` 写入申请记录，并向 A 返回：
+ChatServer 收到后向 `friend_apply(from_uid,to_uid,applicant_remark)` 写入申请记录；
+`bakname` 保存为 `applicant_remark`，表示 A 给 B 设置的好友备注。B 同意后，服务端把它
+写入 A 的 `friend(self_id=A, friend_id=B).back`，并把 B 在认证页填写的备注写入反向记录。
+随后向 A 返回：
 
 ```text
 A <- ID_ADD_FRIEND_RSP {"error":0}

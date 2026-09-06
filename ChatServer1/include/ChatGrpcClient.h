@@ -101,7 +101,6 @@ public:
 
     AddFriendRsp NotifyAddFriend(std::string server_ip, const AddFriendReq& request);
     AuthFriendRsp NotifyAuthFriend(std::string server_ip, const AuthFriendReq& request);
-    bool GetBaseInfo(std::string base_key, int uid, std::shared_ptr<UserInfo>& userinfo);
     TextChatMsgRsp NotifyTextChatMsg(std::string server_ip, const TextChatMsgReq& request, const Json::Value& rtvalue);
 
 private:

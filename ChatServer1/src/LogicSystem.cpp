@@ -93,6 +93,11 @@ void LogicSystem::RegisterCallBacks() {
                                             const std::string &msg_data) {
         AddFriendApply(session, msg_id, msg_data);
     };
+    _fun_callbacks[ID_AUTH_FRIEND_REQ] = [this](std::shared_ptr<CSession> session,
+                                            const short &msg_id,
+                                            const std::string &msg_data) {  
+        AuthFriend(session, msg_id, msg_data);
+    };
 }
 
 // 登录处理：解析uid/token -> 请求StatusServer校验 -> 把结果回包给客户端
@@ -321,7 +326,7 @@ void LogicSystem::AddFriendApply(std::shared_ptr<CSession> session, const short 
     });
 
     // 先更新数据库中关于好友申请的数据表；写入失败时不再继续通知在线用户
-    if (!MysqlMgr::GetInstance()->AddFriendApply(uid, touid)) {
+    if (!MysqlMgr::GetInstance()->AddFriendApply(uid, touid, bakname)) {
         rtvalue["error"] = ErrorCode::RPCFaild;
         return;
     }
@@ -373,4 +378,87 @@ void LogicSystem::AddFriendApply(std::shared_ptr<CSession> session, const short 
 
     // 转发，通知对端服务器有新的好友申请
     ChatGrpcClient::GetInstance()->NotifyAddFriend(to_ip_value, add_req);
+}
+
+void LogicSystem::AuthFriend(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data){
+    // 客户端发过来就默认同意了
+    // 服务器回包需要把申请人的信息传回去
+    Json::CharReaderBuilder reader;
+    Json::Value root;
+    std::istringstream ss(msg_data);
+    std::string errs;
+    bool parse_success = Json::parseFromStream(reader, ss, &root, &errs);
+    if (!parse_success) {
+        std::cout << "Failed to parse JSON data" << std::endl;
+        std::cout << errs << std::endl;
+        return;
+    }
+
+    auto fromuid = root["fromuid"].asInt();
+    auto bakname = root["bakname"].asString();
+    auto touid = root["touid"].asInt();
+
+    Json::Value rtvalue;
+    Defer defer([this, &rtvalue, session]{
+        std::string return_str = rtvalue.toStyledString();
+        session->Send(return_str, ID_AUTH_FRIEND_RSP); // 发送回包，在出作用域的时候会自动调用，防御式编程处理
+    });
+
+    // 获取申请人信息
+    std::string base_key = USER_BASE_INFO + std::to_string(fromuid);
+    auto user_info = std::make_shared<UserInfo>();
+    bool b_info = GetBaseInfo(base_key, fromuid, user_info);
+
+    if (!b_info) {
+        rtvalue["error"] = ErrorCode::UidInvalid;
+        return;
+    }
+
+    rtvalue["uid"] = fromuid;
+    rtvalue["name"] = user_info->user;
+    rtvalue["email"] = user_info->email;
+    rtvalue["nick"] = user_info->nick;
+    rtvalue["desc"] = user_info->desc;
+    rtvalue["sex"] = user_info->sex;
+    rtvalue["icon"] = user_info->icon;
+    rtvalue["bakname"] = bakname;
+
+    // AddFriend 在一个事务内确认申请并建立双向 friend 记录。
+    // touid 是处理申请的用户，fromuid 是原申请用户。
+    MysqlMgr::GetInstance()->AddFriend(touid, fromuid, bakname);
+    // 更新friend_apply表
+    MysqlMgr::GetInstance()->UpdateFriendApplyStatus(touid, fromuid, 1);
+
+    rtvalue["error"] = ErrorCode::Success;
+
+    // 查询redis 查询对端的服务器
+    auto touid_str = std::to_string(touid);
+    auto to_ip_key = USERIPPREFIX + touid_str;
+    std::string to_ip_value; 
+    bool b_ip = RedisMgr::GetInstance()->Get(to_ip_key, to_ip_value);
+    if (!b_ip) {
+        return;
+    }
+
+    auto self_name = ConfigMgr::Inst()["SelfChatServer"]["name"];
+
+    // 如果申请方在本服务器，直接通知其认证结果。
+    if(self_name == to_ip_value){
+        auto applicantSession = UserMgr::GetInstance()->GetSession(fromuid);
+        if(applicantSession){
+            Json::Value notify;
+            notify["error"] = ErrorCode::Success;
+            notify["uid"] = touid;
+            notify["touid"] = fromuid;
+            std::string return_str = notify.toStyledString();
+            applicantSession->Send(return_str, ID_NOTIFY_AUTH_FRIEND_REQ);
+        }
+        return;
+    }
+
+    // 申请方在其他服务器时，转发认证结果，由对端服务器通知对应 TCP 会话。
+    AuthFriendReq authReq;
+    authReq.set_uid(touid);
+    authReq.set_touid(fromuid);
+    ChatGrpcClient::GetInstance()->NotifyAuthFriend(to_ip_value, authReq);
 }

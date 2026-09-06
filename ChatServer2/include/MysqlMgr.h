@@ -123,13 +123,28 @@ public:
 
     UserInfo GetUserInfo(int uid);
 
-    // 保存好友申请；重复申请不产生重复记录
-    bool AddFriendApply(int uid, int touid);
+    // 保存好友申请及申请方为接收者设置的备注；重复的待处理申请会更新备注。
+    bool AddFriendApply(
+        int applicantUid,
+        int recipientUid,
+        const std::string& applicantRemark);
 
     // 获取指定接收者收到的好友申请，并以查询结果完整替换 applications。
     bool GetFriendApplyInfo(
         int recipientUid,
         std::vector<std::shared_ptr<ApplyInfo>>& applications);
+
+    // 将待处理申请更新为最终状态：1=同意，2=拒绝。
+    bool UpdateFriendApplyStatus(
+        int applicantUid,
+        int recipientUid,
+        int newStatus);
+
+    // 原子地确认申请并建立双向好友关系；双方备注分别属于各自的好友记录。
+    bool AddFriend(
+        int recipientUid,
+        int applicantUid,
+        const std::string& recipientRemark);
 
 private:
     MysqlMgr();

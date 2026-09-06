@@ -18,6 +18,9 @@ class ChatDialog : public QDialog
 public:
     explicit ChatDialog(QWidget *parent = nullptr);
     ~ChatDialog();
+
+    // 登录完成后刷新当前账号显示；ChatDialog 本身早于登录界面创建。
+    void UpdateUserTitle();
     void addChatUserList();
     void addConUserList();
 
@@ -30,7 +33,8 @@ private slots:
     void slot_side_chat();      // 侧边栏：聊天
     void slot_side_contact();   // 侧边栏：联系人
     void slot_side_setting();   // 侧边栏：设置（页面未实现）
-    void slot_apply_friend(std::shared_ptr<AddFriendApply>& apply_info);
+    void slot_apply_friend(std::shared_ptr<AddFriendApply>& apply_info); // 添加好友申请
+    void slot_auth_friend(std::shared_ptr<FriendInfo>& friend_info); // 好友列表增加一个好友
 
 protected:
     // 重写事件过滤器实现根据鼠标位置判断是否隐藏搜索框恢复聊天界面
@@ -47,8 +51,8 @@ private:
 
     void addChatUserWid(QListWidget *list, const QString &name,
                         const QString &msg, const QString &time,
-                        const QString &icon, bool red); // 添加用户列表
-    void addConUserWid(QListWidget *list, const QString &name, const QString &icon); //添加好友列表
+                        const QString &icon, bool red); // 添加聊天用户
+    void addConUserWid(QListWidget *list, const QString &name, const QString &icon); //添加好友
 
     void AddLBGroup(StateWidget *lb);            // 把侧边栏按钮加入互斥组
     void ClearLabelState(StateWidget *lb);       // 清除除 lb 之外所有按钮的选中态

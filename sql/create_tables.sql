@@ -64,11 +64,13 @@ CREATE TABLE IF NOT EXISTS `friend` (
 -- ------------------------------------------------------------
 -- 4. friend_apply：好友申请
 --    status: 0=待处理 1=已同意（可扩展 2=拒绝）
+--    applicant_remark：申请方给被申请方设置的好友备注
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `friend_apply` (
   `id`      bigint NOT NULL AUTO_INCREMENT,
   `from_uid` int NOT NULL,
   `to_uid`   int NOT NULL,
+  `applicant_remark` varchar(255) NOT NULL DEFAULT '',
   `status`   smallint NOT NULL DEFAULT 0,
   PRIMARY KEY (`id`),
   UNIQUE INDEX `from_to_uid` (`from_uid`, `to_uid`)

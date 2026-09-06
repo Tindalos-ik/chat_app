@@ -44,4 +44,16 @@ struct ApplyInfo {
     int _status;
 };
 
+struct FriendInfo{
+    FriendInfo(int uid, QString name, QString desc,
+               QString icon, QString bakname, int sex);
+
+    int _uid;
+    QString _name;
+    QString _desc;
+    QString _icon;
+    QString _bakname;
+    int _sex;
+};
+
 #endif // USERDATA_H

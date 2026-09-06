@@ -43,12 +43,13 @@ public slots:
     void slot_send_data(ReqId reqId, QByteArray data);
 
 signals:
-    void sig_con_success(bool bsuccess);
+    void sig_con_success(bool bsuccess); // 获取聊天服务器
     void sig_send_data(ReqId reqId, QByteArray data);
-    void sig_switch_chatdlg();
-    void sig_login_failed(int);
-    void sig_user_search(std::shared_ptr<SearchInfo>& si);
-    void sig_friend_apply(std::shared_ptr<AddFriendApply>& si);
+    void sig_switch_chatdlg(); // 发送给mainwindow
+    void sig_login_failed(int); // 发送给logindialog
+    void sig_user_search(std::shared_ptr<SearchInfo>& si); // 发送给searchlist，用于显示搜索结果
+    void sig_friend_apply(std::shared_ptr<AddFriendApply>& si); // 发送给chatdialog
+    void sig_auth_friend(std::shared_ptr<FriendInfo>&); // 认证好友成功，发送给chatdialog
 };
 
 #endif // TCPMGR_H

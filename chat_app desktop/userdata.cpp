@@ -34,3 +34,9 @@ ApplyInfo::ApplyInfo(std::shared_ptr<AddFriendApply> addinfo)
 void ApplyInfo::SetIcon(QString head){
     _icon = head;
 }
+
+FriendInfo::FriendInfo(int uid, QString name, QString desc, QString icon, QString bakname, int sex)
+    :_uid(uid), _name(name), _desc(desc), _icon(icon), _bakname(bakname), _sex(sex)
+{
+
+}

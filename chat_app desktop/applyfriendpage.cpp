@@ -89,9 +89,8 @@ void ApplyFriendPage::showAuthDialog(ApplyFriendItem *item,
     auto *dialog = new AuthenFriend(this);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->setModal(true);
-    dialog->SetApplyInfo(applyInfo->_name, applyInfo->_icon,
-                         applyInfo->_desc.isEmpty()
-                             ? QStringLiteral("请求添加你为好友") : applyInfo->_desc);
+    applyInfo->_desc = applyInfo->_desc.isEmpty() ? "请求添加你为好友" : applyInfo->_desc;
+    dialog->SetApplyInfo(applyInfo);
     // 当前认证响应协议尚未接入页面，先在认证成功信号后更新本地状态。
     connect(dialog, &AuthenFriend::sig_auth_agreed, this,
             [item](const QString &) { item->ShowAddBtn(false); });

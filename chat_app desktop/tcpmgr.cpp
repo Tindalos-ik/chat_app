@@ -88,6 +88,7 @@ TcpMgr::TcpMgr() : _host(""), _port(0), _b_recy_pending(false), _message_id(0), 
 
 
     //连接发送信号用来发送数据，在哪里发送信号呢？可以是对话框中点击发送消息信号，在很多地方都可以，我们设计好槽函数及参数就可以统一处理
+    // 其他地方把数据传过来，这里发给服务器
     connect(this, &TcpMgr::sig_send_data, this, &TcpMgr::slot_send_data);
 
     // 注册消息
@@ -223,6 +224,49 @@ void TcpMgr::initHandlers()
                                                json_obj.value("sex").toInt(),
                                                json_obj.value("icon").toString());
         emit sig_friend_apply(apply_user);
+    });
+
+    // 认证好友回包
+    _handler.insert(ID_AUTH_FRIEND_RSP, [this](ReqId id, int len, QByteArray data){
+        Q_UNUSED(len);
+        qDebug() << "handle id is " << id << "data is " << data;
+
+        //将字节流转换为json文档
+        QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
+
+        //检查转换是否成功
+        if(jsonDoc.isNull()){
+            qDebug() << "failed to create QJsonDocument";
+            return;
+        }
+
+        //将json文档转换为json对象
+        QJsonObject json_obj = jsonDoc.object();
+
+        if(!json_obj.contains("error")){ //正常解析成功会有error键
+            int err = ErrorCodes::ERR_JSON;
+            qDebug() << "auth friend Failed, err is Json Parse Err" << err;
+            return;
+        }
+
+        int err = json_obj["error"].toInt();
+
+        if(err != ErrorCodes::SUCCESS){
+            qDebug() << "auth friend Failed, err is" << err;
+            return;
+        }
+
+        int uid = json_obj["uid"].toInt();
+        QString name = json_obj["name"].toString();
+        QString bakname = json_obj["bakname"].toString();
+        QString desc = json_obj["desc"].toString();
+        int sex = json_obj["sex"].toInt();
+        QString icon = json_obj["icon"].toString();
+
+        auto friendinfo = std::make_shared<FriendInfo>(uid, name, desc, icon, bakname, sex);
+
+        emit sig_auth_friend(friendinfo);
+
     });
 
 }

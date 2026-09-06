@@ -20,6 +20,7 @@
 #include <QMouseEvent>
 #include "tcpmgr.h"
 #include "usermgr.h"
+#include <QRandomGenerator>
 
 namespace {
 // 示例头像资源，循环使用
@@ -78,6 +79,8 @@ ChatDialog::ChatDialog(QWidget *parent)
     connect(ui->session_list, &ChatUserList::sig_loading_chat_user,
             this, &ChatDialog::slot_loading_chat_user);
 
+    // 构造时通常尚未登录，真正的账号名由 MainWindow::SlotSwitchChat 再刷新。
+    UpdateUserTitle();
     // 点击聊天列表条目 -> 聊天标题换成对应联系人，并切回聊天页
     connect(ui->session_list, &QListWidget::itemClicked, this, [this](QListWidgetItem *item){
         auto *wid = qobject_cast<ChatUserWid*>(ui->session_list->itemWidget(item));
@@ -100,7 +103,7 @@ ChatDialog::ChatDialog(QWidget *parent)
     });
 
     // 联系人列表：点好友 -> 右侧切到好友信息页并填充数据
-    // 测试数据：性别按名字哈希奇偶，昵称/备注基于名字拼接（等后端数据模型就绪后替换）
+    // TODO
     connect(ui->contact_list, &ConUserList::sig_switch_friend_info_page, this, [this](ConUserWid *wid){
         if (wid == nullptr) {
             return;
@@ -125,8 +128,8 @@ ChatDialog::ChatDialog(QWidget *parent)
     connect(ui->input_edit, &MessageTextEdit::send,
             this, &ChatDialog::on_send_btn_clicked);
 
-    addChatUserList();
-    addConUserList();
+    //addChatUserList();
+    //addConUserList();
 
     // 全局监听鼠标点击，判断是否要清空搜索框
     // 注意：必须挂在 qApp 上，挂在 this 上收不到子控件（搜索框/列表/按钮）的点击事件
@@ -134,11 +137,26 @@ ChatDialog::ChatDialog(QWidget *parent)
 
     // tcp服务器发送好友申请信号，聊天界面做出响应
     connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_friend_apply, this, &ChatDialog::slot_apply_friend);
+
+    // tcpmgr发来好友认证信号，聊天界面做出响应
+    connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_auth_friend, this, &ChatDialog::slot_auth_friend);
 }
 
 ChatDialog::~ChatDialog()
 {
     delete ui;
+}
+
+void ChatDialog::UpdateUserTitle()
+{
+    const QString name = UserMgr::GetInstance()->GetName().trimmed();
+    if (name.isEmpty()) {
+        return;
+    }
+
+    // 中间聊天标题显示当前账号；顶部标签始终显示当前登录用户。
+    ui->chat_title_label->setText(name);
+    ui->user_label->setText(name);
 }
 
 void ChatDialog::addChatUserList()
@@ -189,7 +207,13 @@ void ChatDialog::addConUserWid(QListWidget *list, const QString &name, const QSt
 {
     auto *item = new QListWidgetItem;
     auto *wid = new ConUserWid;
-    wid->SetInfo(0, name, icon); // 联系人信息接口：类型 + 名字 + 头像一步到位
+    if(icon.isEmpty()){
+        // 生成 [0, 100) 之间的整数，即 0 到 99
+        int value = QRandomGenerator::global()->bounded(100);
+        wid->SetInfo(0, name, kHeadIcons[value%5]); // 如果没有头像信息，随机数弄一下
+    }else{
+        wid->SetInfo(0, name, icon); // 联系人信息接口：类型 + 名字 + 头像一步到位
+    }
     item->setSizeHint(wid->sizeHint());
     list->addItem(item);
     list->setItemWidget(item, wid);
@@ -301,13 +325,21 @@ void ChatDialog::slot_apply_friend(std::shared_ptr<AddFriendApply> &apply)
 
     bool b_already = UserMgr::GetInstance()->AlreadyApply(apply->_fromuid);
     if(b_already){
-        return;
+        return; // 已经申请过了，不再申请
     }
 
     UserMgr::GetInstance()->AddApplyList(std::make_shared<ApplyInfo>(apply));
-    ui->side_contact_lb->ShowRedPoint(true);
+    ui->side_contact_lb->ShowRedPoint(true); // 显示红点
     ui->contact_list->ShowRedPoint(true);
-    ui->apply_friend_page->AddNewApply(apply);
+    ui->apply_friend_page->AddNewApply(apply); // 加入新的信息
+}
+
+void ChatDialog::slot_auth_friend(std::shared_ptr<FriendInfo> &friend_info)
+{
+    // 现在好友列表中加一个新好友
+    addConUserWid(ui->contact_list, friend_info->_name, friend_info->_icon);
+    // 更新好友信息界面
+
 }
 
 bool ChatDialog::eventFilter(QObject *watched, QEvent *event)

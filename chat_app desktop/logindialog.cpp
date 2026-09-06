@@ -147,7 +147,7 @@ void LoginDialog::slot_login_failed(int err)
 
 void LoginDialog::slot_tcp_con_success(bool success)
 {
-    showtip(tr("连接聊天服务器成功...正在登录中..."),"err");
+    showtip(tr("获取成功聊天服务器...正在登录服务器中..."),"err");
     QJsonObject json_obj;
     json_obj["uid"] = _uid;
     json_obj["token"] = _token;

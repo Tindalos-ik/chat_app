@@ -576,21 +576,25 @@ UserInfo MysqlMgr::GetUserInfo(int uid){
 }
 
 
-bool MysqlMgr::AddFriendApply(int uid, int touid){
+bool MysqlMgr::AddFriendApply(
+    int applicantUid,
+    int recipientUid,
+    const std::string& applicantRemark){
     auto con = pool_->GetConnection(); //获取连接
     if(con == nullptr) return false;
     Defer defer([&con, this]() { pool_->ReturnConnection(std::move(con)); }); //自动归还连接
 
     try{
-        if (uid <= 0 || touid <= 0 || uid == touid) {
+        if (applicantUid <= 0 || recipientUid <= 0 || applicantUid == recipientUid) {
             return false;
         }
         // friend_apply 通过 (from_uid, to_uid) 唯一索引避免重复申请。
-        // 重复请求保留原有 status，不覆盖已经处理的申请。
+        // 待处理申请允许更新申请方备注；终态申请不允许被新请求覆盖。
         const std::string sql =
-            "INSERT INTO friend_apply (from_uid, to_uid, status) VALUES (?, ?, 0) "
-            "ON DUPLICATE KEY UPDATE status = status";
-        con->sql(sql).bind(uid).bind(touid).execute();
+            "INSERT INTO friend_apply (from_uid, to_uid, applicant_remark, status) VALUES (?, ?, ?, 0) "
+            "ON DUPLICATE KEY UPDATE applicant_remark = "
+            "IF(status = 0, VALUES(applicant_remark), applicant_remark)";
+        con->sql(sql).bind(applicantUid).bind(recipientUid).bind(applicantRemark).execute();
         return true;
     }catch(const std::exception &e){
         std::cout << "Exception: " << e.what() << std::endl;
@@ -638,6 +642,126 @@ bool MysqlMgr::GetFriendApplyInfo(
         applications = std::move(queriedApplications);
         return true;
     } catch (const std::exception& e) {
+        std::cout << "Exception: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+bool MysqlMgr::UpdateFriendApplyStatus(
+    int applicantUid,
+    int recipientUid,
+    int newStatus){
+    constexpr int kAcceptedStatus = 1;
+    constexpr int kRejectedStatus = 2;
+    if (applicantUid <= 0 || recipientUid <= 0 || applicantUid == recipientUid ||
+        (newStatus != kAcceptedStatus && newStatus != kRejectedStatus)) {
+        return false;
+    }
+
+    auto con = pool_->GetConnection();
+    if (con == nullptr) {
+        return false;
+    }
+    Defer defer([&con, this]() { pool_->ReturnConnection(std::move(con)); });
+
+    try {
+        // 终态不能互相覆盖：只允许待处理(0)转为本次终态，或重复提交相同终态。
+        const std::string updateSql =
+            "UPDATE friend_apply SET status = ? "
+            "WHERE from_uid = ? AND to_uid = ? AND (status = 0 OR status = ?)";
+        auto result = con->sql(updateSql)
+                          .bind(newStatus)
+                          .bind(applicantUid)
+                          .bind(recipientUid)
+                          .bind(newStatus)
+                          .execute();
+        if (result.getAffectedItemsCount() > 0) {
+            return true;
+        }
+
+        // MySQL 对“赋值为原值”的 UPDATE 可返回 0；再次确认保证重试语义正确。
+        const std::string querySql =
+            "SELECT status FROM friend_apply WHERE from_uid = ? AND to_uid = ?";
+        auto row = con->sql(querySql).bind(applicantUid).bind(recipientUid).execute().fetchOne();
+        return row && row[0].get<int>() == newStatus;
+    } catch (const std::exception& e) {
+        std::cout << "Exception: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+bool MysqlMgr::AddFriend(
+    int recipientUid,
+    int applicantUid,
+    const std::string& recipientRemark){
+    if (recipientUid <= 0 || applicantUid <= 0 || recipientUid == applicantUid) {
+        return false;
+    }
+
+    auto con = pool_->GetConnection();
+    if (con == nullptr) {
+        return false;
+    }
+    Defer defer([&con, this]() { pool_->ReturnConnection(std::move(con)); });
+
+    try {
+        // 锁住申请记录后确认状态，再写入双向关系，避免“已同意但好友只加了一边”。
+        con->startTransaction();
+        const std::string applicationSql =
+            "SELECT status, applicant_remark FROM friend_apply "
+            "WHERE from_uid = ? AND to_uid = ? FOR UPDATE";
+        auto applicationRow = con->sql(applicationSql)
+                                  .bind(applicantUid)
+                                  .bind(recipientUid)
+                                  .execute()
+                                  .fetchOne();
+        if (!applicationRow) {
+            con->rollback();
+            return false;
+        }
+
+        constexpr int kPendingStatus = 0;
+        constexpr int kAcceptedStatus = 1;
+        const int applicationStatus = applicationRow[0].get<int>();
+        if (applicationStatus == kPendingStatus) {
+            const std::string acceptSql =
+                "UPDATE friend_apply SET status = ? WHERE from_uid = ? AND to_uid = ?";
+            con->sql(acceptSql)
+                .bind(kAcceptedStatus)
+                .bind(applicantUid)
+                .bind(recipientUid)
+                .execute();
+        } else if (applicationStatus != kAcceptedStatus) {
+            con->rollback();
+            return false;
+        }
+        const std::string applicantRemark = applicationRow[1].get<std::string>();
+
+        const std::string insertSql =
+            "INSERT INTO friend (self_id, friend_id, back) VALUES (?, ?, ?) "
+            "ON DUPLICATE KEY UPDATE back = back";
+
+        // 接收者确认时填写的备注，仅保存到接收者自己的好友记录。
+        con->sql(insertSql)
+            .bind(recipientUid)
+            .bind(applicantUid)
+            .bind(recipientRemark)
+            .execute();
+
+        // 申请方在发起申请时填写的备注，保存到申请方自己的好友记录。
+        con->sql(insertSql)
+            .bind(applicantUid)
+            .bind(recipientUid)
+            .bind(applicantRemark)
+            .execute();
+
+        con->commit();
+        return true;
+    } catch (const std::exception& e) {
+        try {
+            con->rollback();
+        } catch (...) {
+        }
         std::cout << "Exception: " << e.what() << std::endl;
         return false;
     }

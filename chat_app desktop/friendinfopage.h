@@ -7,7 +7,7 @@ namespace Ui {
 class FriendInfoPage;
 }
 
-// 好友信息页（联系人列表点好友后展示）
+// 好友信息页（联系人列表点好友后展示），由chatdialog调用
 // 内容：大头像 + 名字/性别 + 昵称/备注 + 底部"发消息/语音/视频"按钮
 class FriendInfoPage : public QWidget
 {
