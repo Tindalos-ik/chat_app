@@ -16,6 +16,10 @@ class UserMgr:public QObject, public Singleton<UserMgr>,
 public:
     friend class Singleton<UserMgr>;
     ~UserMgr();
+    void SetUserInfo(std::shared_ptr<UserInfo> userinfo);
+    std::shared_ptr<UserInfo> GetUserInfo();
+
+    // Keep existing call sites working while user data is stored in UserInfo.
     void SetName(QString name);
     void SetUid(int uid);
     void SetToken(QString token);
@@ -23,15 +27,19 @@ public:
     int GetUid();
     // 好友申请在登录会话期间缓存，页面创建时可恢复这些记录。
     std::vector<std::shared_ptr<ApplyInfo>> GetApplyList();
+    std::vector<std::shared_ptr<UserInfo>> GetFriendList();
+    void SetApplyList(std::vector<std::shared_ptr<ApplyInfo>>);
+    void SetFriendList(std::vector<std::shared_ptr<UserInfo>>);
     void AddApplyList(std::shared_ptr<ApplyInfo> apply);
+    void AddFriendList(std::shared_ptr<UserInfo> newfriend);
     // 以申请方 UID 去重，避免同一 TCP 通知重复显示。
     bool AlreadyApply(int uid);
 private:
     UserMgr();
-    QString _name;
+    std::shared_ptr<UserInfo> _userinfo;
     QString _token;
-    int _uid;
-    std::vector<std::shared_ptr<ApplyInfo>> _apply_list;
+    std::vector<std::shared_ptr<ApplyInfo>> _apply_list; // 好友申请列表
+    std::vector<std::shared_ptr<UserInfo>> _friend_list; //好友列表
 
 };
 

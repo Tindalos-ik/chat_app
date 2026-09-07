@@ -134,6 +134,11 @@ public:
         int recipientUid,
         std::vector<std::shared_ptr<ApplyInfo>>& applications);
 
+    bool GetFriendInfo(
+        int uid,
+        std::vector<std::shared_ptr<UserInfo>>& friendinfo
+    );
+
     // 将待处理申请更新为最终状态：1=同意，2=拒绝。
     bool UpdateFriendApplyStatus(
         int applicantUid,

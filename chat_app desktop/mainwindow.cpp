@@ -34,7 +34,7 @@ void MainWindow::SlotSwitchReset()
 void MainWindow::SlotSwitchChat()
 {
     // ChatDialog 在 MainWindow 构造阶段已经创建，此时登录 TCP 回包才刚写入 UserMgr。
-    _chat_dlg->UpdateUserTitle(); // 更新默认聊天框上的用户名
+    _chat_dlg->RefreshLoginData(); // 登录回包已写入 UserMgr，刷新界面数据。
     _stacked_widget->setCurrentWidget(_chat_dlg);
     _chat_dlg->setMinimumSize(800, 600);
     setMinimumSize(800, 600);

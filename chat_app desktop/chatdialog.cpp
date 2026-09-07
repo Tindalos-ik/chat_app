@@ -26,6 +26,17 @@ namespace {
 // 示例头像资源，循环使用
 const QString kHeadIcons[] = {":/res/head_1.jpg", ":/res/head_2.jpg", ":/res/head_3.jpg",
                               ":/res/head_4.jpg", ":/res/head_5.jpg"};
+
+void ClearListItems(QListWidget *list, int firstIndex)
+{
+    for (int index = list->count() - 1; index >= firstIndex; --index) {
+        auto *item = list->item(index);
+        auto *widget = list->itemWidget(item);
+        list->removeItemWidget(item);
+        delete widget;
+        delete list->takeItem(index);
+    }
+}
 }
 
 ChatDialog::ChatDialog(QWidget *parent)
@@ -128,8 +139,9 @@ ChatDialog::ChatDialog(QWidget *parent)
     connect(ui->input_edit, &MessageTextEdit::send,
             this, &ChatDialog::on_send_btn_clicked);
 
-    //addChatUserList();
-    //addConUserList();
+    // 初始化聊天列表
+
+    // 初始化好友列表
 
     // 全局监听鼠标点击，判断是否要清空搜索框
     // 注意：必须挂在 qApp 上，挂在 this 上收不到子控件（搜索框/列表/按钮）的点击事件
@@ -159,35 +171,32 @@ void ChatDialog::UpdateUserTitle()
     ui->user_label->setText(name);
 }
 
-void ChatDialog::addChatUserList()
+void ChatDialog::RefreshLoginData()
 {
-    for (int i = _loaded_chat_count; i <= _loaded_chat_count+30; ++i) {
-        addChatUserWid(ui->session_list,
-                       QStringLiteral("用户%1").arg(i),
-                       QStringLiteral("第 %1 条消息内容").arg(i),
-                       QStringLiteral("%1:%2").arg(9 + i % 10).arg(i % 60),
-                       kHeadIcons[i % 5], i % 3 == 0);
+    UpdateUserTitle();
+    ClearListItems(ui->session_list, 0);
+    ClearListItems(ui->contact_list, 2);
+    initChatUserList();
+    initConUserList();
+    ui->apply_friend_page->ReloadApplyList();
+}
+
+void ChatDialog::initChatUserList()
+{
+    auto friend_list = UserMgr::GetInstance()->GetFriendList();
+    for(const auto &obj : friend_list){
+        addChatUserWid(ui->session_list, obj->_name, "你好", "", obj->_icon, false);
     }
 }
 
-void ChatDialog::addConUserList()
+void ChatDialog::initConUserList()
 {
-    // 测试数据：循环使用一组中文名，超过 10 个加序号区分
-    static const QString kTestNames[] = {
-        QStringLiteral("小明"), QStringLiteral("小红"), QStringLiteral("小刚"),
-        QStringLiteral("小丽"), QStringLiteral("阿伟"), QStringLiteral("婷婷"),
-        QStringLiteral("大壮"), QStringLiteral("翠花"), QStringLiteral("老张"),
-        QStringLiteral("老王")
-    };
-
-    for (int i = _loaded_con_count; i <= _loaded_con_count+30; ++i) {
-        QString name = kTestNames[i % 10];
-        if (i >= 10) {
-            name += QString::number(i / 10); // 重名时加序号
-        }
-        addConUserWid(ui->contact_list, name, kHeadIcons[i % 5]);
+    auto friend_list = UserMgr::GetInstance()->GetFriendList();
+    for(const auto &obj : friend_list){
+        addConUserWid(ui->contact_list, obj->_uid, obj->_name, obj->_icon);
     }
 }
+
 
 void ChatDialog::addChatUserWid(QListWidget *list, const QString &name, const QString &msg, const QString &time, const QString &icon, bool red)
 {
@@ -196,23 +205,30 @@ void ChatDialog::addChatUserWid(QListWidget *list, const QString &name, const QS
     wid->SetUserName(name);
     wid->SetChatMsg(msg);
     wid->SetTime(time);
-    wid->SetHeadIcon(icon);
+    if(icon.isEmpty()){
+        // 生成 [0, 100) 之间的整数，即 0 到 99
+        int value = QRandomGenerator::global()->bounded(100);
+        QString ic = kHeadIcons[value%5];// 如果没有头像信息，随机数弄一下
+        wid->SetHeadIcon(ic);
+    }else{
+        wid->SetHeadIcon(icon);
+    }
     wid->ShowRedPoint(red);
     item->setSizeHint(wid->sizeHint());
     list->addItem(item);
     list->setItemWidget(item, wid);
 }
 
-void ChatDialog::addConUserWid(QListWidget *list, const QString &name, const QString &icon)
+void ChatDialog::addConUserWid(QListWidget *list, int uid, const QString &name, const QString &icon)
 {
     auto *item = new QListWidgetItem;
     auto *wid = new ConUserWid;
     if(icon.isEmpty()){
         // 生成 [0, 100) 之间的整数，即 0 到 99
         int value = QRandomGenerator::global()->bounded(100);
-        wid->SetInfo(0, name, kHeadIcons[value%5]); // 如果没有头像信息，随机数弄一下
+        wid->SetInfo(uid, name, kHeadIcons[value%5]); // 如果没有头像信息，随机数弄一下
     }else{
-        wid->SetInfo(0, name, icon); // 联系人信息接口：类型 + 名字 + 头像一步到位
+        wid->SetInfo(uid, name, icon); // 联系人信息接口：类型 + 名字 + 头像一步到位
     }
     item->setSizeHint(wid->sizeHint());
     list->addItem(item);
@@ -232,7 +248,8 @@ void ChatDialog::slot_loading_chat_user()
 
     qDebug() << "add new data to list";
 
-    addChatUserList();
+    // TODO 加载更多聊天用户
+
     // 加载完成之后关闭对话框
     loadingDialog->deleteLater();
 
@@ -249,7 +266,9 @@ void ChatDialog::slot_loading_con_user()
     LoadingDlg *loadingDialog = new LoadingDlg(this);
     loadingDialog->show();
     qDebug() << "add new data to list";
-    addConUserList();
+
+    // TODO 加载更多好友
+
     loadingDialog->deleteLater();
 
     _b_loading = false;
@@ -336,10 +355,15 @@ void ChatDialog::slot_apply_friend(std::shared_ptr<AddFriendApply> &apply)
 
 void ChatDialog::slot_auth_friend(std::shared_ptr<FriendInfo> &friend_info)
 {
-    // 现在好友列表中加一个新好友
-    addConUserWid(ui->contact_list, friend_info->_name, friend_info->_icon);
-    // 更新好友信息界面
+    // 好友列表中加一个新好友
+    auto userinfo = std::make_shared<UserInfo>(friend_info->_uid, friend_info->_name, friend_info->_nick,
+                                               friend_info->_desc,friend_info->_sex, friend_info->_icon);
+    UserMgr::GetInstance()->AddFriendList(userinfo); // 更新好友列表
+    addConUserWid(ui->contact_list, friend_info->_uid, friend_info->_name, friend_info->_icon);
+    // 更新好友信息界面 TODO
 
+    // 聊天会话列表也要加
+    addChatUserWid(ui->session_list, friend_info->_name, "你好", "", friend_info->_icon, true);
 }
 
 bool ChatDialog::eventFilter(QObject *watched, QEvent *event)

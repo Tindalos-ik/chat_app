@@ -20,6 +20,7 @@ public:
 
     // 接收 TCP 通知并将新的申请插入列表顶部。
     void AddNewApply(std::shared_ptr<AddFriendApply> apply);
+    void ReloadApplyList();
 
 private:
     void addApplyInfo(const std::shared_ptr<ApplyInfo> &applyInfo, bool prepend);

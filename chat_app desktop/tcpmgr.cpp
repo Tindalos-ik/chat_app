@@ -2,6 +2,7 @@
 #include <QDebug>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonArray>
 #include "usermgr.h"
 #include "userdata.h"
 
@@ -128,11 +129,48 @@ void TcpMgr::initHandlers()
         if(err != ErrorCodes::SUCCESS){
             qDebug() << "Login Failed, err is" << err;
             emit sig_login_failed(err);
+            return;
         }
 
-        UserMgr::GetInstance()->SetUid(json_obj["uid"].toInt());
-        UserMgr::GetInstance()->SetToken(json_obj["token"].toString());
-        UserMgr::GetInstance()->SetName(json_obj["user"].toString());
+        int uid = json_obj["uid"].toInt();
+        int sex = json_obj["sex"].toInt();
+        QString name = json_obj["user"].toString();
+        QString icon = json_obj["icon"].toString();
+        QString desc = json_obj["desc"].toString();
+        QString nick = json_obj["nick"].toString();
+        auto userinfo = std::make_shared<UserInfo>(uid, name, nick, desc, sex, icon);
+        auto userMgr = UserMgr::GetInstance();
+        userMgr->SetUserInfo(std::move(userinfo));
+        userMgr->SetToken(json_obj["token"].toString());
+
+        std::vector<std::shared_ptr<ApplyInfo>> applyList;
+        const QJsonArray applyArray = json_obj.value("apply_list").toArray();
+        for (const auto &value : applyArray) {
+            const QJsonObject apply = value.toObject();
+            applyList.push_back(std::make_shared<ApplyInfo>(
+                apply.value("uid").toInt(),
+                apply.value("name").toString(),
+                apply.value("desc").toString(),
+                apply.value("icon").toString(),
+                apply.value("nick").toString(),
+                apply.value("sex").toInt(),
+                apply.value("status").toInt()));
+        }
+        userMgr->SetApplyList(std::move(applyList));
+
+        std::vector<std::shared_ptr<UserInfo>> friendList;
+        const QJsonArray friendArray = json_obj.value("friend_list").toArray();
+        for (const auto &value : friendArray) {
+            const QJsonObject friendObject = value.toObject();
+            friendList.push_back(std::make_shared<UserInfo>(
+                friendObject.value("uid").toInt(),
+                friendObject.value("name").toString(),
+                friendObject.value("nick").toString(),
+                friendObject.value("desc").toString(),
+                friendObject.value("sex").toInt(),
+                friendObject.value("icon").toString()));
+        }
+        userMgr->SetFriendList(std::move(friendList));
 
         emit sig_switch_chatdlg();
     });
@@ -258,12 +296,13 @@ void TcpMgr::initHandlers()
 
         int uid = json_obj["uid"].toInt();
         QString name = json_obj["name"].toString();
+        QString nick = json_obj["nick"].toString();
         QString bakname = json_obj["bakname"].toString();
         QString desc = json_obj["desc"].toString();
         int sex = json_obj["sex"].toInt();
         QString icon = json_obj["icon"].toString();
 
-        auto friendinfo = std::make_shared<FriendInfo>(uid, name, desc, icon, bakname, sex);
+        auto friendinfo = std::make_shared<FriendInfo>(uid, name, nick, desc, icon, bakname, sex);
 
         emit sig_auth_friend(friendinfo);
 

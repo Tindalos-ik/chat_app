@@ -21,8 +21,9 @@ public:
 
     // 登录完成后刷新当前账号显示；ChatDialog 本身早于登录界面创建。
     void UpdateUserTitle();
-    void addChatUserList();
-    void addConUserList();
+    void RefreshLoginData();
+    void initChatUserList();
+    void initConUserList();
 
     void handleGlobalMousePress(QMouseEvent* mouseEvent);
 
@@ -52,7 +53,7 @@ private:
     void addChatUserWid(QListWidget *list, const QString &name,
                         const QString &msg, const QString &time,
                         const QString &icon, bool red); // 添加聊天用户
-    void addConUserWid(QListWidget *list, const QString &name, const QString &icon); //添加好友
+    void addConUserWid(QListWidget *list, int uid, const QString &name, const QString &icon); //添加好友
 
     void AddLBGroup(StateWidget *lb);            // 把侧边栏按钮加入互斥组
     void ClearLabelState(StateWidget *lb);       // 清除除 lb 之外所有按钮的选中态

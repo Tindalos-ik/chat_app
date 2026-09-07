@@ -23,15 +23,22 @@ ApplyFriendPage::ApplyFriendPage(QWidget *parent)
     _empty_label->setStyleSheet(QStringLiteral("color:#999999; font-size:13px;"));
     ui->root_layout->insertWidget(1, _empty_label, 1);
 
-    // 页面创建可能早于 TCP 通知，因此先恢复 UserMgr 中已经缓存的申请。
+    ReloadApplyList();
+}
+
+ApplyFriendPage::~ApplyFriendPage() { delete ui; }
+
+void ApplyFriendPage::ReloadApplyList()
+{
+    ui->friend_list->clear();
+    _apply_items.clear();
+
     const auto cached = UserMgr::GetInstance()->GetApplyList();
     for (const auto &applyInfo : cached) {
         addApplyInfo(applyInfo, false);
     }
     updateEmptyState();
 }
-
-ApplyFriendPage::~ApplyFriendPage() { delete ui; }
 
 void ApplyFriendPage::AddNewApply(std::shared_ptr<AddFriendApply> apply)
 {

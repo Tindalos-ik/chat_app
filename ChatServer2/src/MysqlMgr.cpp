@@ -766,3 +766,47 @@ bool MysqlMgr::AddFriend(
         return false;
     }
 }
+
+
+bool MysqlMgr::GetFriendInfo(
+    int uid,
+    std::vector<std::shared_ptr<UserInfo>>& friendinfo){
+    if (uid <= 0) {
+        return false;
+    }
+
+    auto con = pool_->GetConnection();
+    if (con == nullptr) {
+        return false;
+    }
+    Defer defer([&con, this]() { pool_->ReturnConnection(std::move(con)); });
+
+    try {
+        // friend 保存关系，user 提供好友展示资料；按关系创建时间倒序返回。
+        const std::string sql =
+            "SELECT u.uid, u.name, u.nick, u.`desc`, u.sex, u.icon "
+            "FROM friend AS f "
+            "INNER JOIN user AS u ON f.friend_id = u.uid "
+            "WHERE f.self_id = ? "
+            "ORDER BY f.id DESC";
+        auto result = con->sql(sql).bind(uid).execute();
+
+        std::vector<std::shared_ptr<UserInfo>> queriedFriends;
+        for (const auto& row : result.fetchAll()) {
+            auto friendInfo = std::make_shared<UserInfo>();
+            friendInfo->uid = row[0].get<int>();
+            friendInfo->user = row[1].get<std::string>();
+            friendInfo->nick = row[2].get<std::string>();
+            friendInfo->desc = row[3].get<std::string>();
+            friendInfo->sex = row[4].get<int>();
+            friendInfo->icon = row[5].get<std::string>();
+            queriedFriends.push_back(std::move(friendInfo));
+        }
+
+        friendinfo = std::move(queriedFriends);
+        return true;
+    } catch (const std::exception& e) {
+        std::cout << "Exception: " << e.what() << std::endl;
+        return false;
+    }
+}

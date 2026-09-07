@@ -1,33 +1,40 @@
 #include "usermgr.h"
 
-UserMgr::~UserMgr()
-{
+UserMgr::~UserMgr() = default;
 
+void UserMgr::SetUserInfo(std::shared_ptr<UserInfo> userinfo)
+{
+    _userinfo = userinfo ? std::move(userinfo) : std::make_shared<UserInfo>();
+}
+
+std::shared_ptr<UserInfo> UserMgr::GetUserInfo()
+{
+    return _userinfo;
 }
 
 void UserMgr::SetName(QString name)
 {
-    _name = name;
+    _userinfo->_name = std::move(name);
 }
 
 void UserMgr::SetUid(int uid)
 {
-    _uid = uid;
+    _userinfo->_uid = uid;
 }
 
 void UserMgr::SetToken(QString token)
 {
-    _token = token;
+    _token = std::move(token);
 }
 
 QString UserMgr::GetName()
 {
-    return _name;
+    return _userinfo->_name;
 }
 
 int UserMgr::GetUid()
 {
-    return _uid;
+    return _userinfo->_uid;
 }
 
 std::vector<std::shared_ptr<ApplyInfo> > UserMgr::GetApplyList()
@@ -35,9 +42,29 @@ std::vector<std::shared_ptr<ApplyInfo> > UserMgr::GetApplyList()
     return _apply_list;
 }
 
+std::vector<std::shared_ptr<UserInfo>> UserMgr::GetFriendList()
+{
+    return _friend_list;
+}
+
+void UserMgr::SetApplyList(std::vector<std::shared_ptr<ApplyInfo>> applylist)
+{
+    _apply_list = std::move(applylist);
+}
+
+void UserMgr::SetFriendList(std::vector<std::shared_ptr<UserInfo>> friendlist)
+{
+    _friend_list = std::move(friendlist);
+}
+
 void UserMgr::AddApplyList(std::shared_ptr<ApplyInfo> apply)
 {
     _apply_list.push_back(apply);
+}
+
+void UserMgr::AddFriendList(std::shared_ptr<UserInfo> newfriend)
+{
+    _friend_list.push_back(newfriend);
 }
 
 bool UserMgr::AlreadyApply(int uid)
@@ -50,8 +77,7 @@ bool UserMgr::AlreadyApply(int uid)
     return false;
 }
 
-
-
-UserMgr::UserMgr() {
-
+UserMgr::UserMgr()
+    : _userinfo(std::make_shared<UserInfo>())
+{
 }

@@ -160,15 +160,40 @@ void LogicSystem::LoginHandler(std::shared_ptr<CSession> session, const short &m
     rtvalue["sex"] = user_info->sex;
     rtvalue["icon"] = user_info->icon;
 
-    // 从数据库获取用户的好友申请列表，存在本地
+    // 从数据库获取用户的好友申请列表，返回客户端
     std::vector<std::shared_ptr<ApplyInfo>> apply_list;
     bool b_apply = MysqlMgr::GetInstance()->GetFriendApplyInfo(uid, apply_list);
     
     if (b_apply) {
-        
+        for(auto apply : apply_list) {
+            Json::Value apply_json;
+            apply_json["uid"] = apply->_uid;
+            apply_json["name"] = apply->_user;
+            apply_json["nick"] = apply->_nick;
+            apply_json["desc"] = apply->_desc;
+            apply_json["icon"] = apply->_icon;
+            rtvalue["apply_list"].append(apply_json);
+        }
+    }else{
+        rtvalue["apply_list"] = Json::Value::null;
     }
 
-    // 从数据库获取好友列表，存在本地
+    // 从数据库获取好友列表，返回客户端
+    std::vector<std::shared_ptr<UserInfo>> friend_list;
+    bool b_friend = MysqlMgr::GetInstance()->GetFriendInfo(uid, friend_list);
+
+    if(b_friend) {
+        for(auto friend_info : friend_list) {
+            Json::Value friend_json;
+            friend_json["uid"] = friend_info->uid;
+            friend_json["name"] = friend_info->user;
+            friend_json["nick"] = friend_info->nick;
+            friend_json["desc"] = friend_info->desc;
+            friend_json["sex"] = friend_info->sex;
+            friend_json["icon"] = friend_info->icon;
+            rtvalue["friend_list"].append(friend_json);
+        }
+    }
 
     auto server_name = ConfigMgr::Inst()["SelfChatServer"]["name"];
     // 原子地给本服务器在线人数 +1（HINCRBY 避免并发读改写丢更新）

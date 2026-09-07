@@ -35,8 +35,15 @@ void ApplyInfo::SetIcon(QString head){
     _icon = head;
 }
 
-FriendInfo::FriendInfo(int uid, QString name, QString desc, QString icon, QString bakname, int sex)
-    :_uid(uid), _name(name), _desc(desc), _icon(icon), _bakname(bakname), _sex(sex)
+FriendInfo::FriendInfo(int uid, QString name, QString nick, QString desc,
+                       QString icon, QString bakname, int sex)
+    :_uid(uid), _name(name), _nick(nick), _desc(desc), _icon(icon), _bakname(bakname), _sex(sex)
+{
+
+}
+
+UserInfo::UserInfo(int uid, QString name, QString nick, QString desc, int sex, QString icon):
+    _uid(uid), _name(name), _nick(nick), _desc(desc), _sex(sex), _icon(icon)
 {
 
 }

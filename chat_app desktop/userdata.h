@@ -4,6 +4,17 @@
 #include <QString>
 #include <memory>
 
+struct UserInfo {
+    UserInfo() = default;
+    UserInfo(int uid, QString name, QString nick, QString desc, int sex, QString icon);
+    int _uid = 0;
+    QString _name;
+    QString _nick;
+    QString _desc;
+    int _sex = 0;
+    QString _icon;
+};
+
 // 搜索结果：搜索 uid/name 后服务器返回的用户信息
 struct SearchInfo
 {
@@ -45,11 +56,12 @@ struct ApplyInfo {
 };
 
 struct FriendInfo{
-    FriendInfo(int uid, QString name, QString desc,
+    FriendInfo(int uid, QString name, QString nick, QString desc,
                QString icon, QString bakname, int sex);
 
     int _uid;
     QString _name;
+    QString _nick;
     QString _desc;
     QString _icon;
     QString _bakname;
