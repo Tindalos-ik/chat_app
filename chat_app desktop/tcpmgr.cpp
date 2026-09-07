@@ -3,12 +3,18 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
+#include <limits>
 #include "usermgr.h"
 #include "userdata.h"
 
 TcpMgr::~TcpMgr()
 {
 
+}
+
+bool TcpMgr::IsConnected() const
+{
+    return _socket.state() == QAbstractSocket::ConnectedState;
 }
 
 //Qt封装的是异步，我们要在构造函数里面完成各种信号的槽，保证服务的流程进行
@@ -23,9 +29,11 @@ TcpMgr::TcpMgr() : _host(""), _port(0), _b_recy_pending(false), _message_id(0), 
         emit sig_con_success(true);
     });
 
-    //处理连接断开，也不需要通知什么
+    // 记录断开原因，便于区分客户端主动退出、服务端关闭和网络错误。
     connect(&_socket, &QTcpSocket::disconnected, [this]{
-        qDebug() << "disconnect to server" << Qt::endl;
+        qWarning() << "disconnected from server:" << _socket.errorString();
+        _buffer.clear();
+        _b_recy_pending = false;
     });
 
     //在有数据可读时候进行处理
@@ -33,10 +41,8 @@ TcpMgr::TcpMgr() : _host(""), _port(0), _b_recy_pending(false), _message_id(0), 
         //读取所有数据到缓冲区
         _buffer.append(_socket.readAll());
 
-        QDataStream stream(&_buffer, QIODevice::ReadOnly); //使用流式操作
-        stream.setVersion(QDataStream::Qt_6_0);
-
-        {
+        // 一次 readyRead 可能包含多个完整包；半包则保留已读包头，等下次数据补齐包体。
+        while (true) {
             //解析头部，消息头是消息id + 消息长度 每个是short，两个字节
             if(!_b_recy_pending){
                 //检查缓冲区中的数据是否足够解析出一个消息头，不够就返回
@@ -44,6 +50,10 @@ TcpMgr::TcpMgr() : _host(""), _port(0), _b_recy_pending(false), _message_id(0), 
                 if(_buffer.size() < static_cast<int>(sizeof(quint16)*2)){
                     return;
                 }
+
+                QDataStream stream(&_buffer, QIODevice::ReadOnly);
+                stream.setVersion(QDataStream::Qt_6_0);
+                stream.setByteOrder(QDataStream::BigEndian);
 
                 //预读取消息id和消息长度
                 stream >> _message_id >> _message_len;
@@ -54,6 +64,7 @@ TcpMgr::TcpMgr() : _host(""), _port(0), _b_recy_pending(false), _message_id(0), 
                 //输出读取的数据
                 qDebug() << "message id : " << _message_id
                          << "message len : " << _message_len << Qt::endl;
+                _b_recy_pending = true;
             }
 
             //buffer剩余长度是否满足消息体长度，不满足就退出继续等待接受
@@ -66,12 +77,13 @@ TcpMgr::TcpMgr() : _host(""), _port(0), _b_recy_pending(false), _message_id(0), 
             QByteArray messageBody = _buffer.mid(0,_message_len);
             qDebug() << "receive message : " << messageBody << Qt::endl;
             _buffer = _buffer.mid(_message_len);
+            _b_recy_pending = false;
 
             //处理收到的数据
             auto iter = _handler.find(ReqId(_message_id));
             if(iter == _handler.end()){
                 qDebug() << "id error" << Qt::endl;
-                return;
+                continue;
             }
 
             //执行处理函数
@@ -264,8 +276,8 @@ void TcpMgr::initHandlers()
         emit sig_friend_apply(apply_user);
     });
 
-    // 认证好友回包
-    _handler.insert(ID_AUTH_FRIEND_RSP, [this](ReqId id, int len, QByteArray data){
+    // 认证者收到 1014 回包、原申请人收到 1015 通知，二者携带相同的好友资料。
+    auto handle_auth_friend = [this](ReqId id, int len, QByteArray data){
         Q_UNUSED(len);
         qDebug() << "handle id is " << id << "data is " << data;
 
@@ -306,6 +318,57 @@ void TcpMgr::initHandlers()
 
         emit sig_auth_friend(friendinfo);
 
+    };
+
+    _handler.insert(ID_AUTH_FRIEND_RSP, handle_auth_friend);
+    _handler.insert(ID_NOTIFY_AUTH_FRIEND_REQ, handle_auth_friend);
+
+    _handler.insert(ID_TEXT_CHAT_MSG_RSP, [this](ReqId id, int len, QByteArray data){
+        Q_UNUSED(id);
+        Q_UNUSED(len);
+        const QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
+        if (!jsonDoc.isObject()) {
+            qWarning() << "text chat response is not a JSON object";
+            return;
+        }
+
+        const QJsonObject jsonObj = jsonDoc.object();
+        const int error = jsonObj.value("error").toInt(ErrorCodes::ERR_JSON);
+        const QJsonArray textArray = jsonObj.value("textArray").toArray();
+        for (const QJsonValue &value : textArray) {
+            qDebug() << "text message" << value.toObject().value("msgid").toString()
+                     << (error == ErrorCodes::SUCCESS ? "sent" : "failed")
+                     << "error:" << error;
+        }
+    });
+
+    _handler.insert(ID_NOTIFY_TEXT_CHAT_MSG_REQ, [this](ReqId id, int len, QByteArray data){
+        Q_UNUSED(id);
+        Q_UNUSED(len);
+        const QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
+        if (!jsonDoc.isObject()) {
+            qWarning() << "text chat notification is not a JSON object";
+            return;
+        }
+
+        const QJsonObject jsonObj = jsonDoc.object();
+        if (jsonObj.value("error").toInt(ErrorCodes::ERR_JSON) != ErrorCodes::SUCCESS) {
+            qWarning() << "text chat notification failed:" << jsonObj.value("error").toInt();
+            return;
+        }
+
+        const int fromUid = jsonObj.value("fromuid").toInt();
+        const int toUid = jsonObj.value("touid").toInt();
+        const QJsonArray textArray = jsonObj.value("textArray").toArray();
+        qInfo() << "received text chat notification, from:" << fromUid
+                << "to:" << toUid << "count:" << textArray.size();
+        for (const QJsonValue &value : textArray) {
+            const QJsonObject textObj = value.toObject();
+            auto message = std::make_shared<TextChatData>(textObj.value("msgid").toString(),
+                                                           textObj.value("content").toString(),
+                                                           fromUid, toUid);
+            emit sig_text_chat(message);
+        }
     });
 
 }
@@ -323,6 +386,16 @@ void TcpMgr::slot_tcp_connect(ServerInfo si)
 
 void TcpMgr::slot_send_data(ReqId reqId, QByteArray dataByte)
 {
+    if (!IsConnected()) {
+        qWarning() << "cannot send TCP message: socket is not connected";
+        return;
+    }
+
+    if (dataByte.size() > std::numeric_limits<quint16>::max()) {
+        qWarning() << "cannot send TCP message: body exceeds protocol limit";
+        return;
+    }
+
     uint16_t id = reqId;
 
     // 计算长度，使用网络字节序转换
@@ -339,5 +412,7 @@ void TcpMgr::slot_send_data(ReqId reqId, QByteArray dataByte)
     block.append(dataByte);
 
     //发送数据
-    _socket.write(block);
+    if (_socket.write(block) < 0) {
+        qWarning() << "TCP write failed:" << _socket.errorString();
+    }
 }

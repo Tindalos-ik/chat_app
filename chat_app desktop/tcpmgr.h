@@ -23,6 +23,7 @@ class TcpMgr : public QObject, public Singleton<TcpMgr>, //继承QObject是为�
     Q_OBJECT
 public:
     ~TcpMgr();
+    bool IsConnected() const;
 
 private:
     TcpMgr();
@@ -50,6 +51,7 @@ signals:
     void sig_user_search(std::shared_ptr<SearchInfo>& si); // 发送给searchlist，用于显示搜索结果
     void sig_friend_apply(std::shared_ptr<AddFriendApply>& si); // 发送给chatdialog
     void sig_auth_friend(std::shared_ptr<FriendInfo>&); // 认证好友成功，发送给chatdialog
+    void sig_text_chat(std::shared_ptr<TextChatData>&); // 收到对方推送的文本消息
 };
 
 #endif // TCPMGR_H

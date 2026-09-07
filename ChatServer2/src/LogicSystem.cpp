@@ -98,6 +98,11 @@ void LogicSystem::RegisterCallBacks() {
                                             const std::string &msg_data) {  
         AuthFriend(session, msg_id, msg_data);
     };
+    _fun_callbacks[ID_TEXT_CHAT_MSG_REQ] = [this](std::shared_ptr<CSession> session,
+                                            const short &msg_id,
+                                            const std::string &msg_data) {
+        HandleTextMsg(session, msg_id, msg_data);
+    };
 }
 
 // 登录处理：解析uid/token -> 请求StatusServer校验 -> 把结果回包给客户端
@@ -448,19 +453,19 @@ void LogicSystem::AuthFriend(std::shared_ptr<CSession> session, const short &msg
     rtvalue["icon"] = user_info->icon;
     rtvalue["bakname"] = bakname;
 
-    // AddFriend 在一个事务内确认申请并建立双向 friend 记录。
+    // AddFriend 在一个事务内确认申请并建立双向 friend 记录，同时将申请状态置为已同意。
     // touid 是处理申请的用户，fromuid 是原申请用户。
-    MysqlMgr::GetInstance()->AddFriend(touid, fromuid, bakname);
-    // 更新friend_apply表
-    MysqlMgr::GetInstance()->UpdateFriendApplyStatus(touid, fromuid, 1);
+    if (!MysqlMgr::GetInstance()->AddFriend(touid, fromuid, bakname)) {
+        rtvalue["error"] = ErrorCode::RPCFaild;
+        return;
+    }
 
     rtvalue["error"] = ErrorCode::Success;
 
-    // 查询redis 查询对端的服务器
-    auto touid_str = std::to_string(touid);
-    auto to_ip_key = USERIPPREFIX + touid_str;
-    std::string to_ip_value; 
-    bool b_ip = RedisMgr::GetInstance()->Get(to_ip_key, to_ip_value);
+    // 查询redis 查询申请者的服务器
+    auto from_ip_key = USERIPPREFIX + std::to_string(fromuid);
+    std::string from_ip_value; 
+    bool b_ip = RedisMgr::GetInstance()->Get(from_ip_key, from_ip_value);
     if (!b_ip) {
         return;
     }
@@ -468,13 +473,23 @@ void LogicSystem::AuthFriend(std::shared_ptr<CSession> session, const short &msg
     auto self_name = ConfigMgr::Inst()["SelfChatServer"]["name"];
 
     // 如果申请方在本服务器，直接通知其认证结果。
-    if(self_name == to_ip_value){
+    if(self_name == from_ip_value){
         auto applicantSession = UserMgr::GetInstance()->GetSession(fromuid);
         if(applicantSession){
+            UserInfo approverInfo = MysqlMgr::GetInstance()->GetUserInfo(touid);
+            if (approverInfo.uid != touid) {
+                return;
+            }
             Json::Value notify;
             notify["error"] = ErrorCode::Success;
             notify["uid"] = touid;
             notify["touid"] = fromuid;
+            notify["name"] = approverInfo.user;
+            notify["nick"] = approverInfo.nick;
+            notify["desc"] = approverInfo.desc;
+            notify["sex"] = approverInfo.sex;
+            notify["icon"] = approverInfo.icon;
+            notify["bakname"] = approverInfo.user;
             std::string return_str = notify.toStyledString();
             applicantSession->Send(return_str, ID_NOTIFY_AUTH_FRIEND_REQ);
         }
@@ -485,5 +500,85 @@ void LogicSystem::AuthFriend(std::shared_ptr<CSession> session, const short &msg
     AuthFriendReq authReq;
     authReq.set_uid(touid);
     authReq.set_touid(fromuid);
-    ChatGrpcClient::GetInstance()->NotifyAuthFriend(to_ip_value, authReq);
+    ChatGrpcClient::GetInstance()->NotifyAuthFriend(from_ip_value, authReq);
+} 
+
+void LogicSystem::HandleTextMsg(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data){
+    Json::CharReaderBuilder reader;
+    Json::Value root;
+    std::istringstream ss(msg_data);
+    std::string errs;
+    bool parse_success = Json::parseFromStream(reader, ss, &root, &errs);
+    if (!parse_success) {
+        std::cout << "Failed to parse JSON data" << std::endl;
+        std::cout << errs << std::endl;
+        return;
+    }
+
+    const auto fromuid = root["fromuid"].asInt();
+    auto touid = root["touid"].asInt();
+    const Json::Value &textarray = root["textArray"];
+
+    Json::Value rtvalue;
+    rtvalue["error"] = ErrorCode::Success;
+    rtvalue["fromuid"] = fromuid;
+    rtvalue["touid"] = touid;
+    rtvalue["textArray"] = textarray;
+
+    Defer defer([this, &rtvalue, session]{
+        std::string return_str = rtvalue.toStyledString();
+        session->Send(return_str, ID_TEXT_CHAT_MSG_RSP); // 发送回包，在出作用域的时候会自动调用，防御式编程处理
+    });
+
+    if (session->GetUserId() != fromuid || touid <= 0 || !textarray.isArray() || textarray.empty()) {
+        rtvalue["error"] = ErrorCode::Error_Json;
+        return;
+    }
+
+    // 查询redis 查询对端的服务器
+    auto to_ip_key = USERIPPREFIX + std::to_string(touid);
+    std::string to_ip_value;
+    bool b_ip = RedisMgr::GetInstance()->Get(to_ip_key, to_ip_value);
+    if(!b_ip){
+        std::cout << "text chat target is offline, uid = " << touid << std::endl;
+        rtvalue["error"] = ErrorCode::UidInvalid;
+        return;
+    }
+
+    if(to_ip_value == ConfigMgr::Inst()["SelfChatServer"]["name"]){
+        // 直接在内存中转发消息
+        auto toSession = UserMgr::GetInstance()->GetSession(touid);
+        if(toSession){
+            // 在内存中直接通知对方
+            std::cout << "text chat local push, from = " << fromuid
+                      << ", to = " << touid << std::endl;
+            std::string return_str = rtvalue.toStyledString();
+            toSession->Send(return_str, ID_NOTIFY_TEXT_CHAT_MSG_REQ);
+        } else {
+            std::cout << "text chat target session missing, uid = " << touid << std::endl;
+            rtvalue["error"] = ErrorCode::UidInvalid;
+        }
+        return;
+    }
+
+    // 对端在其他服务器上，转发消息
+    TextChatMsgReq textChatMsgReq;
+    textChatMsgReq.set_fromuid(fromuid);
+    textChatMsgReq.set_touid(touid);
+    // 组装消息
+    for(auto &text_obj : textarray){
+        auto content = text_obj["content"].asString();
+        auto msgid = text_obj["msgid"].asString();
+        std::cout << "content: " << content << std::endl;
+        std::cout << "msgid: " << msgid << std::endl;
+        // 向 protobuf 的 repeated textmsgs 列表追加一条消息，并返回该元素的可写指针。
+        auto text_msg = textChatMsgReq.add_textmsgs();
+        text_msg->set_msgcontent(content);
+        text_msg->set_msgid(msgid);
+    }
+
+    std::cout << "text chat cross-server push, from = " << fromuid
+              << ", to = " << touid << ", server = " << to_ip_value << std::endl;
+    const auto rpcRsp = ChatGrpcClient::GetInstance()->NotifyTextChatMsg(to_ip_value, textChatMsgReq);
+    rtvalue["error"] = rpcRsp.error();
 }

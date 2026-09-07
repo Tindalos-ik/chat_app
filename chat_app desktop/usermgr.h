@@ -24,6 +24,7 @@ public:
     void SetUid(int uid);
     void SetToken(QString token);
     QString GetName();
+    QString GetIcon();
     int GetUid();
     // 好友申请在登录会话期间缓存，页面创建时可恢复这些记录。
     std::vector<std::shared_ptr<ApplyInfo>> GetApplyList();

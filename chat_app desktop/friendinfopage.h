@@ -19,7 +19,7 @@ public:
 
     // 填充好友信息：头像路径、名字、性别(0男/1女)、昵称、备注
     // （等 UserInfo 数据模型就绪后，可以改成直接传对象）
-    void SetUserInfo(const QString &icon, const QString &name, int sex,
+    void SetUserInfo(int uid, const QString &icon, const QString &name, int sex,
                      const QString &nick, const QString &bak);
 
 signals:

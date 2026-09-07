@@ -1,33 +1,7 @@
 #include "applyfrienditem.h"
 #include "ui_applyfrienditem.h"
-#include <QPixmap>
-#include <QPainter>
-#include <QPainterPath>
+#include "avatarutil.h"
 #include <QPushButton>
-
-namespace {
-void setRoundPixmap(QLabel *label, const QString &path)
-{
-    QPixmap original(path);
-    if (original.isNull()) {
-        label->clear();
-        return;
-    }
-    original = original.scaled(label->size(), Qt::KeepAspectRatioByExpanding,
-                               Qt::SmoothTransformation);
-    QPixmap rounded(label->size());
-    rounded.fill(Qt::transparent);
-    QPainter painter(&rounded);
-    painter.setRenderHint(QPainter::Antialiasing);
-    QPainterPath clip;
-    clip.addEllipse(rounded.rect());
-    painter.setClipPath(clip);
-    painter.drawPixmap(0, 0, original, (original.width() - rounded.width()) / 2,
-                       (original.height() - rounded.height()) / 2,
-                       rounded.width(), rounded.height());
-    label->setPixmap(rounded);
-}
-}
 
 ApplyFriendItem::ApplyFriendItem(QWidget *parent)
     : QWidget(parent), ui(new Ui::ApplyFriendItem)
@@ -59,7 +33,7 @@ void ApplyFriendItem::SetInfo(std::shared_ptr<ApplyInfo> applyInfo)
     // ApplyInfo 的 status 约定：0 表示待处理，1 表示已经同意。
     _apply_info = std::move(applyInfo);
     ui->user_name_lb->setText(_apply_info->_name);
-    setRoundPixmap(ui->icon_lb, _apply_info->_icon);
+    AvatarUtil::SetRoundAvatar(ui->icon_lb, _apply_info->_uid, _apply_info->_icon);
     ShowAddBtn(_apply_info->_status == 0);
 }
 

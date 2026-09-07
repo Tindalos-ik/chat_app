@@ -1,4 +1,5 @@
 #include "chatitembase.h"
+#include "avatarutil.h"
 #include <QFont>
 #include <QSpacerItem>
 
@@ -13,7 +14,6 @@ ChatItemBase::ChatItemBase(ChatRole role, QWidget* parent)
     m_pNameLabel->setFixedHeight(20);
 
     m_pIconLabel = new QLabel();
-    m_pIconLabel->setScaledContents(true); // 允许伸缩
     m_pIconLabel->setFixedSize(40,40);
 
     m_pBubble = new QWidget();
@@ -56,9 +56,9 @@ void ChatItemBase::setUserName(const QString &name)
     m_pNameLabel->setText(name);
 }
 
-void ChatItemBase::setUserIcon(const QPixmap &icon)
+void ChatItemBase::setUserAvatar(int uid, const QString &avatarPath)
 {
-    m_pIconLabel->setPixmap(icon);
+    AvatarUtil::SetRoundAvatar(m_pIconLabel, uid, avatarPath);
 }
 
 void ChatItemBase::setWidget(QWidget *w)

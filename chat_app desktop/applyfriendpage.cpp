@@ -3,14 +3,9 @@
 #include "applyfrienditem.h"
 #include "authenfriend.h"
 #include "usermgr.h"
+#include "avatarutil.h"
 #include <QLabel>
 #include <QListWidgetItem>
-
-namespace {
-// 当前工程没有头像下载模块，服务端未返回头像时使用内置头像作为兜底。
-const QString kHeadIcons[] = {":/res/head_1.jpg", ":/res/head_2.jpg", ":/res/head_3.jpg",
-                              ":/res/head_4.jpg", ":/res/head_5.jpg"};
-}
 
 ApplyFriendPage::ApplyFriendPage(QWidget *parent)
     : QWidget(parent), ui(new Ui::ApplyFriendPage)
@@ -46,13 +41,10 @@ void ApplyFriendPage::AddNewApply(std::shared_ptr<AddFriendApply> apply)
         return;
     }
 
-    // 通知中的 icon 为空时选择稳定的本地头像，避免每次刷新头像跳变。
-    QString icon = apply->_icon;
-    if (icon.isEmpty()) {
-        icon = kHeadIcons[apply->_fromuid % (sizeof(kHeadIcons) / sizeof(kHeadIcons[0]))];
-    }
     auto applyInfo = std::make_shared<ApplyInfo>(apply->_fromuid, apply->_name,
-                                                  apply->_desc, icon, apply->_nick,
+                                                  apply->_desc,
+                                                  AvatarUtil::ResolvePath(apply->_fromuid, apply->_icon),
+                                                  apply->_nick,
                                                   apply->_sex, 0);
     addApplyInfo(applyInfo, true);
 }
@@ -63,10 +55,7 @@ void ApplyFriendPage::addApplyInfo(const std::shared_ptr<ApplyInfo> &applyInfo, 
         return;
     }
 
-    // 历史记录缺少头像时使用本地兜底资源。
-    if (applyInfo->_icon.isEmpty()) {
-        applyInfo->SetIcon(kHeadIcons[applyInfo->_uid % (sizeof(kHeadIcons) / sizeof(kHeadIcons[0]))]);
-    }
+    applyInfo->SetIcon(AvatarUtil::ResolvePath(applyInfo->_uid, applyInfo->_icon));
 
     auto *itemWidget = new ApplyFriendItem;
     itemWidget->SetInfo(applyInfo);

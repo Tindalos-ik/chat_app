@@ -1,6 +1,6 @@
 #include "findsuccessdlg.h"
 #include "ui_findsuccessdlg.h"
-#include <QDir>
+#include "avatarutil.h"
 
 FindSuccessDlg::FindSuccessDlg(QWidget *parent)
     : QDialog(parent)
@@ -11,16 +11,6 @@ FindSuccessDlg::FindSuccessDlg(QWidget *parent)
     setWindowTitle("添加");
     // 隐藏对话框标题栏
     setWindowFlags(windowFlags() | Qt::FramelessWindowHint);
-    // 获取当前应用程序路径，读取对应用户信息
-    // 所以需要把static给复制到应用程序执行路径
-    QString app_path = QCoreApplication::applicationDirPath();
-    QString pix_path = QDir::toNativeSeparators(app_path +
-                            QDir::separator() + "static" + QDir::separator() + "head_1.jpg");
-    // 头像放在static文件夹中，这个头像后续是通过服务器传过来的
-
-    QPixmap head_pix(pix_path);
-    head_pix = head_pix.scaled(ui->head_lb->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
-    ui->head_lb->setPixmap(head_pix);
     this->setModal(true); // 设置为模态对话框
 
     _parent = parent;
@@ -33,7 +23,11 @@ FindSuccessDlg::~FindSuccessDlg()
 
 void FindSuccessDlg::setSearchInfo(std::shared_ptr<SearchInfo> si)
 {
+    if (!si) {
+        return;
+    }
     ui->name_lb->setText(si->_name);
+    AvatarUtil::SetRoundAvatar(ui->head_lb, si->_uid, {});
     _si = si;
 }
 

@@ -3,7 +3,9 @@
 
 #include <QWidget>
 #include <QSize>
+#include <memory>
 #include "listitembase.h"
+#include "userdata.h"
 
 namespace Ui {
 class ChatUserWid;
@@ -21,6 +23,8 @@ public:
 
     QSize sizeHint() const override;   // 告诉列表项占多大空间
 
+    void SetUserInfo(const std::shared_ptr<UserInfo> &userInfo);
+    std::shared_ptr<UserInfo> GetUserInfo() const;
     void SetUserName(const QString &name);
     void SetChatMsg(const QString &msg);      // 最后一条消息预览
     void SetTime(const QString &time);
@@ -31,6 +35,7 @@ public:
 
 private:
     Ui::ChatUserWid *ui;
+    std::shared_ptr<UserInfo> _userInfo;
     QString _name; // 联系人名字
     QString _icon; // 头像资源路径
 };

@@ -41,6 +41,7 @@ private:
     void UserSearchHandler(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data); // 查询用户服务
     void AddFriendApply(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data); // 添加好友申请
     void AuthFriend(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data); // 好友认证
+    void HandleTextMsg(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data); // 处理文本消息
 
     bool GetBaseInfo(std::string base_key, int uid, std::shared_ptr<UserInfo>& userinfo);
 

@@ -1,13 +1,11 @@
 #include "authenfriend.h"
 #include "ui_authenfriend.h"
-#include <QPixmap>
-#include <QPainter>
-#include <QPainterPath>
 #include <QDebug>
 #include <QJsonObject>
 #include <QJsonDocument>
 #include "tcpmgr.h"
 #include "usermgr.h"
+#include "avatarutil.h"
 
 AuthenFriend::AuthenFriend(QWidget *parent)
     : QDialog(parent)
@@ -31,21 +29,7 @@ void AuthenFriend::SetApplyInfo(std::shared_ptr<ApplyInfo> apply)
 {
     _apply_info = apply;
 
-    // 圆形头像
-    QPixmap original(apply->_icon);
-    if (!original.isNull()) {
-        original = original.scaled(ui->icon_lb->size(),
-                                   Qt::KeepAspectRatio, Qt::SmoothTransformation);
-        QPixmap rounded(original.size());
-        rounded.fill(Qt::transparent);
-        QPainter painter(&rounded);
-        painter.setRenderHint(QPainter::Antialiasing);
-        QPainterPath path;
-        path.addEllipse(0, 0, original.width(), original.height());
-        painter.setClipPath(path);
-        painter.drawPixmap(0, 0, original);
-        ui->icon_lb->setPixmap(rounded);
-    }
+    AvatarUtil::SetRoundAvatar(ui->icon_lb, apply->_uid, apply->_icon);
 
     ui->name_lb->setText(apply->_name);
     ui->msg_lb->setText(apply->_desc);

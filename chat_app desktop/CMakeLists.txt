@@ -40,6 +40,7 @@ qt_add_executable(chat_app
     picturebubble.h picturebubble.cpp
     messagetextedit.h messagetextedit.cpp
     statewidget.h statewidget.cpp
+    avatarutil.h avatarutil.cpp
     searchlist.h searchlist.cpp
     userdata.h userdata.cpp
     adduseritem.h adduseritem.cpp adduseritem.ui

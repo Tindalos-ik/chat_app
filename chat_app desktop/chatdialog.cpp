@@ -20,13 +20,13 @@
 #include <QMouseEvent>
 #include "tcpmgr.h"
 #include "usermgr.h"
-#include <QRandomGenerator>
+#include <algorithm>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QMessageBox>
 
 namespace {
-// 示例头像资源，循环使用
-const QString kHeadIcons[] = {":/res/head_1.jpg", ":/res/head_2.jpg", ":/res/head_3.jpg",
-                              ":/res/head_4.jpg", ":/res/head_5.jpg"};
-
 void ClearListItems(QListWidget *list, int firstIndex)
 {
     for (int index = list->count() - 1; index >= firstIndex; --index) {
@@ -95,11 +95,10 @@ ChatDialog::ChatDialog(QWidget *parent)
     // 点击聊天列表条目 -> 聊天标题换成对应联系人，并切回聊天页
     connect(ui->session_list, &QListWidget::itemClicked, this, [this](QListWidgetItem *item){
         auto *wid = qobject_cast<ChatUserWid*>(ui->session_list->itemWidget(item));
-        if (wid == nullptr) {
+        if (wid == nullptr || !wid->GetUserInfo()) {
             return;
         }
-        ui->chat_title_label->setText(wid->GetName()); // 标题显示联系人名字
-        ui->chat_stack->setCurrentWidget(ui->chat_page); // 回到聊天页
+        SetCurrentChatUser(wid->GetUserInfo());
     });
 
     connect(ui->contact_list, &ConUserList::sig_loading_con_user,
@@ -119,12 +118,18 @@ ChatDialog::ChatDialog(QWidget *parent)
         if (wid == nullptr) {
             return;
         }
-        const QString name = wid->GetName();
-        const QString icon = wid->GetIcon();
-        const int sex = qHash(name) % 2; // 0=男 1=女
-        ui->friend_info_page->SetUserInfo(icon, name, sex,
-                                          name + QStringLiteral("的昵称"),
-                                          name + QStringLiteral("的备注"));
+        const auto friendList = UserMgr::GetInstance()->GetFriendList();
+        const auto iter = std::find_if(friendList.cbegin(), friendList.cend(),
+                                       [wid](const std::shared_ptr<UserInfo> &info) {
+                                           return info && info->_uid == wid->GetUid();
+                                       });
+        if (iter == friendList.cend()) {
+            return;
+        }
+        SetCurrentChatUser(*iter);
+        ui->friend_info_page->SetUserInfo((*iter)->_uid, (*iter)->_icon,
+                                          (*iter)->_name, (*iter)->_sex,
+                                          (*iter)->_nick, (*iter)->_name);
         ui->chat_stack->setCurrentWidget(ui->friend_info_page); // 切到好友信息页
     });
 
@@ -137,7 +142,9 @@ ChatDialog::ChatDialog(QWidget *parent)
 
     // 输入框回车（不带 Shift）→ 发送
     connect(ui->input_edit, &MessageTextEdit::send,
-            this, &ChatDialog::on_send_btn_clicked);
+            this, &ChatDialog::slot_send_message);
+    // 显式连接，不依赖 on_<object>_<signal> 的命名约定，避免重复连接或 UI 改名后失效。
+    connect(ui->send_btn, &QPushButton::clicked, this, &ChatDialog::slot_send_message);
 
     // 初始化聊天列表
 
@@ -152,6 +159,8 @@ ChatDialog::ChatDialog(QWidget *parent)
 
     // tcpmgr发来好友认证信号，聊天界面做出响应
     connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_auth_friend, this, &ChatDialog::slot_auth_friend);
+    connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_text_chat, this, &ChatDialog::slot_text_chat);
+
 }
 
 ChatDialog::~ChatDialog()
@@ -173,6 +182,7 @@ void ChatDialog::UpdateUserTitle()
 
 void ChatDialog::RefreshLoginData()
 {
+    _current_chatuser.reset();
     UpdateUserTitle();
     ClearListItems(ui->session_list, 0);
     ClearListItems(ui->contact_list, 2);
@@ -185,7 +195,7 @@ void ChatDialog::initChatUserList()
 {
     auto friend_list = UserMgr::GetInstance()->GetFriendList();
     for(const auto &obj : friend_list){
-        addChatUserWid(ui->session_list, obj->_name, "你好", "", obj->_icon, false);
+        addChatUserWid(ui->session_list, obj, "你好", "", false);
     }
 }
 
@@ -198,21 +208,17 @@ void ChatDialog::initConUserList()
 }
 
 
-void ChatDialog::addChatUserWid(QListWidget *list, const QString &name, const QString &msg, const QString &time, const QString &icon, bool red)
+void ChatDialog::addChatUserWid(QListWidget *list, const std::shared_ptr<UserInfo> &userInfo,
+                                const QString &msg, const QString &time, bool red)
 {
+    if (!userInfo) {
+        return;
+    }
     auto *item = new QListWidgetItem;
     auto *wid = new ChatUserWid;
-    wid->SetUserName(name);
+    wid->SetUserInfo(userInfo);
     wid->SetChatMsg(msg);
     wid->SetTime(time);
-    if(icon.isEmpty()){
-        // 生成 [0, 100) 之间的整数，即 0 到 99
-        int value = QRandomGenerator::global()->bounded(100);
-        QString ic = kHeadIcons[value%5];// 如果没有头像信息，随机数弄一下
-        wid->SetHeadIcon(ic);
-    }else{
-        wid->SetHeadIcon(icon);
-    }
     wid->ShowRedPoint(red);
     item->setSizeHint(wid->sizeHint());
     list->addItem(item);
@@ -223,13 +229,7 @@ void ChatDialog::addConUserWid(QListWidget *list, int uid, const QString &name, 
 {
     auto *item = new QListWidgetItem;
     auto *wid = new ConUserWid;
-    if(icon.isEmpty()){
-        // 生成 [0, 100) 之间的整数，即 0 到 99
-        int value = QRandomGenerator::global()->bounded(100);
-        wid->SetInfo(uid, name, kHeadIcons[value%5]); // 如果没有头像信息，随机数弄一下
-    }else{
-        wid->SetInfo(uid, name, icon); // 联系人信息接口：类型 + 名字 + 头像一步到位
-    }
+    wid->SetInfo(uid, name, icon);
     item->setSizeHint(wid->sizeHint());
     list->addItem(item);
     list->setItemWidget(item, wid);
@@ -275,24 +275,79 @@ void ChatDialog::slot_loading_con_user()
 }
 
 
-void ChatDialog::on_send_btn_clicked()
+void ChatDialog::slot_send_message()
 {
     auto pTextEdit = ui->input_edit;
     ChatRole role = ChatRole::Self;
-    QString userName = QStringLiteral("klein");
-    QString userIcon = ":/res/head_1.jpg";
+    auto userinfo = UserMgr::GetInstance()->GetUserInfo();
+    if (!userinfo) {
+        QMessageBox::warning(this, tr("发送失败"), tr("当前未登录，请重新登录。"));
+        return;
+    }
+
+    if (!_current_chatuser) {
+        QMessageBox::warning(this, tr("发送失败"), tr("请先在聊天列表或联系人列表中选择聊天对象。"));
+        return;
+    }
+
+    if (!TcpMgr::GetInstance()->IsConnected()) {
+        QMessageBox::warning(this, tr("发送失败"), tr("未连接聊天服务器，请重新登录后再发送。"));
+        qWarning() << "cannot send message: TCP socket is not connected";
+        return;
+    }
+
+    QString userName = userinfo->_name;
+    QString userIcon = userinfo->_icon;
+    int uid = userinfo->_uid;
 
     const QVector<MsgInfo>& msgList = pTextEdit->getMsgList();
+    QJsonArray textArray;
+    int textBytes = 0;
+    constexpr int kMaxTextBatchBytes = 1024;
+
+    const auto sendTextBatch = [&] {
+        if (textArray.isEmpty()) {
+            return;
+        }
+
+        QJsonObject textObj;
+        textObj["fromuid"] = userinfo->_uid;
+        textObj["touid"] = _current_chatuser->_uid;
+        textObj["textArray"] = textArray;
+        const QByteArray jsonData = QJsonDocument(textObj).toJson(QJsonDocument::Compact);
+        emit TcpMgr::GetInstance()->sig_send_data(ReqId::ID_TEXT_CHAT_MSG_REQ, jsonData);
+        textArray = QJsonArray();
+        textBytes = 0;
+    };
+
     for(int i=0; i<msgList.size(); ++i)
     {
         QString type = msgList[i].msgFlag;
         ChatItemBase *pChatItem = new ChatItemBase(role);
         pChatItem->setUserName(userName);
-        pChatItem->setUserIcon(QPixmap(userIcon));
+        pChatItem->setUserAvatar(uid, userIcon);
         QWidget *pBubble = nullptr;
+
         if(type == "text")
         {
             pBubble = new TextBubble(role, msgList[i].content);
+
+            // 组装信息发送
+            // 生成唯一id，id和消息绑定可以用于后面判断消息是否送达
+            QUuid uuid = QUuid::createUuid();
+            QString uuid_str = uuid.toString();
+
+            QJsonObject obj;
+            QByteArray utf8Message = msgList[i].content.toUtf8();
+            if (!textArray.isEmpty() && textBytes + utf8Message.size() > kMaxTextBatchBytes) {
+                sendTextBatch();
+            }
+            obj["content"] = QString::fromUtf8(utf8Message);
+            obj["msgid"] = uuid_str;
+            textArray.append(obj);
+            textBytes += utf8Message.size();
+            auto txt_msg = std::make_shared<TextChatData>(uuid_str, obj["content"].toString(), userinfo->_uid, _current_chatuser->_uid);
+            emit sig_append_send_chat_msg(txt_msg);
         }
         else if(type == "image")
         {
@@ -313,7 +368,10 @@ void ChatDialog::on_send_btn_clicked()
             pChatItem->setWidget(pBubble);
             ui->chat_data->appendChatItem(pChatItem);
         }
+
     }
+
+    sendTextBatch();
 }
 
 void ChatDialog::slot_side_chat()
@@ -363,7 +421,90 @@ void ChatDialog::slot_auth_friend(std::shared_ptr<FriendInfo> &friend_info)
     // 更新好友信息界面 TODO
 
     // 聊天会话列表也要加
-    addChatUserWid(ui->session_list, friend_info->_name, "你好", "", friend_info->_icon, true);
+    addChatUserWid(ui->session_list, userinfo, "你好", "", true);
+}
+
+void ChatDialog::slot_text_chat(std::shared_ptr<TextChatData> &message)
+{
+    if (!message) {
+        return;
+    }
+
+    const auto friends = UserMgr::GetInstance()->GetFriendList();
+    const auto iter = std::find_if(friends.cbegin(), friends.cend(), [message](const auto &friendInfo) {
+        return friendInfo && friendInfo->_uid == message->_from_uid;
+    });
+    if (iter == friends.cend()) {
+        qWarning() << "text chat sender is not in the local friend list, uid:" << message->_from_uid;
+        return;
+    }
+
+    if (!_current_chatuser || _current_chatuser->_uid != message->_from_uid) {
+        _unread_text_messages[message->_from_uid].append(message);
+        UpdateChatSessionPreview(*iter, message->_msg_content, true);
+        qInfo() << "text chat stored as unread, from:" << message->_from_uid;
+        return;
+    }
+
+    UpdateChatSessionPreview(*iter, message->_msg_content, false);
+    AppendReceivedTextMessage(message, *iter);
+}
+
+void ChatDialog::AppendReceivedTextMessage(const std::shared_ptr<TextChatData> &message,
+                                           const std::shared_ptr<UserInfo> &sender)
+{
+    if (!message || !sender) {
+        return;
+    }
+
+    auto *chatItem = new ChatItemBase(ChatRole::Other);
+    chatItem->setUserName(sender->_name);
+    chatItem->setUserAvatar(sender->_uid, sender->_icon);
+    chatItem->setWidget(new TextBubble(ChatRole::Other, message->_msg_content));
+    ui->chat_data->appendChatItem(chatItem);
+}
+
+void ChatDialog::UpdateChatSessionPreview(const std::shared_ptr<UserInfo> &userInfo,
+                                          const QString &message, bool unread)
+{
+    if (!userInfo) {
+        return;
+    }
+
+    for (int index = 0; index < ui->session_list->count(); ++index) {
+        auto *item = ui->session_list->item(index);
+        auto *widget = qobject_cast<ChatUserWid *>(ui->session_list->itemWidget(item));
+        if (widget && widget->GetUserInfo() && widget->GetUserInfo()->_uid == userInfo->_uid) {
+            widget->SetChatMsg(message);
+            widget->ShowRedPoint(unread);
+            return;
+        }
+    }
+
+    addChatUserWid(ui->session_list, userInfo, message, "", unread);
+}
+
+void ChatDialog::SetCurrentChatUser(const std::shared_ptr<UserInfo> &chatUser)
+{
+    if (!chatUser) {
+        return;
+    }
+    _current_chatuser = chatUser;
+    ui->chat_title_label->setText(_current_chatuser->_name);
+    ui->chat_stack->setCurrentWidget(ui->chat_page);
+
+    const auto unread = _unread_text_messages.take(_current_chatuser->_uid);
+    for (const auto &message : unread) {
+        AppendReceivedTextMessage(message, _current_chatuser);
+    }
+    for (int index = 0; index < ui->session_list->count(); ++index) {
+        auto *item = ui->session_list->item(index);
+        auto *widget = qobject_cast<ChatUserWid *>(ui->session_list->itemWidget(item));
+        if (widget && widget->GetUserInfo() && widget->GetUserInfo()->_uid == _current_chatuser->_uid) {
+            widget->ShowRedPoint(false);
+            break;
+        }
+    }
 }
 
 bool ChatDialog::eventFilter(QObject *watched, QEvent *event)

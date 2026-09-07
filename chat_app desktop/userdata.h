@@ -68,4 +68,12 @@ struct FriendInfo{
     int _sex;
 };
 
+struct TextChatData{
+    TextChatData(QString msg_id, QString msg_content, int from_uid, int to_uid);
+    QString _msg_id;
+    QString _msg_content;
+    int _from_uid;
+    int _to_uid;
+};
+
 #endif // USERDATA_H

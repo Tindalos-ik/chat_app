@@ -3,9 +3,7 @@
 #include <QJsonObject>
 #include "httpmgr.h"
 #include "clickedlabel.h"
-#include <QPixmap>
-#include <QPainter>
-#include <QPainterPath>
+#include "avatarutil.h"
 #include "logindialog.h"
 #include "tcpmgr.h"
 
@@ -60,31 +58,7 @@ void LoginDialog::showtip(QString str,QString state)
 
 void LoginDialog::initHead()
 {
-    //加载图片
-    QPixmap originalPixmap(":/res/head_2.jpg");
-    //设置图片自动缩放
-    qDebug() << originalPixmap.size() << ui->head_label->size();
-    originalPixmap = originalPixmap.scaled(ui->head_label->size(),
-                    Qt::KeepAspectRatio,Qt::SmoothTransformation);
-
-    //创建一个和原始图片同样大小的pixmap，用于绘制圆角图片
-    QPixmap roundedPixmap(originalPixmap.size());
-    roundedPixmap.fill(Qt::transparent); //用透明色填充
-
-    QPainter painter(&roundedPixmap);
-    painter.setRenderHint(QPainter::Antialiasing); //设置抗锯齿，使圆角更平滑
-    painter.setRenderHint(QPainter::SmoothPixmapTransform);
-
-    //使用QPainterPath设置圆角
-    QPainterPath path;
-    path.addRoundedRect(0,0,originalPixmap.width(),originalPixmap.height(),10,10);
-    painter.setClipPath(path);
-
-    //将原始图片绘制在roundedPixmap上
-    painter.drawPixmap(0,0,originalPixmap);
-
-    //设置绘制好的圆角图片到QLabel上
-    ui->head_label->setPixmap(roundedPixmap);
+    AvatarUtil::SetRoundAvatar(ui->head_label, 0, {});
 }
 
 void LoginDialog::on_login_btn_clicked()

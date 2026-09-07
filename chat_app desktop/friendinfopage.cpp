@@ -1,8 +1,6 @@
 #include "friendinfopage.h"
 #include "ui_friendinfopage.h"
-#include <QPixmap>
-#include <QPainter>
-#include <QPainterPath>
+#include "avatarutil.h"
 #include <QDebug>
 
 FriendInfoPage::FriendInfoPage(QWidget *parent)
@@ -17,27 +15,12 @@ FriendInfoPage::~FriendInfoPage()
     delete ui;
 }
 
-void FriendInfoPage::SetUserInfo(const QString &icon, const QString &name, int sex,
+void FriendInfoPage::SetUserInfo(int uid, const QString &icon, const QString &name, int sex,
                                  const QString &nick, const QString &bak)
 {
     _name = name;
-    _icon = icon;
-
-    // 头像：加载并裁剪成圆形（和列表头像同一套画法）
-    QPixmap original(icon);
-    if (!original.isNull()) {
-        original = original.scaled(ui->icon_lb->size(),
-                                   Qt::KeepAspectRatio, Qt::SmoothTransformation);
-        QPixmap rounded(original.size());
-        rounded.fill(Qt::transparent);
-        QPainter painter(&rounded);
-        painter.setRenderHint(QPainter::Antialiasing);
-        QPainterPath path;
-        path.addEllipse(0, 0, original.width(), original.height());
-        painter.setClipPath(path);
-        painter.drawPixmap(0, 0, original);
-        ui->icon_lb->setPixmap(rounded);
-    }
+    _icon = AvatarUtil::ResolvePath(uid, icon);
+    AvatarUtil::SetRoundAvatar(ui->icon_lb, uid, _icon);
 
     // 文字信息
     ui->name_lb->setText(name);

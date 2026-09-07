@@ -5,6 +5,7 @@
 #include <json-forwards.h>
 #include "RedisMgr.h"
 #include "MysqlMgr.h"
+#include <iostream>
 
 ChatServiceImpl::ChatServiceImpl(){
 
@@ -44,13 +45,74 @@ Status ChatServiceImpl::NotifyAddFriend(ServerContext* context, const AddFriendR
 
 
 Status ChatServiceImpl::NotifyAuthFriend(ServerContext* context, const AuthFriendReq* request, AuthFriendRsp* response){
+    auto touid = request->touid();
+    auto session = UserMgr::GetInstance()->GetSession(touid);
+    response->set_error(ErrorCode::Success);
+    response->set_uid(request->uid());
+    response->set_touid(request->touid());
+
+    if(session == nullptr){
+        // 用户不在内存中直接返回
+        return Status::OK;
+    }
+
+    // 申请方客户端需要认证者的完整资料来立即创建好友条目。
+    UserInfo approverInfo = MysqlMgr::GetInstance()->GetUserInfo(request->uid());
+    if (approverInfo.uid != request->uid()) {
+        response->set_error(ErrorCode::UidInvalid);
+        return Status::OK;
+    }
+
+    Json::Value rtvalue;
+    rtvalue["error"] = ErrorCode::Success;
+    rtvalue["uid"] = request->uid();
+    rtvalue["touid"] = request->touid();
+    rtvalue["name"] = approverInfo.user;
+    rtvalue["nick"] = approverInfo.nick;
+    rtvalue["desc"] = approverInfo.desc;
+    rtvalue["sex"] = approverInfo.sex;
+    rtvalue["icon"] = approverInfo.icon;
+    rtvalue["bakname"] = approverInfo.user;
+
+    std::string return_str = rtvalue.toStyledString();
+    session->Send(return_str, ID_NOTIFY_AUTH_FRIEND_REQ); // 发送认证好友请求
+
     return Status::OK;
 }
     
 Status ChatServiceImpl::NotifyTextChatMsg(ServerContext* context, const TextChatMsgReq* request, TextChatMsgRsp* response){
+
+    //查找用户是否在本服务器
+    auto touid = request->touid();
+    auto session = UserMgr::GetInstance()->GetSession(touid);
+    response->set_error(ErrorCode::Success);
+
+    // Redis 路由说目标用户在本机，但会话已经不存在时，不能伪装成发送成功。
+    if (session == nullptr) {
+        response->set_error(ErrorCode::UidInvalid);
+        return Status::OK;
+    }
+
+    //在内存中则直接发送通知对方
+    Json::Value  rtvalue;
+    rtvalue["error"] = ErrorCode::Success;
+    rtvalue["fromuid"] = request->fromuid();
+    rtvalue["touid"] = request->touid();
+
+    //将聊天数据组织为数组
+    Json::Value text_array;
+    for (auto& msg : request->textmsgs()) {
+        Json::Value element;
+        element["content"] = msg.msgcontent();
+        element["msgid"] = msg.msgid();
+        text_array.append(element);
+    }
+    rtvalue["textArray"] = text_array;
+
+    std::string return_str = rtvalue.toStyledString();
+
+    std::cout << "text chat gRPC push, from = " << request->fromuid()
+              << ", to = " << touid << std::endl;
+    session->Send(return_str, ID_NOTIFY_TEXT_CHAT_MSG_REQ);
     return Status::OK;
-}
-    
-bool ChatServiceImpl::GetBaseInfo(std::string base_key, int uid, std::shared_ptr<UserInfo>& userinfo){
-    return true;
 }

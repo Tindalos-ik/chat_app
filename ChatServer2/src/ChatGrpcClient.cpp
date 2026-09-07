@@ -98,6 +98,32 @@ AuthFriendRsp ChatGrpcClient::NotifyAuthFriend(std::string server_ip, const Auth
     return rsp;
 }
 
-TextChatMsgRsp ChatGrpcClient::NotifyTextChatMsg(std::string server_ip, const TextChatMsgReq& request, const Json::Value& rtvalue){
-    return TextChatMsgRsp();
+TextChatMsgRsp ChatGrpcClient::NotifyTextChatMsg(std::string server_ip, const TextChatMsgReq& request){
+    TextChatMsgRsp rsp;
+    rsp.set_error(ErrorCode::RPCFaild);
+
+    auto find_iter = _pools.find(server_ip); // 找到对应的连接池
+    if(find_iter == _pools.end()){
+        return rsp;
+    }
+
+    auto& pool = find_iter->second;
+
+    ClientContext context;
+    // 获取连接池中的一个连接
+    auto stub = pool->getConnnection();
+    if (!stub) {
+        return rsp;
+    }
+    Status status = stub->NotifyTextChatMsg(&context, request, &rsp); // 调用远程方法
+    Defer defercon([&pool, &stub, this](){
+        pool->returnConnection(std::move(stub));
+    });
+
+    if(!status.ok()){
+        rsp.set_error(ErrorCode::RPCFaild);
+        return rsp;
+    }
+
+    return rsp;
 }

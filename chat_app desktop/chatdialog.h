@@ -2,6 +2,7 @@
 #define CHATDIALOG_H
 
 #include <QDialog>
+#include <QHash>
 #include <QListWidget>
 #include <QVector>
 #include "statewidget.h"
@@ -30,12 +31,13 @@ public:
 private slots:
     void slot_loading_chat_user();   // 聊天列表滚到底部时加载更多
     void slot_loading_con_user();
-    void on_send_btn_clicked();
+    void slot_send_message(); // 发送消息
     void slot_side_chat();      // 侧边栏：聊天
     void slot_side_contact();   // 侧边栏：联系人
     void slot_side_setting();   // 侧边栏：设置（页面未实现）
     void slot_apply_friend(std::shared_ptr<AddFriendApply>& apply_info); // 添加好友申请
     void slot_auth_friend(std::shared_ptr<FriendInfo>& friend_info); // 好友列表增加一个好友
+    void slot_text_chat(std::shared_ptr<TextChatData>& message); // 显示当前会话收到的文本
 
 protected:
     // 重写事件过滤器实现根据鼠标位置判断是否隐藏搜索框恢复聊天界面
@@ -50,13 +52,23 @@ private:
     int _loaded_chat_count = 0;   // 已加载的聊天会话条数（示例数据计数）
     int _loaded_con_count = 0;
 
-    void addChatUserWid(QListWidget *list, const QString &name,
-                        const QString &msg, const QString &time,
-                        const QString &icon, bool red); // 添加聊天用户
+    void addChatUserWid(QListWidget *list, const std::shared_ptr<UserInfo> &userInfo,
+                        const QString &msg, const QString &time, bool red); // 添加聊天用户
     void addConUserWid(QListWidget *list, int uid, const QString &name, const QString &icon); //添加好友
 
     void AddLBGroup(StateWidget *lb);            // 把侧边栏按钮加入互斥组
     void ClearLabelState(StateWidget *lb);       // 清除除 lb 之外所有按钮的选中态
+    void SetCurrentChatUser(const std::shared_ptr<UserInfo> &chatUser);
+    void AppendReceivedTextMessage(const std::shared_ptr<TextChatData> &message,
+                                   const std::shared_ptr<UserInfo> &sender);
+    void UpdateChatSessionPreview(const std::shared_ptr<UserInfo> &userInfo,
+                                  const QString &message, bool unread);
+
+    std::shared_ptr<UserInfo> _current_chatuser;
+    QHash<int, QVector<std::shared_ptr<TextChatData>>> _unread_text_messages;
+
+signals:
+    void sig_append_send_chat_msg(std::shared_ptr<TextChatData>&);
 };
 
 #endif // CHATDIALOG_H

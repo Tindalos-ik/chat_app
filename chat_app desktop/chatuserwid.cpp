@@ -1,8 +1,6 @@
 #include "chatuserwid.h"
 #include "ui_chatuserwid.h"
-#include <QPixmap>
-#include <QPainter>
-#include <QPainterPath>
+#include "avatarutil.h"
 
 ChatUserWid::ChatUserWid(QWidget *parent)
     : ListItemBase(parent)
@@ -20,6 +18,24 @@ ChatUserWid::~ChatUserWid()
 QSize ChatUserWid::sizeHint() const
 {
     return QSize(260, 75);
+}
+
+void ChatUserWid::SetUserInfo(const std::shared_ptr<UserInfo> &userInfo)
+{
+    _userInfo = userInfo;
+    if (!_userInfo) {
+        SetUserName({});
+        SetHeadIcon({});
+        return;
+    }
+
+    SetUserName(_userInfo->_name);
+    SetHeadIcon(_userInfo->_icon);
+}
+
+std::shared_ptr<UserInfo> ChatUserWid::GetUserInfo() const
+{
+    return _userInfo;
 }
 
 void ChatUserWid::SetUserName(const QString &name)
@@ -40,27 +56,9 @@ void ChatUserWid::SetTime(const QString &time)
 
 void ChatUserWid::SetHeadIcon(const QString &icon_path)
 {
-    _icon = icon_path;
-    QPixmap original(icon_path);
-    if (original.isNull()) {
-        return;
-    }
-    original = original.scaled(ui->icon_lb->size(),
-                               Qt::KeepAspectRatio, Qt::SmoothTransformation);
-
-    // 画圆形头像：先画到透明画布上，再用圆形路径裁剪
-    QPixmap rounded(original.size());
-    rounded.fill(Qt::transparent);
-
-    QPainter painter(&rounded);
-    painter.setRenderHint(QPainter::Antialiasing);
-
-    QPainterPath path;
-    path.addEllipse(0, 0, original.width(), original.height());
-    painter.setClipPath(path);
-    painter.drawPixmap(0, 0, original);
-
-    ui->icon_lb->setPixmap(rounded);
+    const int uid = _userInfo ? _userInfo->_uid : 0;
+    _icon = AvatarUtil::ResolvePath(uid, icon_path);
+    AvatarUtil::SetRoundAvatar(ui->icon_lb, uid, _icon);
 }
 
 void ChatUserWid::ShowRedPoint(bool show)

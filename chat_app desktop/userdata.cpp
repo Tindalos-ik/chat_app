@@ -47,3 +47,9 @@ UserInfo::UserInfo(int uid, QString name, QString nick, QString desc, int sex, Q
 {
 
 }
+
+TextChatData::TextChatData(QString msg_id, QString msg_content, int from_uid, int to_uid):
+    _msg_id(msg_id), _msg_content(msg_content), _from_uid(from_uid), _to_uid(to_uid)
+{
+
+}

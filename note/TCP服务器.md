@@ -173,6 +173,64 @@ if (msg_id <= 0 || msg_id > MAX_LENGTH || msg_len <= 0 || msg_len > MAX_LENGTH) 
 
 如果不校验，攻击者伪造一个超大 `msg_len`（比如 65535），`asyncReadLen` 就会疯狂申请/读取内存，最终越界崩溃。
 
+### 5.4 本次修复：客户端也必须按同一状态机收包
+
+服务端的 `CSession` 用 `asyncReadLen()` 保证“包头读满后才读包体”，所以服务端天然能处理半包，也会连续开始下一次 `ReadHead()` 处理粘在一起的下一包。
+
+客户端 `TcpMgr` 虽然使用 Qt 的 `QTcpSocket::readyRead`，但面对的是同一条 TCP 字节流，也必须遵守同一规则。此次发送文本消息时暴露了两个客户端收包问题：
+
+| 场景 | 原来会发生什么 | 修复方式 |
+| --- | --- | --- |
+| 包头已到、包体没到齐（半包） | 代码移除了 4 字节包头，却没有记录“正在等该包包体”；下次 `readyRead` 又把包体前 4 字节当成新包头，整个流随即错位 | 解析包头后设 `_b_recy_pending = true`；包体完整且已消费后才恢复 `false` |
+| 一次 `readyRead` 收到多包（粘包） | 每次回调只解析一包，后面的完整包留在 `_buffer` 中，若之后没有新数据就一直不处理 | 用 `while (true)` 持续消费，直到缓冲区不足一个完整包才返回 |
+
+文本聊天中这很容易出现：同服转发时，发送方可收到 `1018` 文本回包，接收方收到 `1019` 推送；多个服务端包可能在一次 `readyRead` 一起到达。若客户端只处理第一个包，业务看起来就像“消息没有成功发送”或“回包丢了”，实际是剩余字节没有被正确解包。
+
+修复后的接收流程如下。这里的 `return` 不代表丢数据，未消费的字节仍保留在成员变量 `_buffer` 中，等待下一次 `readyRead` 继续处理：
+
+```cpp
+connect(&_socket, &QTcpSocket::readyRead, [this] {
+    _buffer.append(_socket.readAll());
+
+    while (true) {
+        if (!_b_recy_pending) {
+            if (_buffer.size() < HEAD_TOTAL_LEN) {
+                return; // 连 4 字节包头都未到齐
+            }
+
+            QDataStream stream(&_buffer, QIODevice::ReadOnly);
+            stream.setByteOrder(QDataStream::BigEndian);
+            stream >> _message_id >> _message_len;
+            _buffer = _buffer.mid(HEAD_TOTAL_LEN);
+            _b_recy_pending = true; // 包头已经消费，接下来只能等这个包体
+        }
+
+        if (_buffer.size() < _message_len) {
+            return; // 包体未到齐，不能重新解析新包头
+        }
+
+        const QByteArray body = _buffer.left(_message_len);
+        _buffer = _buffer.mid(_message_len);
+        _b_recy_pending = false; // 这一整包已消费，下一轮从新包头开始
+
+        DispatchMessage(_message_id, body);
+    }
+});
+```
+
+状态转换可以记成下面四步：
+
+```text
+等待包头 --(攒够 4B，解析并移除包头)--> 等待包体
+等待包体 --(数据不足)--------------------> 继续等待包体
+等待包体 --(攒够 msg_len，分发并移除包体)-> 等待包头
+等待包头 --(缓冲区还有完整下一包)--------> 立即继续解析
+```
+
+> `_b_recy_pending` 不是“缓冲区是否有数据”的标志，而是“包头是否已经消费”的标志。只要包头已消费而包体未完整，就绝不能把 `_buffer` 开头的字节重新解释成包头。
+
+断开时还要清空 `_buffer` 并把 `_b_recy_pending` 复位，避免下一次重新连接后误用旧连接的残留字节。发送端同样应在写入前检查 `QTcpSocket::ConnectedState`，否则 `write()` 只会把失败留在异步错误信号里，界面层难以判断。
+
 ---
 
 ## 6. MsgNode：消息节点的内存布局

@@ -55,4 +55,5 @@
 | [MySQL连接库.md](note/MySQL连接库.md) | X DevAPI / mysqlcppconnx |
 | [Qt知识点.md](note/Qt知识点.md) | Qt 类设计、信号槽、事件 |
 | [Qt网络编程.md](note/Qt网络编程.md) | HTTP/TCP 编程、粘包 |
+| [Qt头像统一显示.md](note/Qt头像统一显示.md) | Qt 客户端头像路径、稳定兜底和圆形裁切约定 |
 | [json.md](note/json.md) | JSON 在客户端、C++ 服务端和 Node.js 配置中的使用 |
