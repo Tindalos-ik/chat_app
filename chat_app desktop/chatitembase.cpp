@@ -33,15 +33,16 @@ ChatItemBase::ChatItemBase(ChatRole role, QWidget* parent)
         pGlayout->addWidget(m_pNameLabel, 0,1,1,1);
         pGlayout->addWidget(m_pIconLabel, 0,2,2,1, Qt::AlignTop);
         pGlayout->addItem(pSpacer, 1,0,1,1);
-        pGlayout->addWidget(m_pBubble, 1,1,1,1);
+        pGlayout->addWidget(m_pBubble, 1,1,1,1, Qt::AlignRight | Qt::AlignTop);
         pGlayout->setColumnStretch(0,2); // 第零行占40%比例
         pGlayout->setColumnStretch(1,3); // 第一行占60%比例
     }else{
         m_pNameLabel->setContentsMargins(8,0,0,0);
         m_pNameLabel->setAlignment(Qt::AlignLeft);
-        pGlayout->addWidget(m_pNameLabel, 0,0,2,1);
-        pGlayout->addWidget(m_pIconLabel, 0,1,1,1, Qt::AlignTop);
-        pGlayout->addWidget(m_pBubble, 1,1,1,1);
+        // 对方消息与自己消息镜像：左头像，右侧为昵称和气泡。
+        pGlayout->addWidget(m_pIconLabel, 0,0,2,1, Qt::AlignTop);
+        pGlayout->addWidget(m_pNameLabel, 0,1,1,1);
+        pGlayout->addWidget(m_pBubble, 1,1,1,1, Qt::AlignLeft | Qt::AlignTop);
         pGlayout->addItem(pSpacer, 1,2,1,1);
         pGlayout->setColumnStretch(1,3);
         pGlayout->setColumnStretch(2,2);
