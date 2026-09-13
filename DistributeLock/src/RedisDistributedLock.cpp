@@ -15,6 +15,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <iomanip>
+#include <iostream>
 #include <random>
 #include <sstream>
 #include <thread>
@@ -25,6 +26,33 @@ namespace {
 constexpr char kSetCommand[] = "SET";
 constexpr char kNxOption[] = "NX";
 constexpr char kPxOption[] = "PX";
+
+#ifdef _WIN32
+// hiredis 在 Windows 上依赖 Winsock。聊天服务启动 Asio 后通常已经完成 WSAStartup，
+// 但本组件可以独立运行（例如 distribute_lock_test），不能依赖外部框架先初始化网络。
+// 静态局部对象只初始化一次，并在进程退出时统一 WSACleanup，避免多个连接池重复清理。
+class WinsockRuntime {
+public:
+    static bool EnsureInitialized() {
+        static const WinsockRuntime runtime;
+        return runtime.initialized_;
+    }
+
+private:
+    WinsockRuntime() {
+        WSADATA data{};
+        initialized_ = WSAStartup(MAKEWORD(2, 2), &data) == 0;
+    }
+
+    ~WinsockRuntime() {
+        if (initialized_) {
+            WSACleanup();
+        }
+    }
+
+    bool initialized_ = false;
+};
+#endif
 
 // Lua 脚本整体在 Redis 内原子执行，GET 和 DEL 之间不会被其他客户端插入命令。
 constexpr char kUnlockScript[] =
@@ -47,10 +75,16 @@ bool IsOkStatus(const redisReply* reply) {
 std::string GenerateOwnerToken() {
     // token 不携带业务含义，只用于“证明自己是这把锁的 owner”。
     // 随机数加进程内递增序号，避免同一进程高频创建对象时碰撞。
+    // random_device 在不同 C++ 运行库中的并发实现差异较大；这里把随机发生器做成受 mutex
+    // 保护的静态对象，多个业务线程同时创建锁对象时也只会串行地取一个随机值。
     static std::atomic<std::uint64_t> sequence{0};
-    std::random_device random_device;
-    std::mt19937_64 generator(random_device());
-    const auto random_part = generator();
+    static std::mutex random_mutex;
+    static std::mt19937_64 generator{std::random_device{}()};
+    std::uint64_t random_part = 0;
+    {
+        std::lock_guard<std::mutex> lock(random_mutex);
+        random_part = generator();
+    }
     const auto sequence_part = sequence.fetch_add(1, std::memory_order_relaxed);
     const auto time_part = static_cast<std::uint64_t>(
         std::chrono::high_resolution_clock::now().time_since_epoch().count());
@@ -65,16 +99,27 @@ redisContext* CreateAuthenticatedConnection(const RedisConnectionConfig& config)
         return nullptr;
     }
 
+#ifdef _WIN32
+    if (!WinsockRuntime::EnsureInitialized()) {
+        return nullptr;
+    }
+#endif
+
     // hiredis 需要 timeval；把 C++ milliseconds 拆成秒和微秒。
     timeval timeout{};
     timeout.tv_sec = static_cast<long>(config.connect_timeout.count() / 1000);
     timeout.tv_usec = static_cast<long>((config.connect_timeout.count() % 1000) * 1000);
     // 连接失败时 hiredis 有时仍会返回 context，只是 context->err 非 0，所以两个条件都检查。
     redisContext* context = redisConnectWithTimeout(config.host.c_str(), config.port, timeout);
-    if (context == nullptr || context->err != 0) {
-        if (context != nullptr) {
-            redisFree(context);
-        }
+    if (context == nullptr) {
+        std::cerr << "Redis connection failed: hiredis returned a null context." << std::endl;
+        return nullptr;
+    }
+    if (context->err != 0) {
+        // errstr 不包含密码，只记录网络地址和 hiredis 给出的连接原因，便于排查端口/服务状态。
+        std::cerr << "Redis connection failed (" << config.host << ':' << config.port
+                  << "): " << context->errstr << std::endl;
+        redisFree(context);
         return nullptr;
     }
 
@@ -94,6 +139,7 @@ redisContext* CreateAuthenticatedConnection(const RedisConnectionConfig& config)
         freeReplyObject(reply);
     }
     if (!authenticated) {
+        std::cerr << "Redis AUTH failed for " << config.host << ':' << config.port << std::endl;
         redisFree(context);
         return nullptr;
     }

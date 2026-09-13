@@ -37,13 +37,41 @@ if (lock.TryLockFor(std::chrono::milliseconds(200)) != RedisLockResult::Acquired
 lock.Unlock(); // token 匹配才会真的删除 Redis key；析构时也会尽力调用一次。
 ```
 
-可单独配置和编译：
+## VS Code CMake Tools：点击运行
+
+用 VS Code **打开 `DistributeLock` 文件夹本身**（不是仓库根目录）。CMake Tools 会自动识别
+`CMakePresets.json`，其中已固定 Visual Studio 2022、x64、vcpkg 和 Debug 配置。
+
+1. 点击状态栏的 **Configure**，选择 `Windows x64 Debug (vcpkg)`；
+2. 点击 **Build**，会构建 `distribute_lock_test`；
+3. 先运行 `start_redis.bat`，确认 Redis 就绪；
+4. 在状态栏选择运行目标 `distribute_lock_test`，点击三角形的 **Run**（或命令面板运行
+   `CMake: Run Without Debugging`）。
+
+构建后会自动把 `hiredisd.dll` 复制到测试程序旁边，因此不需要为 VS Code 手工配置 DLL 的
+`PATH`。
+
+也可在终端单独配置和编译：
 
 ```powershell
-cmake -S DistributeLock -B build-distribute-lock `
-  -DCMAKE_TOOLCHAIN_FILE=D:/cppsoft/vcpkg/scripts/buildsystems/vcpkg.cmake
-cmake --build build-distribute-lock --config Debug
+cmake --preset windows-vcpkg-debug
+cmake --build --preset windows-vcpkg-debug
 ```
 
-产物 target 名为 `distribute_lock`。需要让某个服务使用它时，再在该服务的
+构建后先双击或在终端运行 `start_redis.bat`。脚本与根目录 `start_all.bat` 使用同一个 Redis
+安装路径 `D:\cppsoft\Redis-x64-5.0.14.1`，以及相同密码 `123456`。脚本只在 `PING` 返回
+`PONG` 时才视为 Redis 就绪；成功和失败都会暂停，双击运行时可以看到结果。然后执行：
+
+```powershell
+.\build\Debug\distribute_lock_test.exe
+```
+
+`distribute_lock_test` 会验证：
+
+1. 第一把锁获取成功后，第二个相同 key 的锁返回 `Busy`；
+2. 当前持锁者能够 `Renew()` 和 `Unlock()`；
+3. 解锁后第二个对象能取得同一 key；
+4. 8 个线程竞争同一个 key 时，所有线程最终都能进入临界区，且临界区最大并发数始终为 `1`。
+
+产物 target 包含 `distribute_lock`（静态库）和 `distribute_lock_test`（测试程序）。需要让某个服务使用它时，再在该服务的
 `CMakeLists.txt` 中通过 `add_subdirectory(../DistributeLock ...)` 或直接纳入源文件。
