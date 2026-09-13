@@ -39,8 +39,7 @@
 
 | 文件 | 内容 |
 | --- | --- |
-| [sql/create_tables.sql](sql/create_tables.sql) | 数据库建表脚本（user/user_id/friend/friend_apply） |
-| [sql/migrate_friend_apply_remark.sql](sql/migrate_friend_apply_remark.sql) | 为已有 friend_apply 表增加申请方好友备注字段的增量迁移 |
+| [sql/create_tables.sql](sql/create_tables.sql) | 数据库建表脚本（user/user_id/friend/friend_apply，friend_apply 已含 applicant_remark 字段） |
 | [疑惑.md](note/疑惑.md) | 常见小知识点解答（uid/token、分布式、Qt 并发安全、MySQL/Redis 边界等） |
 | [全栈聊天室.md](note/全栈聊天室.md) | 架构总览 |
 | [分布式聊天服务设计.md](note/分布式聊天服务设计.md) | 分布式设计总结：服务拆分、双通道登录、负载均衡/在线路由/跨服转发 |
@@ -49,6 +48,7 @@
 | [连接池.md](note/连接池.md) | 项目中 4 类连接池 |
 | [grpc.md](note/grpc.md) | gRPC 应用 |
 | [服务部署.md](note/服务部署.md) | Windows/Linux 部署 |
+| [测试.md](note/测试.md) | 单元/集成测试总结：现有连接容量测试、运行方式、实测结果与后续补测计划 |
 | [数据库设计.md](note/数据库设计.md) | MySQL 用户数据设计（llfc1） |
 | [聊天服务器服务.md](note/聊天服务器服务.md) | proto 中定义的 ChatServer gRPC 服务、消息字段与跨服转发约定 |
 | [消息ID全链路.md](note/消息ID全链路.md) | 客户端消息 ID、HTTP/TCP 流程、好友申请认证与聊天通信现状 |

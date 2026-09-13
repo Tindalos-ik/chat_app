@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.10)
 project(chat_app)
 
+include(CTest)
+
 # 设置一些全局变量，所有子项目都能看见
 if(MSVC)
     add_compile_options(/utf-8 /wd4819)
@@ -67,5 +69,9 @@ add_subdirectory(ChatServer1)
 add_subdirectory(ChatServer2)
 add_subdirectory(GateServer)
 add_subdirectory(StatusServer)
+
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()
 
 # VarifyServer 是 Node.js 项目（用 npm/node 启动），没有 CMakeLists.txt，不需要 CMake 编译，

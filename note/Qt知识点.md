@@ -65,7 +65,7 @@ main.cpp（启动装配：QSS、配置、窗口图标、MainWindow）
 Qt 在标准 C++ 之上增加了一套**元对象系统（Meta-Object System）**，给 C++ 类扩展了信号槽、属性、反射等能力。凡是需要信号槽的类，必须：
 
 1. 继承 `QObject`（**且必须是第一个基类**，moc 会依赖这一点）；
-2. 在类体内写 `Q_OBJECT` 宏；
+2. 在类体内写 `Q_OBJECT` 宏，宏展开会生成很多东西，从而这个类可以使用一些Qt核心机制
 3. 构建时经过 **moc** 预处理（CMake 里由 `qt_standard_project_setup()` / AUTOMOC 自动完成）。
 
 本项目中的 `HttpMgr`、`TcpMgr`、`ClickedLabel`、`TimerBtn`、三个 Dialog、MainWindow 都写了 `Q_OBJECT`。

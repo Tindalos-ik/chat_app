@@ -1,256 +1,234 @@
-# chat_app 全栈聊天室
+# chat_app
 
-> 参考 b站up主恋恋风辰
+基于 C++ 的分布式即时聊天项目，包含 Qt 6 桌面客户端、HTTP 网关、状态服务、两个 TCP 聊天服务实例和 Node.js 邮箱验证码服务。
 
-一个基于 C++ 的分布式聊天室项目，包含 Qt 桌面客户端和一套微服务架构的服务端：
+目前已实现注册、邮箱验证码、登录、找回密码、好友申请/认证、好友列表加载与在线文本消息的同服/跨服转发。聊天消息暂不持久化，也不支持离线消息补投。
 
-- **GateServer**（C++/Beast）：HTTP 网关，处理注册、登录、验证码请求；
-- **StatusServer**（C++/gRPC）：状态服务，登录时做负载均衡、签发/校验 token；
-- **ChatServer**（C++/Boost.Asio）：TCP 长连接服务，负责用户会话、消息收发；
-- **VarifyServer**（Node.js/gRPC）：邮箱验证码服务；
-- **客户端**（Qt 6）：登录/注册/聊天界面。
-
----
-
-## 系统架构
+## 架构
 
 ```text
-客户端(Qt)
-   │ HTTP(8080)
-   ▼
-GateServer ──gRPC(50051)──► VarifyServer(Node.js) ──► Redis + SMTP邮箱
-   │  gRPC(50052)
-   ▼
-StatusServer ──► 选择 ChatServer(8090/8091) + 签发 token
-   ▲
-   │ gRPC(50052) 校验 token
-ChatServer(8090 / 8091) ──► Redis / MySQL
+Qt 桌面客户端
+  | HTTP 8080
+  v
+GateServer ---------------------- gRPC 50051 ---> VarifyServer ---> SMTP / Redis
+  | gRPC 50052
+  v
+StatusServer -------------------- MySQL / Redis
+  | 选择负载较低的 ChatServer，签发登录 token
+  +-------------------------------+
+  |                               |
+  v TCP 8090 / gRPC 50055         v TCP 8091 / gRPC 50056
+ChatServer1 <----- gRPC -------> ChatServer2
+  |                               |
+  +----------- MySQL / Redis -----+
 ```
 
-| 服务 | 语言 | 端口 | 说明 |
-| --- | --- | --- | --- |
-| VarifyServer | Node.js | 50051 | 生成验证码、发邮件 |
-| StatusServer | C++ | 50052 | 负载均衡、token 签发与校验 |
-| ChatServer | C++ | 8090 / 8091 | TCP 长连接（可多实例） |
-| GateServer | C++ | 8080 | HTTP 网关 |
-| 客户端 | Qt 6 | - | 登录、聊天界面 |
+| 组件 | 技术 | 端口 | 职责 |
+| --- | --- | ---: | --- |
+| GateServer | C++、Boost.Beast、gRPC | 8080 | HTTP API、账号校验、验证码和登录网关 |
+| VarifyServer | Node.js、gRPC | 50051 | 生成验证码并通过 SMTP 发送邮件 |
+| StatusServer | C++、gRPC | 50052 | ChatServer 负载选择、token 签发和校验 |
+| ChatServer1 | C++、Boost.Asio、gRPC | TCP 8090 / gRPC 50055 | 长连接、会话和消息路由 |
+| ChatServer2 | C++、Boost.Asio、gRPC | TCP 8091 / gRPC 50056 | 第二个聊天服务实例、跨服转发 |
+| MySQL | MySQL 8 | X Protocol 33060 | 用户、好友和好友申请数据 |
+| Redis | Redis | 6379 | 验证码、token、在线路由和服务负载 |
 
----
-
-## 目录结构
+## 目录
 
 ```text
 chat_app/
-├── CmakeLists.txt            # 顶层 CMake（聚合三个 C++ 服务）
-├── CMakePresets.json         # CMake 预设（VS2022 + vcpkg 工具链）
-├── GateServer/               # HTTP 网关（C++）
-├── StatusServer/             # 状态服务（C++/gRPC）
-├── ChatServer/               # 聊天服务器（C++/Asio）
-├── VarifyServer/             # 验证码服务（Node.js/gRPC）
-├── proto/                    # 所有服务共用的 protobuf/gRPC 协议源文件
-├── chat_app desktop/         # Qt 客户端
-└── note/                     # 学习文档（TCP/连接池/gRPC/登录/部署）
+├── ChatServer1/          # 第一台 TCP/gRPC 聊天服务
+├── ChatServer2/          # 第二台 TCP/gRPC 聊天服务
+├── GateServer/           # HTTP 网关
+├── StatusServer/         # 登录状态与负载均衡服务
+├── VarifyServer/         # Node.js 邮箱验证码服务
+├── chat_app desktop/     # Qt 6 桌面客户端
+├── proto/message.proto   # 所有服务共用的 protobuf/gRPC 协议
+├── sql/create_tables.sql # MySQL 建库建表脚本
+├── start_all.bat         # Windows 后端一键启动脚本
+└── note/                 # 设计和实现笔记
 ```
-
-> `proto_gen/`、`build/`、`node_modules/` 等均为生成/构建产物，已通过 `.gitignore` 排除，不参与版本管理。
-
----
 
 ## 环境要求
 
-| 软件 | 版本要求 | 用途 |
-| --- | --- | --- |
-| Windows | 10/11 | 开发环境 |
-| Visual Studio 2022 | 需勾选“使用 C++ 的桌面开发” | 编译 C++ 服务 |
-| CMake | ≥ 3.21 | 构建系统 |
-| vcpkg | 最新 | C++ 依赖管理 |
-| Boost | 1.91（本项目路径 `C:/local/boost_1_91_0`） | Asio、property_tree |
-| MySQL | 8.x | 用户/好友数据 |
-| Redis | 任意较新版本 | token、验证码、在线状态缓存 |
-| Node.js | ≥ 18 | VarifyServer |
-| Qt | 6.x（客户端用 6.8） | Qt 客户端 |
+项目当前的开发配置面向 Windows 10/11。
 
----
+| 工具 | 要求 |
+| --- | --- |
+| Visual Studio 2022 | 安装“使用 C++ 的桌面开发”工作负载 |
+| CMake | 3.21 或更高版本 |
+| vcpkg | 安装 C++ 依赖，默认路径为 `D:/cppsoft/vcpkg` |
+| Boost | 1.91，默认路径为 `C:/local/boost_1_91_0` |
+| MySQL | 8.x，启用 X Plugin（默认端口 33060） |
+| Redis | 任意较新版本 |
+| Node.js | 18 或更高版本 |
+| Qt | 6.8 或兼容 Qt 6 版本，用于桌面客户端 |
 
-## Windows 环境安装
-
-### 1. Visual Studio 2022
-
-安装时勾选工作负载：**使用 C++ 的桌面开发**（含 MSVC 编译器和 CMake 工具）。
-
-### 2. CMake
-
-VS2022 自带 CMake；也可以单独安装，确保 `cmake --version` ≥ 3.21。
-
-### 3. vcpkg + 依赖库
+安装 vcpkg 依赖：
 
 ```powershell
 git clone https://github.com/microsoft/vcpkg.git D:/cppsoft/vcpkg
-cd D:/cppsoft/vcpkg
+Set-Location D:/cppsoft/vcpkg
 .\bootstrap-vcpkg.bat
 .\vcpkg install grpc protobuf redis-plus-plus mysqlcppconnx --triplet x64-windows
 ```
 
-安装的库：
+> `CMakePresets.json` 和各服务的 `CMakeLists.txt` 使用了上述 vcpkg 与 Boost 路径。安装在其他位置时，请先统一更新这些路径再配置工程。
 
-- `grpc` / `protobuf`：服务间 RPC（CMake target：`gRPC::grpc++`、`protobuf::libprotobuf`）；
-- `redis-plus-plus`：Redis C++ 客户端（CMake target：`redis++::redis++`，依赖 hiredis）；
-- `mysqlcppconnx`：MySQL Connector/C++ X DevAPI（CMake target：`mysqlcppconnx`）。
+## 初次配置
 
-### 4. Boost
+### 1. 初始化数据库
 
-下载 Boost（项目使用 1.91），解压到 `C:/local/boost_1_91_0`（asio、property_tree 等是 header-only，无需编译）。
-
-> 如果安装到其他路径，请同步修改三个服务 CMakeLists.txt 里的 `target_include_directories` 中的 `"C:/local/boost_1_91_0"`。
-
-### 5. MySQL / Redis
+启动 MySQL，并执行仓库内的建表脚本：
 
 ```powershell
-# MySQL 8.x：安装后创建数据库 chat_app_db（见下方“数据库初始化”）
-# Redis：Windows 版启动后默认 6379
+mysql -uroot -p < sql/create_tables.sql
 ```
 
-### 6. Node.js（VarifyServer）
+脚本会创建 `chat_app_db`，以及 `user`、`user_id`、`friend`、`friend_apply` 四张表。
 
-到 [nodejs.org](https://nodejs.org) 安装 LTS 版本，然后：
+> 重复执行脚本前请留意 `user_id` 的初始插入语句。已有数据时不应重复插入该分配器记录。
+
+### 2. 配置服务端连接信息
+
+按本机 MySQL 和 Redis 的实际账号修改下列文件中的 `[Mysql]`、`[Redis]`：
+
+- `GateServer/config.ini`
+- `StatusServer/config.ini`
+- `ChatServer1/config.ini`
+- `ChatServer2/config.ini`
+
+这四份配置应使用同一套数据库、Redis 地址和密码。默认 MySQL 端口是 X DevAPI 的 `33060`，不是传统 MySQL 协议端口 `3306`。
+
+聊天服务的配置还必须保持互相匹配：
+
+| 实例 | TCP 端口 | gRPC 端口 | 服务名 |
+| --- | ---: | ---: | --- |
+| ChatServer1 | 8090 | 50055 | `ChatServer1` |
+| ChatServer2 | 8091 | 50056 | `ChatServer2` |
+
+`StatusServer/config.ini` 的 `[ChatServers]`、每台 ChatServer 的 `[SelfChatServer]` 和 `[PeerServer]` 共同定义这套拓扑。若修改端口、主机或名称，需要同步更新三份相关配置。
+
+### 3. 配置验证码服务
 
 ```powershell
-cd VarifyServer
-Copy-Item config.example.json config.json   # 首次：复制示例配置
-notepad config.json                          # 填写你的 163 邮箱授权码
+Set-Location VarifyServer
+Copy-Item config.example.json config.json
 npm install
 ```
 
-### 7. Qt（客户端）
+编辑 `VarifyServer/config.json`，填写可用的 SMTP 邮箱和授权码，并确认其中 Redis 配置可用。该文件含敏感信息，已被 `.gitignore` 排除。
 
-客户端需要 Qt 6.8（MinGW 或 MSVC 套件）+ CMake，用 Qt Creator 打开 `chat_app desktop/CMakeLists.txt` 构建。
+> `config.example.json` 中 MySQL 端口为 `3306`。若验证码服务后续需要连接本项目的 MySQL X DevAPI，请按实际 MySQL 配置调整；当前验证码发送流程依赖 SMTP 与 Redis。
 
----
+### 4. 配置客户端网关地址
 
-## 数据库初始化
+桌面客户端从 `chat_app desktop/config.ini` 的 `[GateServer]` 读取 HTTP 网关地址。默认值为 `localhost:8080`；客户端与服务端不在同一台机器时，改为可访问的网关主机名或 IP。
 
-```sql
-CREATE DATABASE IF NOT EXISTS chat_app_db DEFAULT CHARACTER SET utf8mb4;
-```
+## 构建
 
-建表脚本可参考参考项目 `llfcchat/sql备份/llfc.sql`（把库名改为 `chat_app_db` 后导入）：
+在仓库根目录配置并构建四个 C++ 服务：
 
 ```powershell
-mysql -uroot -p chat_app_db < llfc.sql
+Set-Location D:\myproject\chat_app
+cmake --preset windows-vcpkg
+cmake --build --preset debug
 ```
 
----
-
-## 构建与运行
-
-### 服务端构建（Windows）
-
-项目根目录已配置好 CMake 预设（VS2022 + vcpkg 工具链）：
-
-```powershell
-cd D:\myproject\chat_app
-cmake --preset windows-vcpkg     # 配置
-cmake --build --preset debug     # 编译 Debug
-```
-
-生成的可执行文件：
+Debug 可执行文件会生成在：
 
 ```text
-build\ChatServer\Debug\ChatServer.exe
 build\GateServer\Debug\GateServer.exe
 build\StatusServer\Debug\StatusServer.exe
+build\ChatServer1\Debug\ChatServer1.exe
+build\ChatServer2\Debug\ChatServer2.exe
 ```
 
-### 启动顺序
+根目录 CMake 会从 `proto/message.proto` 自动生成 protobuf/gRPC 代码。各服务的 `config.ini` 也会被复制到对应 Debug 目录；服务必须从可执行文件所在目录启动，才能读取这份运行时配置。
 
-**MySQL → Redis → VarifyServer → StatusServer → ChatServer → GateServer**
+桌面客户端使用 Qt Creator 打开 `chat_app desktop/CMakeLists.txt`，选择 Qt 6 kit 后构建运行。
+
+## 启动
+
+启动前确认 MySQL 与 Redis 均已运行。推荐顺序是：
+
+```text
+Redis -> VarifyServer -> StatusServer -> ChatServer1 -> ChatServer2 -> GateServer
+```
+
+### 一键启动（Windows）
+
+`start_all.bat` 会分别打开 Redis 和五个服务窗口。脚本中的 `ROOT`、`REDIS` 与 `CFG` 是本机路径和构建配置，首次使用前请检查它们：
 
 ```powershell
-# 1. VarifyServer
-cd D:\myproject\chat_app\VarifyServer
+Set-Location D:\myproject\chat_app
+.\start_all.bat
+```
+
+### 手动启动
+
+```powershell
+Set-Location D:\myproject\chat_app\VarifyServer
 npm run serve
+```
 
-# 2. StatusServer
-cd D:\myproject\chat_app\build\StatusServer\Debug
+在另外四个终端中执行：
+
+```powershell
+Set-Location D:\myproject\chat_app\build\StatusServer\Debug
 .\StatusServer.exe
+```
 
-# 3. ChatServer（多实例就复制一份，改 config.ini 端口为 8091）
-cd D:\myproject\chat_app\build\ChatServer\Debug
-.\ChatServer.exe
+```powershell
+Set-Location D:\myproject\chat_app\build\ChatServer1\Debug
+.\ChatServer1.exe
+```
 
-# 4. GateServer
-cd D:\myproject\chat_app\build\GateServer\Debug
+```powershell
+Set-Location D:\myproject\chat_app\build\ChatServer2\Debug
+.\ChatServer2.exe
+```
+
+```powershell
+Set-Location D:\myproject\chat_app\build\GateServer\Debug
 .\GateServer.exe
 ```
 
-> 必须在可执行文件所在目录启动（ConfigMgr 从“当前工作目录/config.ini”读取配置，config.ini 已由 CMake 自动拷贝到各 Debug 目录）。
+## 验证
 
-### 验证
+所有服务启动后，可以先检查网关：
 
 ```powershell
 curl http://127.0.0.1:8080/get_test
-curl -X POST http://127.0.0.1:8080/user_login -H "Content-Type: application/json" `
-  -d '{"email":"test@163.com","passwd":"123456"}'
 ```
 
-### 客户端构建
+网关目前提供以下 HTTP 接口：
 
-用 Qt Creator 打开 `chat_app desktop/CMakeLists.txt`，选择 Qt 6.8 套件构建并运行；登录前把 `global.cpp` 里的 `gate_url_prefix` 改成 GateServer 地址（默认 `http://127.0.0.1:8080`）。
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| GET | `/get_test` | 网关连通性测试 |
+| POST | `/get_varifycode` | 发送邮箱验证码 |
+| POST | `/user_register` | 注册账号 |
+| POST | `/user_login` | 登录并获取 ChatServer 地址与 token |
+| POST | `/user_resetpassword` | 验证邮箱验证码后重置密码 |
 
----
-
-## 配置说明
-
-各服务运行目录下的 `config.ini`（C++ 服务）和 `VarifyServer/config.json`（Node.js）保存连接信息：
-
-```ini
-[Mysql]
-host = 127.0.0.1
-port = 33060          ; X DevAPI 端口
-user = root
-passwd = 123456
-schema = chat_app_db
-
-[Redis]
-host = 127.0.0.1
-port = 6379
-passwd = 123456
-
-[StatusServer]
-host = 127.0.0.1
-port = 50052
-
-[ChatServer1]
-host = 127.0.0.1      ; 返回给客户端直连的地址，部署到服务器时改为公网 IP
-port = 8090
-name = ChatServer1
-```
-
-> `VarifyServer/config.json` 含邮箱授权码等敏感信息，已加入 `.gitignore`，克隆仓库后请复制 `config.example.json` 填写。
-
----
-
-## 部署到 Linux 服务器
-
-详见 [note/服务部署.md](note/服务部署.md)：包含依赖安装、CMakeLists 跨平台改造、systemd 守护、防火墙配置等。
-
----
-
-## 文档索引（note/）
-
-- [TCP服务器.md](note/TCP服务器.md)：Asio TCP 服务器搭建、粘包处理、发送/接收队列
-- [连接池.md](note/连接池.md)：项目中 4 类连接池的模型与应用
-- [grpc.md](note/grpc.md)：gRPC 在项目中的应用
-- [login.md](note/login.md)：登录全链路解析
-- [服务部署.md](note/服务部署.md)：Windows / Linux 部署指南
-
----
+之后启动 Qt 客户端，完成注册和登录。StatusServer 将根据 Redis 中的在线计数选择 ChatServer，客户端再建立到该服务的 TCP 长连接。
 
 ## 常见问题
 
-| 问题 | 处理 |
+| 现象 | 排查方向 |
 | --- | --- |
-| 编译报“找不到 gRPC/boost 头文件” | 确认 vcpkg 工具链路径、Boost 解压路径与 CMakeLists 一致 |
-| 启动报 `Config file not found` | 在可执行文件所在目录启动 |
-| 验证码收不到 | 检查 `VarifyServer/config.json` 的 163 邮箱授权码和 Redis |
-| 登录后连不上聊天服务器 | StatusServer 配置里 ChatServer 的 host 填了 127.0.0.1，客户端在其他机器时改为可达 IP |
+| CMake 找不到 gRPC、Protobuf、Redis 或 MySQL Connector | 检查 vcpkg 安装、`CMAKE_TOOLCHAIN_FILE` 和各 CMake 文件中的 vcpkg 路径 |
+| 找不到 Boost 头文件 | 检查 `C:/local/boost_1_91_0`，或同步更新各服务 CMake 的 include 路径 |
+| 服务启动提示 `Config file not found` | 从对应的 `build/<Service>/Debug` 目录启动，确认 `config.ini` 已复制过去 |
+| 收不到验证码 | 检查 `VarifyServer/config.json` 的邮箱授权码、SMTP 配置和 Redis 连通性 |
+| 登录后无法连接聊天服务 | 检查 StatusServer 与两个 ChatServer 的主机/端口/服务名配置是否一致；跨机器部署时不要把返回给客户端的地址设为 `127.0.0.1` |
+| 跨服消息未送达 | 检查 50055、50056 是否可互通，以及每台 ChatServer 的 `[PeerServer]` 配置 |
+
+## 相关文档
+
+- [聊天信息收发](聊天信息收发.md)：当前文本聊天的完整 TCP、Redis 路由和 gRPC 跨服转发链路。
+- [登录全链路](note/login.md)：注册、登录与 token 校验流程。
+- [分布式聊天服务设计](note/分布式聊天服务设计.md)：服务拆分和负载均衡设计。
+- [服务部署](note/服务部署.md)：Windows/Linux 部署笔记。
+- [数据库设计](note/数据库设计.md)：MySQL 表结构说明。

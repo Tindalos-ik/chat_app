@@ -222,6 +222,8 @@ function main() {
 
 实现类继承 proto 生成的 `StatusService::Service`，重写两个虚函数：
 
+虚函数参数去看生成的grpc相关头文件
+
 ```cpp
 class StatusServiceImpl final : public StatusService::Service {
     Status GetChatServer(ServerContext* context, const GetChatServerReq* request,
@@ -529,4 +531,4 @@ proto_codegen -> chat_proto（只编译一次）
 7. **统一协议源**：协议文件放在根目录的 `proto/message.proto`，C++ 端通过公共 `chat_proto` 静态库复用生成代码；Node.js 端通过相对路径加载同一份文件，避免各服务协议副本不一致。
 8. **ChatServer 是唯一"双重角色"服务**：既当 gRPC 客户端（调 StatusServer、调对端 ChatServer），又当 gRPC 服务端（`ChatServiceImpl` 监听 rpcport 50055/50056）。启动时 `BuildAndStart()` 可能返回空指针（端口被占、host 缺失等），必须先判空再 `Wait()`。
 9. **跨服通信已铺路、业务还没接**：`ChatService` 在 proto 里已定义，`ChatServiceImpl` / `ChatGrpcClient` 两端也已生成并注册，但方法体目前多是占位；跨服加好友、聊天、踢人下线的具体逻辑是后续要填的。
-10. **分清 TCP 端口和 gRPC 端口**：ChatServer 的 `port`（8090/8091）是客户端连的 TCP 长连接口，`rpcport`（50055/50056）是给另一台 ChatServer 连的 gRPC 口。`ChatGrpcClient` 当前读的是对端 section 的 `port`，真正跨服调用前要改成 `rpcport`，别照抄 llfcchat 的 peer 配置写法。
+10. **分清 TCP 端口和 gRPC 端口**：ChatServer 的 `port`（8090/8091）是客户端连的 TCP 长连接口，`rpcport`（50055/50056）是给另一台 ChatServer 连的 gRPC 口。`ChatGrpcClient` 当前读的是对端 section 的 `port`，真正跨服调用前要改成 `rpcport`
