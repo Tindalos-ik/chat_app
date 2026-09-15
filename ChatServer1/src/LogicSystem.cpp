@@ -7,6 +7,7 @@
 #include "RedisMgr.h"
 #include "UserMgr.h"
 #include "ChatGrpcClient.h"
+#include "CServer.h"
 
 using namespace std;
 
@@ -146,6 +147,42 @@ void LogicSystem::LoginHandler(std::shared_ptr<CSession> session, const short &m
     }
 
     rtvalue["error"] = ErrorCode::Success;
+
+    // 添加分布式锁，防止并发读改写
+    auto lock_key  = LOCK_PREFIX + std::to_string(uid);
+    auto lock_result = RedisMgr::GetInstance()->acquireLock(lock_key, LOCK_TIME_OUT, ACQUIRE_TIME_OUT);
+
+    if(lock_result.result != RedisLockResult::Acquired){
+        std::cout << "acquire lock failed" << std::endl;
+        rtvalue["error"] = ErrorCode::ServerBusy;
+        return;
+    }
+
+    std::string identifier = lock_result.identifier;
+    // 利用defer解锁
+    Defer lock_defer([this, identifier, lock_key](){
+        RedisMgr::GetInstance()->releaseLock(lock_key, identifier);
+    });
+
+    // 判断用户是否在别处登录或在本服务器登录
+    std::string uip_ip_value;
+    auto uip_ip_key = USERIPPREFIX  + std::to_string(uid);
+    bool b_ip = RedisMgr::GetInstance()->Get(uip_ip_key, uip_ip_value);
+    if(b_ip){ // 用户已经登录
+        // 获取当前服务器ip信息
+        auto self_name = ConfigMgr::Inst()["SelfChatServer"]["name"];
+        if(uip_ip_value == self_name){ // 用户在本服务器登录，则直接在本服务器踢掉
+            // 查找旧连接
+            auto old_session = UserMgr::GetInstance()->GetSession(uid);
+            if(old_session){
+                // 通知客户端下线
+                // old_session->NotifyOffline();
+                _p_server->ClearSession(old_session->GetSessionId());
+            }
+        }
+    }else{
+        // 如果不是本服务器，则调用 grpc 通知其他服务器下线
+    }
 
     // 查询用户信息，返回客户端，用于渲染界面
     std::string base_key = USER_BASE_INFO + std::to_string(uid);
