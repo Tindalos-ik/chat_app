@@ -53,6 +53,7 @@
 | [聊天服务器服务.md](note/聊天服务器服务.md) | proto 中定义的 ChatServer gRPC 服务、消息字段与跨服转发约定 |
 | [消息ID全链路.md](note/消息ID全链路.md) | 客户端消息 ID、HTTP/TCP 流程、好友申请认证与聊天通信现状 |
 | [MySQL连接库.md](note/MySQL连接库.md) | X DevAPI / mysqlcppconnx |
+| [Redis.md](note/Redis.md) | Redis 在验证码、token、在线路由、负载、缓存和分布式锁中的作用 |
 | [Qt知识点.md](note/Qt知识点.md) | Qt 类设计、信号槽、事件 |
 | [Qt网络编程.md](note/Qt网络编程.md) | HTTP/TCP 编程、粘包 |
 | [Qt头像统一显示.md](note/Qt头像统一显示.md) | Qt 客户端头像路径、稳定兜底和圆形裁切约定 |

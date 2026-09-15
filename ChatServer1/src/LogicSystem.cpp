@@ -249,6 +249,10 @@ void LogicSystem::LoginHandler(std::shared_ptr<CSession> session, const short &m
     std::string ipkey = USERIPPREFIX + std::to_string(uid);
     RedisMgr::GetInstance()->Set(ipkey, server_name); // 设置用户登录的server名字
 
+    // 写入用户session信息，将信息跨服传递
+    std::string session_key = USER_SESSION_PREFIX + std::to_string(uid);
+    RedisMgr::GetInstance()->Set(session_key, session->GetSessionId());
+
     // uid和session绑定管理，方便踢人操作
     UserMgr::GetInstance()->SetUserSession(uid, session);
 
