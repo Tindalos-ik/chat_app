@@ -177,7 +177,7 @@ void LogicSystem::LoginHandler(std::shared_ptr<CSession> session, const short &m
             auto old_session = UserMgr::GetInstance()->GetSession(uid);
             if(old_session){
                 // 通知客户端下线
-                // old_session->NotifyOffline();
+                old_session->NotifyOffline();
                 _p_server->ClearSession(old_session->GetSessionId());
             }
         }

@@ -38,6 +38,8 @@ public:
     void Close();                    // 关闭连接
     std::shared_ptr<CSession> SharedSelf(); // 返回自身的shared_ptr，防止异步回调期间对象被提前析构
 
+    void NotifyOffline(); // 通知用户下线
+
 private:
     void ReadHead(int head_len);     // 读包头
     void ReadBody(int body_len);     // 读包体

@@ -14,7 +14,23 @@ TcpMgr::~TcpMgr()
 
 bool TcpMgr::IsConnected() const
 {
-    return _socket.state() == QAbstractSocket::ConnectedState;
+    return _socket->state() == QAbstractSocket::ConnectedState;
+}
+
+void TcpMgr::CloseConnection()
+{
+    if (_socket) {
+        _socket->disconnect();
+        _socket->abort();
+        _socket->deleteLater();
+        _socket = nullptr;
+    }
+    _buffer.clear();
+    _b_recy_pending = false;
+
+    // 信号和槽是绑定在具体对象上的，需要重新连接信号和槽
+    // initSigAndSlot(); 此时_socket为空，在重新进行长连接的时候再连接信号和槽
+
 }
 
 //Qt封装的是异步，我们要在构造函数里面完成各种信号的槽，保证服务的流程进行
@@ -23,82 +39,9 @@ TcpMgr::TcpMgr() : _host(""), _port(0), _b_recy_pending(false), _message_id(0), 
     //连接服务器，在这里不好写第一个参数，我们去到LoginDialog里面写
     //connect(, &LoginDialog::sig_connect_tcp, this, &TcpMgr::slot_tcp_connect);
 
-    //_socket连接服务器成功之后，发送信号通知一下
-    connect(&_socket, &QTcpSocket::connected, [this](){
-        qDebug() << "connect to server" << Qt::endl;
-        emit sig_con_success(true);
-    });
-
-    // 记录断开原因，便于区分客户端主动退出、服务端关闭和网络错误。
-    connect(&_socket, &QTcpSocket::disconnected, [this]{
-        qWarning() << "disconnected from server:" << _socket.errorString();
-        _buffer.clear();
-        _b_recy_pending = false;
-    });
-
-    //在有数据可读时候进行处理
-    connect(&_socket,&QTcpSocket::readyRead,[this](){
-        //读取所有数据到缓冲区
-        _buffer.append(_socket.readAll());
-
-        // 一次 readyRead 可能包含多个完整包；半包则保留已读包头，等下次数据补齐包体。
-        while (true) {
-            //解析头部，消息头是消息id + 消息长度 每个是short，两个字节
-            if(!_b_recy_pending){
-                //检查缓冲区中的数据是否足够解析出一个消息头，不够就返回
-                //使用static_cast<> 实现更加安全的类型转换
-                if(_buffer.size() < static_cast<int>(sizeof(quint16)*2)){
-                    return;
-                }
-
-                QDataStream stream(&_buffer, QIODevice::ReadOnly);
-                stream.setVersion(QDataStream::Qt_6_0);
-                stream.setByteOrder(QDataStream::BigEndian);
-
-                //预读取消息id和消息长度
-                stream >> _message_id >> _message_len;
-
-                //将buffer中前四个字节移除，mid截取一段
-                _buffer = _buffer.mid(sizeof(quint16)*2);
-
-                //输出读取的数据
-                qDebug() << "message id : " << _message_id
-                         << "message len : " << _message_len << Qt::endl;
-                _b_recy_pending = true;
-            }
-
-            //buffer剩余长度是否满足消息体长度，不满足就退出继续等待接受
-            if(_buffer.size() < _message_len){
-                return;
-            }
-
-
-            //读取消息体，给到回调函数处理
-            QByteArray messageBody = _buffer.mid(0,_message_len);
-            qDebug() << "receive message : " << messageBody << Qt::endl;
-            _buffer = _buffer.mid(_message_len);
-            _b_recy_pending = false;
-
-            //处理收到的数据
-            auto iter = _handler.find(ReqId(_message_id));
-            if(iter == _handler.end()){
-                qDebug() << "id error" << Qt::endl;
-                continue;
-            }
-
-            //执行处理函数
-            iter.value()(ReqId(_message_id), _message_len, messageBody);
-        }
-
-    });
-
-    //处理错误，直接问ai
-    connect(&_socket, QOverload<QAbstractSocket::SocketError>::of(&QTcpSocket::errorOccurred),
-            [this](QAbstractSocket::SocketError socketError){
-                Q_UNUSED(socketError);
-                qDebug() << "Error : " << _socket.errorString();
-            });
-
+    _socket = new QTcpSocket(this);
+    // 连接信号和槽
+    initSigAndSlot();
 
     //连接发送信号用来发送数据，在哪里发送信号呢？可以是对话框中点击发送消息信号，在很多地方都可以，我们设计好槽函数及参数就可以统一处理
     // 其他地方把数据传过来，这里发给服务器
@@ -371,15 +314,115 @@ void TcpMgr::initHandlers()
         }
     });
 
+    _handler[ID_NOTIFY_OFF_LINE_REQ] = [this](ReqId id, int len, QByteArray data){
+        Q_UNUSED(id);
+        Q_UNUSED(len);
+        const QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
+        if (!jsonDoc.isObject()) {
+            qWarning() << "text chat notification is not a JSON object";
+            return;
+        }
+
+        const QJsonObject jsonObj = jsonDoc.object();
+        if (jsonObj.value("error").toInt(ErrorCodes::ERR_JSON) != ErrorCodes::SUCCESS) {
+            qWarning() << "text chat notification failed:" << jsonObj.value("error").toInt();
+            return;
+        }
+        emit sig_off_line();
+    };
+
+}
+
+void TcpMgr::initSigAndSlot()
+{
+    //_socket连接服务器成功之后，发送信号通知一下
+    connect(_socket, &QTcpSocket::connected, [this](){
+        qDebug() << "connect to server" << Qt::endl;
+        emit sig_con_success(true);
+    });
+
+    // 记录断开原因，便于区分客户端主动退出、服务端关闭和网络错误。
+    connect(_socket, &QTcpSocket::disconnected, [this]{
+        qWarning() << "disconnected from server:" << _socket->errorString();
+        _buffer.clear();
+        _b_recy_pending = false;
+    });
+
+    //在有数据可读时候进行处理
+    connect(_socket,&QTcpSocket::readyRead,[this](){
+        //读取所有数据到缓冲区
+        _buffer.append(_socket->readAll());
+
+        // 一次 readyRead 可能包含多个完整包；半包则保留已读包头，等下次数据补齐包体。
+        while (true) {
+            //解析头部，消息头是消息id + 消息长度 每个是short，两个字节
+            if(!_b_recy_pending){
+                //检查缓冲区中的数据是否足够解析出一个消息头，不够就返回
+                //使用static_cast<> 实现更加安全的类型转换
+                if(_buffer.size() < static_cast<int>(sizeof(quint16)*2)){
+                    return;
+                }
+
+                QDataStream stream(&_buffer, QIODevice::ReadOnly);
+                stream.setVersion(QDataStream::Qt_6_0);
+                stream.setByteOrder(QDataStream::BigEndian);
+
+                //预读取消息id和消息长度
+                stream >> _message_id >> _message_len;
+
+                //将buffer中前四个字节移除，mid截取一段
+                _buffer = _buffer.mid(sizeof(quint16)*2);
+
+                //输出读取的数据
+                qDebug() << "message id : " << _message_id
+                         << "message len : " << _message_len << Qt::endl;
+                _b_recy_pending = true;
+            }
+
+            //buffer剩余长度是否满足消息体长度，不满足就退出继续等待接受
+            if(_buffer.size() < _message_len){
+                return;
+            }
+
+
+            //读取消息体，给到回调函数处理
+            QByteArray messageBody = _buffer.mid(0,_message_len);
+            qDebug() << "receive message : " << messageBody << Qt::endl;
+            _buffer = _buffer.mid(_message_len);
+            _b_recy_pending = false;
+
+            //处理收到的数据
+            auto iter = _handler.find(ReqId(_message_id));
+            if(iter == _handler.end()){
+                qDebug() << "id error" << Qt::endl;
+                continue;
+            }
+
+            //执行处理函数
+            iter.value()(ReqId(_message_id), _message_len, messageBody);
+        }
+
+    });
+
+    //处理错误，直接问ai
+    connect(_socket, QOverload<QAbstractSocket::SocketError>::of(&QTcpSocket::errorOccurred),
+            [this](QAbstractSocket::SocketError socketError){
+                Q_UNUSED(socketError);
+                qDebug() << "Error : " << _socket->errorString();
+            });
 }
 
 void TcpMgr::slot_tcp_connect(ServerInfo si)
 {
+    if (!_socket) {
+        _socket = new QTcpSocket(this);
+        initSigAndSlot();          // 新对象，重新绑
+    }
     //客户端连接服务器
     qDebug() << "connecting to server..." << Qt::endl;
     _host = si.Host;
     _port = static_cast<uint16_t>(si.Port.toUInt()); //QString很好用
-    _socket.connectToHost(_host, _port); //这个也是异步的，通过前面的回调函数知道结果
+    _socket->connectToHost(_host, _port); //这个也是异步的，通过前面的回调函数知道结果
 }
 
 
@@ -412,7 +455,7 @@ void TcpMgr::slot_send_data(ReqId reqId, QByteArray dataByte)
     block.append(dataByte);
 
     //发送数据
-    if (_socket.write(block) < 0) {
-        qWarning() << "TCP write failed:" << _socket.errorString();
+    if (_socket->write(block) < 0) {
+        qWarning() << "TCP write failed:" << _socket->errorString();
     }
 }

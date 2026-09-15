@@ -1,6 +1,7 @@
 #include "mainwindow.h"
 #include "ui_mainwindow.h"
 #include "tcpmgr.h"
+#include <QMessageBox>
 
 // 切换到注册界面的槽函数
 void MainWindow::SlotSwitchReg()
@@ -39,6 +40,13 @@ void MainWindow::SlotSwitchChat()
     _chat_dlg->setMinimumSize(800, 600);
     setMinimumSize(800, 600);
     resize(1000, 750);
+}
+
+void MainWindow::SlotOffline()
+{
+    QMessageBox::information(this, "下线提示", "同账号异地登录，该终端下线！");
+    TcpMgr::GetInstance()->CloseConnection();
+    SlotSwitchLogin(); //切换登录界面
 }
 
 // 主窗口构造函数
@@ -87,6 +95,8 @@ MainWindow::MainWindow(QWidget *parent)
     connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_switch_chatdlg, this, &MainWindow::SlotSwitchChat);
 
     //emit TcpMgr::GetInstance()->sig_switch_chatdlg();
+
+    connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_off_line, this, &MainWindow::SlotOffline);
 
 }
 

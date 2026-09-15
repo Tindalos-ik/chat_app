@@ -7,6 +7,9 @@
 #include <random>
 #include <cstring>
 #include "RedisMgr.h"
+#include <json-forwards.h>
+#include <json.h>
+
 using namespace std;
 
 // 生成一个32位的十六进制随机字符串作为会话id（效果等同uuid，保证每个连接唯一）
@@ -306,4 +309,15 @@ void CSession::asyncReadLen(std::size_t read_len, std::size_t total_len,
 
 LogicNode::LogicNode(std::shared_ptr<CSession> session, std::shared_ptr<RecvNode> recvnode)
     : _session(session), _recvnode(recvnode) {
+}
+
+void CSession::NotifyOffline(){
+    Json::Value  rtvalue;
+	rtvalue["error"] = ErrorCode::Success;
+	rtvalue["uid"] = _user_uid;
+
+	std::string return_str = rtvalue.toStyledString();
+
+	Send(return_str, ID_NOTIFY_OFF_LINE_REQ);
+	return;
 }

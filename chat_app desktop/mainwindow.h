@@ -38,6 +38,7 @@ private slots:
     void SlotSwitchLogin();  // 切换到登录界面的槽函数
     void SlotSwitchReset();
     void SlotSwitchChat();
+    void SlotOffline();
 
 private:
     Ui::MainWindow *ui;

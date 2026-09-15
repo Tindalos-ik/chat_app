@@ -25,13 +25,16 @@ public:
     ~TcpMgr();
     bool IsConnected() const;
 
+    void CloseConnection(); //客户端下线时候调用
+
 private:
     TcpMgr();
 
     void initHandlers();
+    void initSigAndSlot();
     QMap<ReqId, std::function<void(ReqId id, int len, QByteArray data)>> _handler; //消息id对应的回调函数
 
-    QTcpSocket _socket; //客户端这边只需要一个socket就可以了，很简单
+    QTcpSocket* _socket; //客户端这边只需要一个socket就可以了，很简单
     QString _host;
     uint16_t _port;
     QByteArray _buffer; //接收缓冲区，一个动态扩展结构，tcp是面向字节流的
@@ -52,6 +55,7 @@ signals:
     void sig_friend_apply(std::shared_ptr<AddFriendApply>& si); // 发送给chatdialog
     void sig_auth_friend(std::shared_ptr<FriendInfo>&); // 认证好友成功，发送给chatdialog
     void sig_text_chat(std::shared_ptr<TextChatData>&); // 收到对方推送的文本消息
+    void sig_off_line();
 };
 
 #endif // TCPMGR_H
