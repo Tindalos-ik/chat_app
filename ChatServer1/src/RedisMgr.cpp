@@ -1,7 +1,14 @@
 #include "RedisMgr.h"
 #include <iostream>
 #include <string.h>
+#include <algorithm>
+#include <chrono>
+#include <cstdint>
+#include <random>
+#include <thread>
 #include "ConfigMgr.h"
+#include "DistLock.h"
+#include "const.h"
 
 void RedisMgr::Close() 
 {
@@ -16,7 +23,7 @@ RedisMgr::RedisMgr()
     std::string host = config["Redis"]["host"];
     std::string port = config["Redis"]["port"];
     std::string passwd = config["Redis"]["passwd"];
-    _connectionPool = std::move(std::unique_ptr<RedisConPool>(new RedisConPool(5, host.c_str(), std::stoi(port.c_str()), passwd.c_str())));
+    _connectionPool = std::move(std::unique_ptr<RedisConPool>(new RedisConPool(10, host.c_str(), std::stoi(port.c_str()), passwd.c_str())));
 }
 
 RedisMgr::~RedisMgr()//RedisMgr析构先于Pool调用析构，所以需要手动调用Pool的Close
@@ -384,4 +391,93 @@ bool RedisMgr::HIncrBy(const std::string& key, const std::string& field, int inc
     freeReplyObject(reply);
     _connectionPool->returnConnection(connect);
     return true;
+}
+
+
+RedisLockAcquireResult RedisMgr::acquireLock(const std::string& lockName,
+                                             std::chrono::milliseconds leaseTime,
+                                             std::chrono::milliseconds acquireTimeout,
+                                             std::chrono::milliseconds retryInterval) {
+    if (lockName.empty() || leaseTime.count() <= 0 || acquireTimeout.count() < 0
+        || retryInterval.count() <= 0) {
+        return {RedisLockResult::InvalidArgument, {}};
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() + acquireTimeout;
+    std::mt19937 generator{std::random_device{}()};
+    bool attempted = false;
+    while (true) {
+        const auto now = std::chrono::steady_clock::now();
+        if (attempted && now >= deadline) {
+            return {RedisLockResult::Busy, {}};
+        }
+
+        const auto remaining = now >= deadline
+            ? std::chrono::milliseconds(0)
+            : std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+        // 每一轮只借一条连接完成一次 SET NX，随后立即归还；不能把连接占到整个抢锁超时结束。
+        auto connect = _connectionPool->getConnectionFor(remaining);
+        if (connect == nullptr) {
+            // 连接池满或 Redis 连接均已失效不是锁竞争，调用方必须按依赖故障处理。
+            return {RedisLockResult::RedisError, {}};
+        }
+
+        RedisLockAcquireResult result;
+        {
+            Defer defer([&connect, this] {
+                // 网络错误后的 context 不可复用，避免把坏连接交给下一位调用者。
+                _connectionPool->returnConnection(connect, connect->err != 0);
+            });
+            result = DistLock::GetInstance()->tryAcquire(connect, lockName, leaseTime);
+        }
+        attempted = true;
+
+        if (result.result != RedisLockResult::Busy) {
+            return result;
+        }
+
+        const auto afterAttempt = std::chrono::steady_clock::now();
+        if (afterAttempt >= deadline) {
+            return result;
+        }
+        const auto remainingAfterAttempt =
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - afterAttempt);
+        // 同一时刻被唤醒的竞争者若固定间隔重试，会形成惊群；加入小随机抖动分散请求。
+        const auto maxJitter = std::max<std::int64_t>(1, retryInterval.count() / 2);
+        const auto jitter = std::chrono::milliseconds(
+            std::uniform_int_distribution<std::int64_t>(0, maxJitter)(generator));
+        std::this_thread::sleep_for(std::min(remainingAfterAttempt, retryInterval + jitter));
+    }
+}
+
+RedisLockResult RedisMgr::releaseLock(const std::string& lockName, const std::string& identifier) {
+    if (lockName.empty() || identifier.empty()) {
+        return RedisLockResult::InvalidArgument;
+    }
+
+    auto connect = _connectionPool->getConnectionFor(std::chrono::milliseconds(1000));
+    if (connect == nullptr) {
+        return RedisLockResult::RedisError;
+    }
+    Defer defer([&connect, this] {
+        _connectionPool->returnConnection(connect, connect->err != 0);
+    });
+    return DistLock::GetInstance()->releaseLock(connect, lockName, identifier);
+}
+
+RedisLockResult RedisMgr::renewLock(const std::string& lockName,
+                                    const std::string& identifier,
+                                    std::chrono::milliseconds leaseTime) {
+    if (lockName.empty() || identifier.empty() || leaseTime.count() <= 0) {
+        return RedisLockResult::InvalidArgument;
+    }
+
+    auto connect = _connectionPool->getConnectionFor(std::chrono::milliseconds(1000));
+    if (connect == nullptr) {
+        return RedisLockResult::RedisError;
+    }
+    Defer defer([&connect, this] {
+        _connectionPool->returnConnection(connect, connect->err != 0);
+    });
+    return DistLock::GetInstance()->renewLock(connect, lockName, identifier, leaseTime);
 }

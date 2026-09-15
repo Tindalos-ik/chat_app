@@ -9,6 +9,8 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
+#include <chrono>
+#include "DistLock.h"
 
  /* 需要引入redis连接池，为什么呢？
     最开始的单例模式在多线程环境下不是线程安全的，我们引入池的概念，用多个连接去访问redis
@@ -71,13 +73,27 @@ public:
         return context;
     }
 
-    void returnConnection(redisContext* context) {
+    // redisCommand 返回空且 context->err 非 0 时传入 broken，坏 socket 不能回收到池里。
+    void returnConnection(redisContext* context, bool broken = false) {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (b_stop_) {
+        if (b_stop_ || broken) {
+            redisFree(context);
             return;
         }
         connections_.push(context);
         cond_.notify_one(); //唤醒一个等待的线程
+    }
+
+    // 分布式锁使用有界等待，避免连接池耗尽时业务线程无限卡住。
+    redisContext* getConnectionFor(std::chrono::milliseconds waitTime) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        const auto ready = [this] { return b_stop_ || !connections_.empty(); };
+        if (!cond_.wait_for(lock, waitTime, ready) || b_stop_ || connections_.empty()) {
+            return nullptr;
+        }
+        auto* context = connections_.front();
+        connections_.pop();
+        return context;
     }
 
     void Close() { 
@@ -231,6 +247,19 @@ public:
      * @brief 关闭 Redis 连接，释放资源
      */
     void Close(); 
+
+    // Busy 表示其他 owner 持锁；RedisError 表示 Redis/连接池不可用，两者不可混淆。
+    RedisLockAcquireResult acquireLock(const std::string& lockName,
+                                       std::chrono::milliseconds leaseTime,
+                                       std::chrono::milliseconds acquireTimeout,
+                                       std::chrono::milliseconds retryInterval = std::chrono::milliseconds(20));
+
+    RedisLockResult releaseLock(const std::string& lockName, const std::string& identifier);
+
+    // 返回非 Acquired 后，调用方必须停止继续执行临界区写操作。
+    RedisLockResult renewLock(const std::string& lockName,
+                              const std::string& identifier,
+                              std::chrono::milliseconds leaseTime);
 
 private:
     RedisMgr();

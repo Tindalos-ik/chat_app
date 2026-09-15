@@ -26,6 +26,7 @@ set(SOURCE_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ChatGrpcClient.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/UserMgr.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ChatServiceImpl.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/DistLock.cpp
 )
 
 link_directories("D:/cppsoft/vcpkg/installed/x64-windows/lib") # 添加 vcpkg 的 lib 路径，库文件搜索路径
