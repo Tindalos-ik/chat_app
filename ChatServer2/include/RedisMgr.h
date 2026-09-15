@@ -248,15 +248,13 @@ public:
      */
     void Close(); 
 
-    // Busy 表示其他 owner 持锁；RedisError 表示 Redis/连接池不可用，两者不可混淆。
     RedisLockAcquireResult acquireLock(const std::string& lockName,
-                                       std::chrono::milliseconds leaseTime,
-                                       std::chrono::milliseconds acquireTimeout,
+                                       std::chrono::milliseconds leaseTime, // 自动释放时间
+                                       std::chrono::milliseconds acquireTimeout, // 获取锁超时时间
                                        std::chrono::milliseconds retryInterval = std::chrono::milliseconds(20));
 
     RedisLockResult releaseLock(const std::string& lockName, const std::string& identifier);
 
-    // 返回非 Acquired 后，调用方必须停止继续执行临界区写操作。
     RedisLockResult renewLock(const std::string& lockName,
                               const std::string& identifier,
                               std::chrono::milliseconds leaseTime);

@@ -6,7 +6,7 @@
 #include <iomanip>
 #include <random>
 #include <cstring>
-
+#include "RedisMgr.h"
 using namespace std;
 
 // 生成一个32位的十六进制随机字符串作为会话id（效果等同uuid，保证每个连接唯一）
@@ -140,6 +140,34 @@ void CSession::ReadHead(int head_len) {
             if (ec) {
                 std::cout << "handle read failed, error is " << ec.message() << endl;
                 Close();
+                
+                // 加锁清除session
+                auto uid_str = std::to_string(_user_uid);
+                auto lock_key = LOGIN_LOCK_PREFIX + uid_str;
+                auto lock_result = RedisMgr::GetInstance()->acquireLock(lock_key, LOCK_TIME_OUT, ACQUIRE_TIME_OUT);
+
+                if(lock_result.result != RedisLockResult::Acquired){
+                    return;
+                }
+
+                auto identifier = lock_result.identifier;
+                Defer defer([identifier, lock_key, self, this]() { 
+                    RedisMgr::GetInstance()->releaseLock(lock_key, identifier); 
+                });
+
+                std::string redis_session_id;
+                auto bsuccess = RedisMgr::GetInstance()->Get(USER_SESSION_PREFIX + uid_str, redis_session_id);
+                if(!bsuccess) return;
+                
+                if(redis_session_id != _session_id){
+                    // 服务器异地登录
+                    return;
+                }
+
+                // 清除用户登录信息和ip信息
+                RedisMgr::GetInstance()->Del(USER_SESSION_PREFIX + uid_str);
+                RedisMgr::GetInstance()->Del(USERIPPREFIX + uid_str);
+
                 _server->ClearSession(_session_id);
                 return;
             }
@@ -191,6 +219,34 @@ void CSession::ReadBody(int body_len) {
             if (ec) {
                 std::cout << "handle read failed, error is " << ec.message() << endl;
                 Close();
+
+                // 加锁清除session
+                auto uid_str = std::to_string(_user_uid);
+                auto lock_key = LOGIN_LOCK_PREFIX + uid_str;
+                auto lock_result = RedisMgr::GetInstance()->acquireLock(lock_key, LOCK_TIME_OUT, ACQUIRE_TIME_OUT);
+
+                if(lock_result.result != RedisLockResult::Acquired){
+                    return;
+                }
+
+                auto identifier = lock_result.identifier;
+                Defer defer([identifier, lock_key, self, this]() { 
+                    RedisMgr::GetInstance()->releaseLock(lock_key, identifier); 
+                });
+
+                std::string redis_session_id;
+                auto bsuccess = RedisMgr::GetInstance()->Get(USER_SESSION_PREFIX + uid_str, redis_session_id);
+                if(!bsuccess) return;
+                
+                if(redis_session_id != _session_id){
+                    // 服务器异地登录
+                    return;
+                }
+
+                // 清除用户登录信息和ip信息
+                RedisMgr::GetInstance()->Del(USER_SESSION_PREFIX + uid_str);
+                RedisMgr::GetInstance()->Del(USERIPPREFIX + uid_str);
+
                 _server->ClearSession(_session_id);
                 return;
             }

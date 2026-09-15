@@ -4,6 +4,7 @@
 
 #include <memory>
 #include <functional>
+#include <chrono>
 //不能一个头文件包含一大堆头文件，很容易出错
 
 enum ErrorCode{ 
@@ -21,6 +22,7 @@ enum ErrorCode{
     UidInvalid = 1011, //用户id无效
     TokenInvalid = 1012, //token无效
     SearchUserNoExist = 1013, //搜索的用户不存在
+    ServerBusy = 1014, //服务器繁忙
 };
 
 //手动定义一个Defer类，里面有一个函数，用于在函数结束时自动执行，比如释放资源，实现类似RAII的功能   这个是go语言中的defer关键字
@@ -86,6 +88,14 @@ enum MSG_IDS {
 #define UIPCOUNTPREFIX "ipcount_"
 #define USER_BASE_INFO "ubaseinfo_"
 #define USER_NAME_INFO "unameinfo_"
+#define LOGIN_LOCK_PREFIX "login_lock_"
+#define USER_SESSION_PREFIX "usession_"
+#define LOCK_COUNT "lockcount"
+
+// 持有锁最大时间，防止死锁
+const auto LOCK_TIME_OUT = std::chrono::seconds(10);
+// 分布式锁最大等待时间
+const auto ACQUIRE_TIME_OUT = std::chrono::seconds(5);
 
 
 #endif // !_CONST_H_
