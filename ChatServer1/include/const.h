@@ -88,7 +88,7 @@ enum MSG_IDS {
 #define UIPCOUNTPREFIX "ipcount_"
 #define USER_BASE_INFO "ubaseinfo_"
 #define USER_NAME_INFO "unameinfo_"
-#define LOCK_PREFIX "lock_"
+#define LOGIN_LOCK_PREFIX "login_lock_"
 #define USER_SESSION_PREFIX "usession_"
 #define LOCK_COUNT "lockcount"
 

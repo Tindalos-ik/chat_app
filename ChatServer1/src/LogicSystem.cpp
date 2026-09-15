@@ -149,7 +149,8 @@ void LogicSystem::LoginHandler(std::shared_ptr<CSession> session, const short &m
     rtvalue["error"] = ErrorCode::Success;
 
     // 添加分布式锁，防止并发读改写
-    auto lock_key  = LOCK_PREFIX + std::to_string(uid);
+    // 这样，两个服务器同时处理 uid = 1001 的登录请求，只有一个服务器能获取到锁，另一个服务器会等待锁释放
+    auto lock_key  = LOGIN_LOCK_PREFIX + std::to_string(uid);
     auto lock_result = RedisMgr::GetInstance()->acquireLock(lock_key, LOCK_TIME_OUT, ACQUIRE_TIME_OUT);
 
     if(lock_result.result != RedisLockResult::Acquired){
