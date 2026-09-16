@@ -52,6 +52,7 @@
 | [测试.md](note/测试.md) | 单元/集成测试总结：现有连接容量测试、运行方式、实测结果与后续补测计划 |
 | [数据库设计.md](note/数据库设计.md) | MySQL 用户数据设计（llfc1） |
 | [聊天服务器服务.md](note/聊天服务器服务.md) | proto 中定义的 ChatServer gRPC 服务、消息字段与跨服转发约定 |
+| [服务器踢人.md](note/服务器踢人.md) | 同服/跨服重复登录互踢、1021 投递、会话清理与当前边界 |
 | [消息ID全链路.md](note/消息ID全链路.md) | 客户端消息 ID、HTTP/TCP 流程、好友申请认证与聊天通信现状 |
 | [MySQL连接库.md](note/MySQL连接库.md) | X DevAPI / mysqlcppconnx |
 | [Redis.md](note/Redis.md) | Redis 在验证码、token、在线路由、负载、缓存和分布式锁中的作用 |
