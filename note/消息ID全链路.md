@@ -42,7 +42,7 @@ HTTP 负责注册、登录、验证码和重置密码等短请求。登录拿到
 | 1017 | `ID_TEXT_CHAT_MSG_REQ` | TCP `{fromuid,touid,textArray}` 文本请求 | ChatServer1/2 已校验会话 UID 后同服或跨服转发 |
 | 1018 | `ID_TEXT_CHAT_MSG_RSP` | 文本消息请求回包 | 客户端已按 `msgid` 输出发送成功/失败日志 |
 | 1019 | `ID_NOTIFY_TEXT_CHAT_MSG_REQ` | 推送对方收到的文本消息 | 客户端已解析；当前打开对应聊天窗口时显示气泡 |
-| 1021 | `ID_NOTIFY_OFF_LINE_REQ` | 推送用户下线 | ID 已定义，当前未完整实现 |
+| 1021 | `ID_NOTIFY_OFF_LINE_REQ` | 重复登录时通知旧客户端下线 | 服务端发送后关闭旧 socket；客户端解析通知或检测已登录连接断开后返回登录页 |
 | 1023/1024 | `ID_HEART_BEAT_REQ/RSP` | 心跳请求/回包 | ID 已定义，当前未完整实现 |
 | 1025/1026 | `ID_LOAD_CHAT_THREAD_REQ/RSP` | 加载聊天会话列表 | ID 已定义，当前未完整实现 |
 | 1027/1028 | `ID_CREATE_PRIVATE_CHAT_REQ/RSP` | 创建私聊会话 | ID 已定义，当前未完整实现 |
@@ -164,7 +164,7 @@ B 的 `ChatDialog::slot_apply_friend` 将申请缓存到 `UserMgr`，点开“�
    {"uid":B 的 uid,"touid":A 的 uid,"agree":true/false}
 3. B 所在 ChatServer 更新 friend_apply 状态
 4. B <- ID_AUTH_FRIEND_RSP
-5. 跨 ChatServer 时，服务端之间通过 gRPC RplyAddFriend/NotifyAuthFriend 转发
+5. 跨 ChatServer 时，服务端之间通过 gRPC `NotifyAuthFriend` 转发认证结果
 6. A <- ID_NOTIFY_AUTH_FRIEND_REQ
 7. A 更新“等待对方同意”为“已添加”或“已拒绝”
 ```

@@ -49,6 +49,13 @@ void MainWindow::SlotOffline()
     SlotSwitchLogin(); //切换登录界面
 }
 
+void MainWindow::SlotConnectionLost()
+{
+    QMessageBox::warning(this, "连接断开", "与聊天服务器的连接已断开，请重新登录。");
+    TcpMgr::GetInstance()->CloseConnection();
+    SlotSwitchLogin();
+}
+
 // 主窗口构造函数
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -97,6 +104,8 @@ MainWindow::MainWindow(QWidget *parent)
     //emit TcpMgr::GetInstance()->sig_switch_chatdlg();
 
     connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_off_line, this, &MainWindow::SlotOffline);
+    connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_connection_lost,
+            this, &MainWindow::SlotConnectionLost);
 
 }
 

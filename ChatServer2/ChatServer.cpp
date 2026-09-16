@@ -25,13 +25,20 @@ int main(){
         // 初始化服务器的时候在redis中将登录数量设置成0
         RedisMgr::GetInstance()->HSet(LOGIN_COUNT, server_name, "0");
 
-        // 定义一个grpcserver
+        boost::asio::io_context io_context; //主线程用于接收新的连接
+
+        // TCP 服务只创建一次；gRPC 踢人处理与登录逻辑共享同一个会话容器。
+        auto server = std::make_shared<CServer>(io_context, std::stoi(config["SelfChatServer"]["port"]));
+        LogicSystem::GetInstance()->SetServer(server);
+
+         // 定义一个grpcserver
         std::string server_address(config["SelfChatServer"]["host"] + ":" + config["SelfChatServer"]["rpcport"]);
         ChatServiceImpl service;
         grpc::ServerBuilder builder;
         // 监听端口和添加服务
         builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
         builder.RegisterService(&service);
+        service.RegisterServer(server);
         // 构建并启动grpc服务器
         std::unique_ptr<grpc::Server> grpc_server(builder.BuildAndStart());
         if (!grpc_server) {
@@ -44,9 +51,6 @@ int main(){
         std::thread grpc_server_thread([&grpc_server](){
             grpc_server->Wait();
         });
-
-        boost::asio::io_context io_context; //主线程用于接收新的连接
-
         boost::asio::signal_set signals(io_context, SIGINT, SIGTERM); //定义信号集跑在主线程上，捕捉退出信号，实现优雅退出
         signals.async_wait([&io_context, pool, &grpc_server](auto,auto){
             io_context.stop();
@@ -54,9 +58,6 @@ int main(){
             grpc_server->Shutdown(); //关闭grpc服务器
         }); //捕捉到退出信号后，停止主线程和IO线程池
         
-        auto port_str = config["SelfChatServer"]["port"];
-        CServer server(io_context, std::stoi(port_str));
-
         io_context.run(); //主线程开始运行，等待退出信号
 
         RedisMgr::GetInstance()->HDel(LOGIN_COUNT, server_name); //删除redis中的登录数量

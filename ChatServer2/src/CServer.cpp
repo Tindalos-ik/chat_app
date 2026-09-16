@@ -57,7 +57,7 @@ void CServer::ClearSession(std::string session_id) {
             uid = iter->second->GetUserId();
             if (uid != 0) {
                 // 移除用户与session的关联
-                UserMgr::GetInstance()->RmvUserSession(uid);
+                UserMgr::GetInstance()->RmvUserSession(uid, session_id);
             }
             _sessions.erase(iter);
         }

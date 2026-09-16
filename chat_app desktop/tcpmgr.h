@@ -39,6 +39,8 @@ private:
     uint16_t _port;
     QByteArray _buffer; //接收缓冲区，一个动态扩展结构，tcp是面向字节流的
     bool _b_recy_pending; //接收状态标志，标记当前是否正在等待一个完整的数据包，true代表上一个数据没有收全，收全了才能扔给handler处理
+    bool _logged_in; // 已收到聊天服务器登录成功回包
+    bool _disconnect_notified; // 一次连接只通知一次下线/断线，避免重复弹窗
     quint16 _message_id; //消息 ID，标识消息的类型，比如是登录回包，
     quint16 _message_len;
 
@@ -56,6 +58,7 @@ signals:
     void sig_auth_friend(std::shared_ptr<FriendInfo>&); // 认证好友成功，发送给chatdialog
     void sig_text_chat(std::shared_ptr<TextChatData>&); // 收到对方推送的文本消息
     void sig_off_line();
+    void sig_connection_lost(); // 已登录连接被服务端关闭，但未完整收到踢人通知
 };
 
 #endif // TCPMGR_H

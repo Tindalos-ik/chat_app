@@ -93,11 +93,7 @@ Status StatusServiceImpl::GetChatServer(ServerContext* context,
 }
 ```
 
-负载均衡策略（不同版本）：
-
-- day14 版本：`_server_index` 轮询；
-- 最终版：遍历 `_servers`（config.ini 里配置的 ChatServer1/2），返回 `con_count` 最小的那台；
-- 还预留了基于 Redis `logincount` 哈希表统计各服务器在线人数的方案（代码里已注释）。
+当前负载均衡策略是读取 Redis 的 `login_count` 哈希，选在线数最小的 ChatServer；多个实例并列最小时轮询。读不到有效计数的实例按最大负载处理。
 
 ### 3.2 token 存到 Redis
 
@@ -111,7 +107,7 @@ void StatusServiceImpl::insertToken(int uid, std::string token) {
 
 token 的意义：它是"**该 uid 刚刚通过密码验证**"的凭证。之后 ChatServer 只认 token，不认密码。
 
-> 你项目（chat_app）的 StatusServer 用的是**内存 map**（`_tokens[uid] = token`、`_token_to_server[token] = 服务器名`），原理相同，只是把 Redis 换成了进程内存储，并且额外记录 token 与服务器的对应关系，方便后面的分布式踢人。
+> 当前 StatusServer 把 token 写到 Redis 的 `utoken_<uid>`，ChatServer 直接读取同一个 key 校验；它不再依赖 StatusServer 进程内 token map。
 
 ---
 
@@ -150,7 +146,7 @@ if (!success)          { rtvalue["error"] = UidInvalid;  return; }  // 没签发
 if (token_value != token) { rtvalue["error"] = TokenInvalid; return; } // token 不匹配
 ```
 
-> 你项目当前版本是调 `StatusGrpcClient::Login(uid, token)` 让 StatusServer 校验，等价，只是把 Redis 读换成了 gRPC 调用。
+> 当前版本就是在 `LoginHandler` 里直接读取 Redis 校验。proto 和 `StatusGrpcClient` 仍保留 `Login(uid, token)` 接口，但这条 TCP 登录路径没有调用它。
 
 **第 2 步：加载用户资料（先缓存后数据库）**
 
@@ -183,25 +179,32 @@ rtvalue["friend_list"] = ...;
 **第 4 步：分布式踢人（防止同一账号多处登录）**
 
 ```cpp
-// 加分布式锁（lock_<uid>），防止并发登录竞争
-auto lock_key = LOCK_PREFIX + uid_str;
-auto identifier = RedisMgr::GetInstance()->acquireLock(lock_key, LOCK_TIME_OUT, ACQUIRE_TIME_OUT);
+// 加分布式锁（login_lock_<uid>），防止并发登录竞争
+auto lock_key = LOGIN_LOCK_PREFIX + uid_str;
+auto lock_result = RedisMgr::GetInstance()->acquireLock(lock_key, LOCK_TIME_OUT, ACQUIRE_TIME_OUT);
 
 // 查用户之前登录在哪台服务器
 bool b_ip = RedisMgr::GetInstance()->Get(USERIPPREFIX + uid_str, uid_ip_value); // uip_<uid>
 if (b_ip) {
+    std::string old_session_id;
+    RedisMgr::GetInstance()->Get(USER_SESSION_PREFIX + uid_str, old_session_id);
     if (uid_ip_value == self_name) {
-        // 同服：直接找旧 session 通知下线并清除
+        // 同服：只有 Redis 与本机的 session_id 一致才清理
         auto old_session = UserMgr::GetInstance()->GetSession(uid);
-        if (old_session) {
-            old_session->NotifyOffline(uid);
+        if (old_session && old_session->GetSessionId() == old_session_id) {
+            old_session->NotifyOffline();
             _p_server->ClearSession(old_session->GetSessionId());
         }
     } else {
         // 跨服：通过 gRPC 通知那台 ChatServer 踢人
         KickUserReq kick_req;
         kick_req.set_uid(uid);
-        ChatGrpcClient::GetInstance()->NotifyKickUser(uid_ip_value, kick_req);
+        kick_req.set_session_id(old_session_id);
+        auto kick_rsp = ChatGrpcClient::GetInstance()->NotifyKickUser(uid_ip_value, kick_req);
+        if (kick_rsp.error() != ErrorCode::Success) {
+            rtvalue["error"] = kick_rsp.error();
+            return; // 不覆盖旧路由
+        }
     }
 }
 ```
@@ -248,8 +251,8 @@ _handlers.insert(ID_CHAT_LOGIN_RSP, [this](ReqId id, int len, QByteArray data){
 | `ubaseinfo_<uid>` | 用户资料 JSON（name/nick/icon...） | ChatServer | 登录时加载用户信息（缓存） |
 | `uip_<uid>` | 用户所在 ChatServer 名 | ChatServer | 在线状态、跨服转发、踢人 |
 | `usession_<uid>` | 用户当前 session_id | ChatServer | 判断是否同一会话、异常清理 |
-| `lock_<uid>` | 分布式锁标识 | ChatServer | 登录/踢人时防止并发竞争 |
-| `logincount` | 各服务器在线人数 | ChatServer（预留） | 负载均衡参考 |
+| `lock:login_lock_<uid>` | 分布式锁内部 Redis key | ChatServer | 登录/踢人时防止并发竞争 |
+| `login_count` | 各服务器在线人数哈希 | ChatServer | StatusServer 负载均衡参考 |
 
 ---
 

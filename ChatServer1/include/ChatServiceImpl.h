@@ -8,6 +8,7 @@
 #include "message.pb.h"
 #include <mutex>
 #include "data.h"
+#include "CServer.h"
 
 using grpc::Channel;
 using grpc::Status;
@@ -28,6 +29,9 @@ using message::TextChatMsgReq;
 using message::TextChatMsgRsp;
 using message::TextChatData;
 
+using message::KickUserReq;
+using message::KickUserRsp;
+
 
 class ChatServiceImpl final : public ChatService::Service
 // final 表示该类不能被继承
@@ -40,6 +44,11 @@ public:
     Status NotifyAuthFriend(ServerContext* context, const AuthFriendReq* request, AuthFriendRsp* response) override;
     Status NotifyTextChatMsg(ServerContext* context, const TextChatMsgReq* request, TextChatMsgRsp* response) override;
     //bool GetBaseInfo(std::string base_key, int uid, std::shared_ptr<UserInfo>& userinfo);
+    Status NotifyKickUser(ServerContext* context, const KickUserReq* request, KickUserRsp* response) override;
+
+    void RegisterServer(std::shared_ptr<CServer> p_server);
+private:
+    std::shared_ptr<CServer> _p_server;
 };
 
 

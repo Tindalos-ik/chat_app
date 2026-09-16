@@ -39,6 +39,7 @@ private slots:
     void SlotSwitchReset();
     void SlotSwitchChat();
     void SlotOffline();
+    void SlotConnectionLost();
 
 private:
     Ui::MainWindow *ui;

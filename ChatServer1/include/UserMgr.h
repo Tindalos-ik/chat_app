@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <memory>
 #include <mutex>
+#include <string>
 
 class CSession;
 
@@ -23,7 +24,7 @@ public:
     // 根据uid获取一个session
     std::shared_ptr<CSession> GetSession(int uid);
     void SetUserSession(int uid, std::shared_ptr<CSession> session);
-    void RmvUserSession(int uid);
+    void RmvUserSession(int uid, const std::string& session_id);
 
 private:
     UserMgr();

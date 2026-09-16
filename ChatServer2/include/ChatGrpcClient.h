@@ -16,6 +16,7 @@
 #include <condition_variable>
 #include <unordered_map>
 #include <string>
+#include <chrono>
 
 using grpc::Channel;
 using grpc::ClientContext;
@@ -35,6 +36,9 @@ using message::ChatService;
 using message::TextChatMsgReq;
 using message::TextChatMsgRsp;
 using message::TextChatData;
+
+using message::KickUserReq;
+using message::KickUserRsp;
 
 
 // 连接池
@@ -74,6 +78,22 @@ public:
         return context;
     }
 
+    std::unique_ptr<ChatService::Stub> getConnectionUntil(
+        const std::chrono::system_clock::time_point& deadline){
+        std::unique_lock<std::mutex> lock(_mutex);
+        if(!_cond.wait_until(lock, deadline, [this](){
+            return _b_stop || !_pool.empty();
+        })){
+            return nullptr;
+        }
+        if(_b_stop){
+            return nullptr;
+        }
+        auto context = std::move(_pool.front());
+        _pool.pop();
+        return context;
+    }
+
     void returnConnection(std::unique_ptr<ChatService::Stub> conn){
         std::lock_guard<std::mutex> lock(_mutex);
         if(_b_stop){
@@ -102,6 +122,7 @@ public:
     AddFriendRsp NotifyAddFriend(std::string server_ip, const AddFriendReq& request);
     AuthFriendRsp NotifyAuthFriend(std::string server_ip, const AuthFriendReq& request);
     TextChatMsgRsp NotifyTextChatMsg(std::string server_ip, const TextChatMsgReq& request);
+    KickUserRsp NotifyKickUser(std::string server_ip, const KickUserReq& request);
 
 private:
     ChatGrpcClient();

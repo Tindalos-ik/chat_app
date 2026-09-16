@@ -57,6 +57,7 @@ private:
 
     std::queue<std::shared_ptr<SendNode>> _send_que; // 待发送消息队列
     std::mutex _send_lock;                            // 保护发送队列
+    bool _close_after_send;                           // 踢人通知写完后关闭连接，并拒绝继续排队
     std::mutex _session_mtx;                          // 保护关闭操作
 
     std::shared_ptr<RecvNode> _recv_msg_node; // 正在接收的消息体节点

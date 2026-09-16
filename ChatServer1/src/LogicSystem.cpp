@@ -148,43 +148,6 @@ void LogicSystem::LoginHandler(std::shared_ptr<CSession> session, const short &m
 
     rtvalue["error"] = ErrorCode::Success;
 
-    // 添加分布式锁，防止并发读改写
-    // 这样，两个服务器同时处理 uid = 1001 的登录请求，只有一个服务器能获取到锁，另一个服务器会等待锁释放
-    auto lock_key  = LOGIN_LOCK_PREFIX + std::to_string(uid);
-    auto lock_result = RedisMgr::GetInstance()->acquireLock(lock_key, LOCK_TIME_OUT, ACQUIRE_TIME_OUT);
-
-    if(lock_result.result != RedisLockResult::Acquired){
-        std::cout << "acquire lock failed" << std::endl;
-        rtvalue["error"] = ErrorCode::ServerBusy;
-        return;
-    }
-
-    std::string identifier = lock_result.identifier;
-    // 利用defer解锁
-    Defer lock_defer([this, identifier, lock_key](){
-        RedisMgr::GetInstance()->releaseLock(lock_key, identifier);
-    });
-
-    // 判断用户是否在别处登录或在本服务器登录
-    std::string uip_ip_value;
-    auto uip_ip_key = USERIPPREFIX  + std::to_string(uid);
-    bool b_ip = RedisMgr::GetInstance()->Get(uip_ip_key, uip_ip_value);
-    if(b_ip){ // 用户已经登录
-        // 获取当前服务器ip信息
-        auto self_name = ConfigMgr::Inst()["SelfChatServer"]["name"];
-        if(uip_ip_value == self_name){ // 用户在本服务器登录，则直接在本服务器踢掉
-            // 查找旧连接
-            auto old_session = UserMgr::GetInstance()->GetSession(uid);
-            if(old_session){
-                // 通知客户端下线
-                old_session->NotifyOffline();
-                _p_server->ClearSession(old_session->GetSessionId());
-            }
-        }
-    }else{
-        // 如果不是本服务器，则调用 grpc 通知其他服务器下线
-    }
-
     // 查询用户信息，返回客户端，用于渲染界面
     std::string base_key = USER_BASE_INFO + std::to_string(uid);
     auto user_info = std::make_shared<UserInfo>();
@@ -235,6 +198,69 @@ void LogicSystem::LoginHandler(std::shared_ptr<CSession> session, const short &m
             friend_json["sex"] = friend_info->sex;
             friend_json["icon"] = friend_info->icon;
             rtvalue["friend_list"].append(friend_json);
+        }
+    }
+
+    // 添加分布式锁，防止并发读改写
+    // 这样，两个服务器同时处理 uid = 1001 的登录请求，只有一个服务器能获取到锁，另一个服务器会等待锁释放
+    auto lock_key  = LOGIN_LOCK_PREFIX + std::to_string(uid);
+    auto lock_result = RedisMgr::GetInstance()->acquireLock(lock_key, LOCK_TIME_OUT, ACQUIRE_TIME_OUT);
+
+    if(lock_result.result != RedisLockResult::Acquired){
+        std::cout << "acquire lock failed" << std::endl;
+        rtvalue["error"] = ErrorCode::ServerBusy;
+        return;
+    }
+
+    std::string identifier = lock_result.identifier;
+    // 利用defer解锁
+    Defer lock_defer([this, identifier, lock_key](){
+        RedisMgr::GetInstance()->releaseLock(lock_key, identifier);
+    });
+
+    // 判断用户是否在别处登录或在本服务器登录
+    std::string uid_ip_value;
+    auto uid_ip_key = USERIPPREFIX  + std::to_string(uid);
+    bool b_ip = RedisMgr::GetInstance()->Get(uid_ip_key, uid_ip_value);
+    if(b_ip){ // 用户已经登录
+        std::string old_session_id;
+        RedisMgr::GetInstance()->Get(USER_SESSION_PREFIX + std::to_string(uid), old_session_id);
+
+        // 获取当前服务器ip信息
+        auto self_name = ConfigMgr::Inst()["SelfChatServer"]["name"];
+        if(uid_ip_value == self_name){ // 用户在本服务器登录，则直接在本服务器踢掉
+            // 查找旧连接
+            auto old_session = UserMgr::GetInstance()->GetSession(uid);
+            if(old_session){
+                // Redis 会话与本机会话不一致时不能按 uid 盲踢，交给客户端稍后重试。
+                if(old_session_id.empty() || old_session->GetSessionId() != old_session_id){
+                    rtvalue["error"] = ErrorCode::ServerBusy;
+                    return;
+                }
+                if(!_p_server){
+                    rtvalue["error"] = ErrorCode::ServerBusy;
+                    return;
+                }
+                // 通知客户端下线
+                old_session->NotifyOffline();
+                _p_server->ClearSession(old_session->GetSessionId());
+            }
+        }else{
+            // 用户在其他服务器：同步等待旧服完成踢人，成功后才能覆盖 Redis 路由。
+            KickUserReq request;
+            request.set_uid(uid);
+            request.set_session_id(old_session_id);
+            std::cout << "cross-server kick request, uid = " << uid
+                      << ", old server = " << uid_ip_value
+                      << ", session = " << old_session_id << std::endl;
+            auto response = ChatGrpcClient::GetInstance()->NotifyKickUser(uid_ip_value, request);
+            if(response.error() != ErrorCode::Success){
+                std::cout << "cross-server kick failed, uid = " << uid
+                          << ", error = " << response.error() << std::endl;
+                rtvalue["error"] = response.error();
+                return;
+            }
+            std::cout << "cross-server kick succeeded, uid = " << uid << std::endl;
         }
     }
 

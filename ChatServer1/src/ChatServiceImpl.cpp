@@ -116,3 +116,45 @@ Status ChatServiceImpl::NotifyTextChatMsg(ServerContext* context, const TextChat
     session->Send(return_str, ID_NOTIFY_TEXT_CHAT_MSG_REQ);
     return Status::OK;
 }
+
+
+Status ChatServiceImpl::NotifyKickUser(ServerContext* context, const KickUserReq* request, KickUserRsp* response){
+    // 查询用户是否在本服务器
+    auto uid = request->uid();
+    response->set_uid(uid);
+    response->set_error(ErrorCode::Success);
+    auto session = UserMgr::GetInstance()->GetSession(uid);
+
+    // 踢人接口采用幂等语义：会话已经不存在，也视为目标已下线。
+    if(session == nullptr){
+        std::cout << "kick target already offline, uid = " << uid << std::endl;
+        return Status::OK;
+    }
+
+    // 请求必须命中发起方看到的那一代旧会话；陈旧或缺失的 session_id 不允许按 uid 盲踢。
+    if(request->session_id().empty() || session->GetSessionId() != request->session_id()){
+        std::cout << "reject stale kick request, uid = " << uid
+                  << ", requested session = " << request->session_id()
+                  << ", current session = " << session->GetSessionId() << std::endl;
+        response->set_error(ErrorCode::ServerBusy);
+        return Status::OK;
+    }
+
+    if(!_p_server){
+        response->set_error(ErrorCode::RPCFaild);
+        return Status::OK;
+    }
+
+    // 在内存中直接通知对方即可
+    session->NotifyOffline();
+    std::cout << "notify old client offline, uid = " << uid
+              << ", session = " << session->GetSessionId() << std::endl;
+    // 清除旧的连接
+    _p_server->ClearSession(session->GetSessionId());
+
+    return Status::OK;
+}
+
+void ChatServiceImpl::RegisterServer(std::shared_ptr<CServer> p_server){
+    _p_server = p_server;
+}

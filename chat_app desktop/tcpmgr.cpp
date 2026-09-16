@@ -14,7 +14,7 @@ TcpMgr::~TcpMgr()
 
 bool TcpMgr::IsConnected() const
 {
-    return _socket->state() == QAbstractSocket::ConnectedState;
+    return _socket && _socket->state() == QAbstractSocket::ConnectedState;
 }
 
 void TcpMgr::CloseConnection()
@@ -27,6 +27,8 @@ void TcpMgr::CloseConnection()
     }
     _buffer.clear();
     _b_recy_pending = false;
+    _logged_in = false;
+    _disconnect_notified = false;
 
     // 信号和槽是绑定在具体对象上的，需要重新连接信号和槽
     // initSigAndSlot(); 此时_socket为空，在重新进行长连接的时候再连接信号和槽
@@ -34,7 +36,8 @@ void TcpMgr::CloseConnection()
 }
 
 //Qt封装的是异步，我们要在构造函数里面完成各种信号的槽，保证服务的流程进行
-TcpMgr::TcpMgr() : _host(""), _port(0), _b_recy_pending(false), _message_id(0), _message_len(0)
+TcpMgr::TcpMgr() : _host(""), _port(0), _b_recy_pending(false), _logged_in(false),
+    _disconnect_notified(false), _message_id(0), _message_len(0)
 {
     //连接服务器，在这里不好写第一个参数，我们去到LoginDialog里面写
     //connect(, &LoginDialog::sig_connect_tcp, this, &TcpMgr::slot_tcp_connect);
@@ -127,6 +130,8 @@ void TcpMgr::initHandlers()
         }
         userMgr->SetFriendList(std::move(friendList));
 
+        _logged_in = true;
+        _disconnect_notified = false;
         emit sig_switch_chatdlg();
     });
 
@@ -328,6 +333,11 @@ void TcpMgr::initHandlers()
             qWarning() << "text chat notification failed:" << jsonObj.value("error").toInt();
             return;
         }
+        if (_disconnect_notified) {
+            return;
+        }
+        _disconnect_notified = true;
+        _logged_in = false;
         emit sig_off_line();
     };
 
@@ -344,8 +354,14 @@ void TcpMgr::initSigAndSlot()
     // 记录断开原因，便于区分客户端主动退出、服务端关闭和网络错误。
     connect(_socket, &QTcpSocket::disconnected, [this]{
         qWarning() << "disconnected from server:" << _socket->errorString();
+        const bool should_notify = _logged_in && !_disconnect_notified;
+        _logged_in = false;
+        _disconnect_notified = true;
         _buffer.clear();
         _b_recy_pending = false;
+        if (should_notify) {
+            emit sig_connection_lost();
+        }
     });
 
     //在有数据可读时候进行处理
@@ -418,6 +434,8 @@ void TcpMgr::slot_tcp_connect(ServerInfo si)
         _socket = new QTcpSocket(this);
         initSigAndSlot();          // 新对象，重新绑
     }
+    _logged_in = false;
+    _disconnect_notified = false;
     //客户端连接服务器
     qDebug() << "connecting to server..." << Qt::endl;
     _host = si.Host;

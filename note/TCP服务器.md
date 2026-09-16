@@ -455,7 +455,7 @@ void CSession::Close() {
 7. **接收队列**：网络层与业务层通过 `condition_variable + mutex` 队列解耦，业务单线程消费。
 8. **线程安全**：`_sessions`、`_send_que`、`_msg_que` 各自的互斥锁各管各的，避免共享数据无保护。
 9. **对象存活**：所有异步回调都要持有 `shared_from_this()`，防止会话被提前析构。
-10. **后续扩展**：心跳检测（`steady_timer` + 最后活跃时间）、单服/多服踢人、token 校验后的用户与 session 绑定、断点续传等，都是在这个骨架上继续加逻辑。
+10. **业务扩展状态**：token 校验后的 uid/session 绑定以及同服、跨服互踢已经接入；心跳检测（`steady_timer` + 最后活跃时间）、路由租约和断点续传仍是后续方向。
 
 ---
 

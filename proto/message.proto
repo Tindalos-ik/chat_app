@@ -123,16 +123,26 @@ message TextChatData {
     string msgcontent = 2; // 文本消息内容
 }
 
+message KickUserReq{
+    int32 uid = 1; // 被踢用户的 uid
+    string session_id = 2; // 发起方在 Redis 中读到的旧会话 id，用于防止陈旧 RPC 误踢新会话
+}
+
+message KickUserRsp{
+    int32 error = 1;
+    int32 uid = 2;
+}
+
 // 聊天服务器之间的 gRPC 服务定义。
 service ChatService {
     // 转发好友申请，由接收方所在服务器通知目标用户。
     rpc NotifyAddFriend (AddFriendReq) returns (AddFriendRsp) {}
-    // 转发好友申请的同意或拒绝结果，由申请方所在服务器通知申请用户。
-    rpc RplyAddFriend (RplyFriendReq) returns (RplyFriendRsp) {}
     // 转发单条聊天消息，由接收方所在服务器推送给目标用户。
     rpc SendChatMsg (SendChatMsgReq) returns (SendChatMsgRsp) {}
     // 转发好友认证结果，通知申请用户双方已建立或未建立好友关系。
     rpc NotifyAuthFriend (AuthFriendReq) returns (AuthFriendRsp) {}
     // 批量转发文本聊天消息，由接收方所在服务器推送给目标用户。
     rpc NotifyTextChatMsg (TextChatMsgReq) returns (TextChatMsgRsp) {}
+    // 踢出用户，由接收方所在服务器通知目标用户。
+    rpc NotifyKickUser (KickUserReq) returns (KickUserRsp) {}
 }

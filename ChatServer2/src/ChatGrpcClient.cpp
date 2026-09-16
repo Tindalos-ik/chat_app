@@ -6,6 +6,7 @@
 #include "MysqlMgr.h"
 #include <sstream>
 #include <vector>
+#include <iostream>
 
 ChatGrpcClient::ChatGrpcClient()
 {
@@ -61,6 +62,8 @@ AddFriendRsp ChatGrpcClient::NotifyAddFriend(std::string server_ip, const AddFri
     });
 
     if(!status.ok()){
+        std::cout << "NotifyKickUser RPC failed, code = " << status.error_code()
+                  << ", message = " << status.error_message() << std::endl;
         rsp.set_error(ErrorCode::RPCFaild);
         return rsp;
     }
@@ -119,6 +122,40 @@ TextChatMsgRsp ChatGrpcClient::NotifyTextChatMsg(std::string server_ip, const Te
     Defer defercon([&pool, &stub, this](){
         pool->returnConnection(std::move(stub));
     });
+
+    if(!status.ok()){
+        rsp.set_error(ErrorCode::RPCFaild);
+        return rsp;
+    }
+
+    return rsp;
+}
+
+KickUserRsp ChatGrpcClient::NotifyKickUser(std::string server_ip, const KickUserReq& request){
+    KickUserRsp rsp;
+    rsp.set_error(ErrorCode::RPCFaild);
+    rsp.set_uid(request.uid());
+
+    auto find_iter = _pools.find(server_ip); // 找到对应的连接池
+    if(find_iter == _pools.end()){
+        return rsp;
+    }
+
+    auto& pool = find_iter->second;
+
+    ClientContext context;
+    const auto deadline = std::chrono::system_clock::now() + std::chrono::seconds(3);
+    context.set_deadline(deadline);
+    // 获取连接池中的一个连接
+    auto stub = pool->getConnectionUntil(deadline);
+    if(!stub){
+        return rsp;
+    }
+    Defer defercon([&pool, &stub, this](){
+        pool->returnConnection(std::move(stub));
+    });
+
+    Status status = stub->NotifyKickUser(&context, request, &rsp); // 调用远程方法
 
     if(!status.ok()){
         rsp.set_error(ErrorCode::RPCFaild);

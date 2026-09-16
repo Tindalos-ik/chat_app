@@ -28,7 +28,7 @@ static std::string generate_uuid() {
 }
 
 CSession::CSession(boost::asio::io_context &io_context, CServer *server)
-    : _socket(io_context), _server(server), _b_close(false), _user_uid(0) {
+    : _socket(io_context), _server(server), _b_close(false), _close_after_send(false), _user_uid(0) {
     _session_id = generate_uuid(); // 每个会话分配一个唯一id，服务器用它管理会话
     _recv_head_node = std::make_shared<MsgNode>(HEAD_TOTAL_LEN); // 包头固定4字节
     std::cout << "session created, id = " << _session_id << std::endl;
@@ -62,6 +62,9 @@ void CSession::Start() {
 // 发送消息（std::string版本）
 void CSession::Send(std::string msg, short msgid) {
     std::lock_guard<std::mutex> lock(_send_lock);
+    if (_close_after_send) {
+        return;
+    }
     std::size_t send_que_size = _send_que.size();
     // 发送队列已满，说明对端消费能力不足，丢弃本次消息防止内存无限膨胀
     if (send_que_size > MAX_SENDQUE) {
@@ -86,6 +89,9 @@ void CSession::Send(std::string msg, short msgid) {
 // 发送消息（char*版本）
 void CSession::Send(char *msg, short max_length, short msgid) {
     std::lock_guard<std::mutex> lock(_send_lock);
+    if (_close_after_send) {
+        return;
+    }
     std::size_t send_que_size = _send_que.size();
     if (send_que_size > MAX_SENDQUE) {
         std::cout << "session: " << _session_id << " send que fulled, size is " << MAX_SENDQUE << endl;
@@ -118,12 +124,20 @@ std::shared_ptr<CSession> CSession::SharedSelf() {
 void CSession::HandleWrite(const boost::system::error_code &error, std::shared_ptr<CSession> shared_self) {
     try {
         if (!error) {
-            std::lock_guard<std::mutex> lock(_send_lock);
-            _send_que.pop();
-            if (!_send_que.empty()) {
-                auto &msgnode = _send_que.front();
-                boost::asio::async_write(_socket, boost::asio::buffer(msgnode->_data, msgnode->_total_len),
-                    std::bind(&CSession::HandleWrite, this, std::placeholders::_1, shared_self));
+            bool should_close = false;
+            {
+                std::lock_guard<std::mutex> lock(_send_lock);
+                _send_que.pop();
+                if (!_send_que.empty()) {
+                    auto &msgnode = _send_que.front();
+                    boost::asio::async_write(_socket, boost::asio::buffer(msgnode->_data, msgnode->_total_len),
+                        std::bind(&CSession::HandleWrite, this, std::placeholders::_1, shared_self));
+                } else if (_close_after_send) {
+                    should_close = true;
+                }
+            }
+            if (should_close) {
+                Close();
             }
         } else {
             std::cout << "handle write failed, error is " << error.message() << endl;
@@ -318,6 +332,20 @@ void CSession::NotifyOffline(){
 
 	std::string return_str = rtvalue.toStyledString();
 
-	Send(return_str, ID_NOTIFY_OFF_LINE_REQ);
+    // 控制消息必须进入队列；写完队列后由 HandleWrite 主动关闭 socket。
+    // 设置标志后，普通 Send 会拒绝继续入队，避免已被踢会话继续收发业务消息。
+    std::lock_guard<std::mutex> lock(_send_lock);
+    if (_close_after_send) {
+        return;
+    }
+    const bool write_in_progress = !_send_que.empty();
+    _send_que.push(std::make_shared<SendNode>(return_str.c_str(),
+        static_cast<short>(return_str.length()), ID_NOTIFY_OFF_LINE_REQ));
+    _close_after_send = true;
+    if (!write_in_progress) {
+        auto &msgnode = _send_que.front();
+        boost::asio::async_write(_socket, boost::asio::buffer(msgnode->_data, msgnode->_total_len),
+            std::bind(&CSession::HandleWrite, this, std::placeholders::_1, SharedSelf()));
+    }
 	return;
 }
