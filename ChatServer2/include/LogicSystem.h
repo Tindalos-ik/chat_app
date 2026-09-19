@@ -31,6 +31,8 @@ public:
 
     void PostMsgToQue(std::shared_ptr<LogicNode> msg); // 会话层投递消息到队列
     void SetServer(std::shared_ptr<CServer> pserver);  // 保存服务器指针（后续多会话操作使用）
+    // 主程序退出时先停止业务线程，随后才能释放它持有的 CServer。
+    void Stop();
 
 private:
     LogicSystem();

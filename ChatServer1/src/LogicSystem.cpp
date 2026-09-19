@@ -18,12 +18,21 @@ LogicSystem::LogicSystem() : _b_stop(false), _p_server(nullptr) {
 }
 
 LogicSystem::~LogicSystem() {
+    Stop();
+}
+
+void LogicSystem::Stop() {
     {
         std::lock_guard<std::mutex> lock(_mutex);
+        if (_b_stop) {
+            return;
+        }
         _b_stop = true; // 和队列消费线程使用同一把锁保护停止标志
     }
-    _consume.notify_one(); // 唤醒工作线程，让它处理完剩余消息后退出
-    _worker_thread.join();
+    _consume.notify_all(); // 唤醒工作线程，让它处理完剩余消息后退出
+    if (_worker_thread.joinable()) {
+        _worker_thread.join();
+    }
 }
 
 // 会话层把解析好的消息投递到队列，并唤醒工作线程

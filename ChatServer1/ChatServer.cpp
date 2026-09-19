@@ -39,10 +39,18 @@ int main(){
         builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
         builder.RegisterService(&service);
         service.RegisterServer(server);
+        // CServer 已由 shared_ptr 管理，此时才能安全注册只持有 weak_ptr 的异步回调。
+        server->Start();
         // 构建并启动grpc服务器
         std::unique_ptr<grpc::Server> grpc_server(builder.BuildAndStart());
         if (!grpc_server) {
             std::cerr << "rpc server start failed on " << server_address << std::endl;
+            // 启动失败同样要在 io_context 销毁前解除所有 server 所有者。
+            server->Stop();
+            service.RegisterServer(nullptr);
+            LogicSystem::GetInstance()->Stop();
+            LogicSystem::GetInstance()->SetServer(nullptr);
+            server.reset();
             return 1;
         }
         std::cout << "rpc server listening on " << server_address << std::endl;
@@ -52,7 +60,9 @@ int main(){
             grpc_server->Wait();
         });
         boost::asio::signal_set signals(io_context, SIGINT, SIGTERM); //定义信号集跑在主线程上，捕捉退出信号，实现优雅退出
-        signals.async_wait([&io_context, pool, &grpc_server](auto,auto){
+        signals.async_wait([&io_context, pool, &grpc_server, server](auto,auto){
+            // 先取消主 io_context 上的 accept/timer，禁止退出过程中重新注册回调。
+            server->Stop();
             io_context.stop();
             pool->Stop(); //其实析构也会调用Stop，这里只是保险起见
             grpc_server->Shutdown(); //关闭grpc服务器
@@ -62,6 +72,13 @@ int main(){
 
         RedisMgr::GetInstance()->HDel(LOGIN_COUNT, server_name); //删除redis中的登录数量
         grpc_server_thread.join(); //等待grpc线程退出
+
+        // 按依赖反序释放：先保证不会再执行业务/RPC，再释放所有持有 server 的 shared_ptr。
+        // server 在 io_context 离开作用域前析构，timer/acceptor 的执行器始终有效。
+        LogicSystem::GetInstance()->Stop();
+        service.RegisterServer(nullptr);
+        LogicSystem::GetInstance()->SetServer(nullptr);
+        server.reset();
 
 
     }catch (std::exception& e){

@@ -27,7 +27,7 @@ static std::string generate_uuid() {
     return ss.str();
 }
 
-CSession::CSession(boost::asio::io_context &io_context, CServer *server)
+CSession::CSession(boost::asio::io_context &io_context, std::weak_ptr<CServer> server)
     : _socket(io_context), _server(server), _b_close(false), _close_after_send(false),
       _disconnect_handled(false), _user_uid(0) {
     _session_id = generate_uuid(); // 每个会话分配一个唯一id，服务器用它管理会话
@@ -135,8 +135,9 @@ void CSession::HandleDisconnect() {
 
     // 本地资源不依赖 Redis，优先释放；CServer::ClearSession 本身也是幂等的。
     Close();
-    if (_server != nullptr) {
-        _server->ClearSession(_session_id);
+    if (auto server = _server.lock()) {
+        // 服务器析构后 weak_ptr 会失效；此时析构流程已经清空会话表，无需再访问悬空对象。
+        server->ClearSession(_session_id);
     }
 
     if (_user_uid == 0) {

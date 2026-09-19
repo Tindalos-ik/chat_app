@@ -15,32 +15,68 @@ CServer::CServer(boost::asio::io_context &io_context, short port)
       _acceptor(io_context, tcp::endpoint(tcp::v4(), port)),
       _timer(io_context, std::chrono::seconds(HEARTBEAT_CHECK_INTERVAL)) {
     std::cout << "Server start success, listen on port : " << _port << std::endl;
-    _timer.async_wait([this](const boost::system::error_code &error){
-        on_timer(error);
-    });
-    StartAccept(); // 构造完成即开始监听
 }
 
 CServer::~CServer() {
     std::cout << "Server destruct, listen on port : " << _port << std::endl;
+    Stop();
     // 服务器析构时清空会话容器，会话对象由各自所在的IO线程持有引用
     std::lock_guard<std::mutex> lock(_mutex);
     _sessions.clear();
+}
+
+void CServer::Start() {
+    if (_started.exchange(true)) {
+        return;
+    }
+
+    _stopping.store(false);
+    StartAccept();
+    StartHeartbeatTimer();
+}
+
+void CServer::Stop() {
+    if (_stopping.exchange(true)) {
+        return;
+    }
+
+    // cancel 后回调仍可能被 io_context 调度，因此回调必须只捕获 weak_ptr。
+    // 不在这里持有 _mutex 做断线清理，避免与异步回调的 ClearSession 形成锁重入。
+    boost::system::error_code ec;
+    _timer.cancel(ec);
+    _acceptor.cancel(ec);
+    _acceptor.close(ec);
 }
 
 // 发起一次异步接受：
 // 先从IO线程池轮询取出一个 io_context 创建会话（该会话后续的所有读写都跑在这个IO线程上），
 // 再让 acceptor 在主 io_context 上异步接受新连接，socket 交给会话保管。
 void CServer::StartAccept() {
+    if (_stopping.load()) {
+        return;
+    }
+
     auto &io_context = AsioIOServicePool::GetInstance()->GetIOService();
-    std::shared_ptr<CSession> new_session = std::make_shared<CSession>(io_context, this);
+    // weak_ptr 不增加 CServer 引用计数；会话不会因为保存“所属服务器”而阻止服务器退出。
+    std::shared_ptr<CSession> new_session = std::make_shared<CSession>(io_context, weak_from_this());
+    std::weak_ptr<CServer> weak_server = weak_from_this();
     _acceptor.async_accept(new_session->GetSocket(),
-        std::bind(&CServer::HandleAccept, this, new_session, std::placeholders::_1));
+        [weak_server, new_session](const boost::system::error_code& error) {
+            // lock 成功时临时持有服务器，保证本次 HandleAccept 执行期间对象不会析构。
+            // lock 失败说明服务器已释放，取消回调无需再做任何访问。
+            if (auto server = weak_server.lock()) {
+                server->HandleAccept(new_session, error);
+            }
+        });
 }
 
 // 接受连接回调：error 为空表示成功接入一个新连接
 void CServer::HandleAccept(std::shared_ptr<CSession> new_session,
                            const boost::system::error_code &error) {
+    if (_stopping.load()) {
+        return;
+    }
+
     if (!error) {
         // 先登记，再启动异步读取；否则读错误可能先清理、随后又把失效连接插回 map。
         {
@@ -51,8 +87,23 @@ void CServer::HandleAccept(std::shared_ptr<CSession> new_session,
     } else {
         std::cout << "session accept failed, error is " << error.message() << std::endl;
     }
-    // 无论成功失败都继续接受下一个连接（长连接服务器，循环监听）
+    // 仅运行中的服务器继续接受下一个连接；Stop 后不能重新注册回调。
     StartAccept();
+}
+
+void CServer::StartHeartbeatTimer() {
+    if (_stopping.load()) {
+        return;
+    }
+
+    _timer.expires_after(std::chrono::seconds(HEARTBEAT_CHECK_INTERVAL));
+    std::weak_ptr<CServer> weak_server = weak_from_this();
+    _timer.async_wait([weak_server](const boost::system::error_code& error) {
+        // 定时器取消后的 operation_aborted 回调也会先经过 lock，避免裸 this 悬空。
+        if (auto server = weak_server.lock()) {
+            server->on_timer(error);
+        }
+    });
 }
 
 // 会话断开/异常时调用：从 map 中移除会话，并把本服务器在线人数减一
@@ -80,7 +131,7 @@ void CServer::ClearSession(std::string session_id) {
 
 void CServer::on_timer(const boost::system::error_code &error)
 {
-    if (error == boost::asio::error::operation_aborted) {
+    if (error == boost::asio::error::operation_aborted || _stopping.load()) {
         return;
     }
 
@@ -107,8 +158,5 @@ void CServer::on_timer(const boost::system::error_code &error)
         });
     }
 
-    _timer.expires_after(std::chrono::seconds(HEARTBEAT_CHECK_INTERVAL));
-    _timer.async_wait([this](const boost::system::error_code &timer_error) {
-        on_timer(timer_error);
-    });
+    StartHeartbeatTimer();
 }

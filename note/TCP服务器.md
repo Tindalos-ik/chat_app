@@ -46,7 +46,9 @@ int main() {
             pool->Stop();        // 停 IO 线程池（join 所有线程）
         });
 
-        CServer server(io_context, std::stoi(config["SelfServer"]["port"]));
+        auto server = std::make_shared<CServer>(
+            io_context, std::stoi(config["SelfServer"]["port"]));
+        server->Start(); // 必须在 shared_ptr 接管后注册异步回调
         io_context.run();        // 主线程阻塞在这里，等待连接或退出信号
     } catch (std::exception& e) {
         std::cout << "Exception : " << e.what() << std::endl;
@@ -64,10 +66,15 @@ int main() {
 void CServer::StartAccept() {
     // 从线程池轮询取一个 io_context 创建会话（该连接的读写都绑定到这个线程）
     auto& io_context = AsioIOServicePool::GetInstance()->GetIOService();
-    std::shared_ptr<CSession> new_session = std::make_shared<CSession>(io_context, this);
+    auto new_session = std::make_shared<CSession>(io_context, weak_from_this());
+    std::weak_ptr<CServer> weak_server = weak_from_this();
     // 在主 io_context 上异步接受，把 socket 交给会话保管
     _acceptor.async_accept(new_session->GetSocket(),
-        std::bind(&CServer::HandleAccept, this, new_session, std::placeholders::_1));
+        [weak_server, new_session](const boost::system::error_code& error) {
+            if (auto server = weak_server.lock()) {
+                server->HandleAccept(new_session, error);
+            }
+        });
 }
 
 void CServer::HandleAccept(std::shared_ptr<CSession> new_session,
@@ -84,8 +91,9 @@ void CServer::HandleAccept(std::shared_ptr<CSession> new_session,
 ```
 
 - `_sessions`：`map<session_id, shared_ptr<CSession>>`，用互斥锁保护（accept 回调在主线程，清理在 IO 线程）。
-- 会话断开时调用 `ClearSession(session_id)` 从 map 移除，`shared_ptr` 归零后自动析构。
+- 会话断开时调用 `ClearSession(session_id)` 从 map 移除；仍在执行的读写回调可以继续持有 Session，回调结束后才析构。
 - `_io_context` 引用由 `CServer` 持有，并用于驱动 `steady_timer`：每 10 秒扫描一次心跳超时会话。
+- `CServer::Start()` 和 `Stop()` 分别注册、取消 accept/timer；回调捕获 `weak_ptr<CServer>`，不使用裸 `this`。
 
 ---
 
@@ -413,7 +421,7 @@ _fun_callbacks[MSG_CHAT_LOGIN] = std::bind(&LogicSystem::LoginHandler, this,
 ### 9.1 生命周期
 
 - 连接接入：`CServer::HandleAccept` 把 `shared_ptr<CSession>` 存进 `_sessions`；
-- 连接断开：会话回调里 `Close()` → `_server->ClearSession(session_id)` 移除 map 条目；
+- 连接断开：会话回调里 `Close()` 后先锁定 `_server` 的弱引用，再调用 `ClearSession(session_id)` 移除 map 条目；
 - 最后一个 `shared_ptr` 消失时 `~CSession()` 自动执行。
 
 ### 9.2 为什么用 enable_shared_from_this
@@ -460,7 +468,7 @@ void CSession::HandleDisconnect() {
 6. **发送队列**：同一 socket 同时只允许一个 `async_write`，消息用 `SendNode` 预先拼好整包再写出。
 7. **接收队列**：网络层与业务层通过 `condition_variable + mutex` 队列解耦，业务单线程消费。
 8. **线程安全**：`_sessions`、`_send_que`、`_msg_que` 各自的互斥锁各管各的，避免共享数据无保护。
-9. **对象存活**：所有异步回调都要持有 `shared_from_this()`，防止会话被提前析构。
+9. **对象存活**：会话读写回调持有 `shared_from_this()`；CServer 的 timer/accept 回调持有 `weak_ptr<CServer>`，停止或析构后不会访问悬空服务器对象。完整退出顺序见 [异常处理.md](异常处理.md)。
 10. **会话保活**：`CSession` 对每个完整合法 TCP 包刷新原子化活跃时间，`1023` 在会话层直回 `1024`，`CServer::steady_timer` 每 10 秒检查一次并通过 `HandleDisconnect()` 清理 60 秒无活动会话；路由租约、自动重连和断点续传仍是后续方向。
 
 ---

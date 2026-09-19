@@ -28,7 +28,7 @@ using boost::asio::ip::tcp;
  */
 class CSession : public std::enable_shared_from_this<CSession> {
 public:
-    CSession(boost::asio::io_context& io_context, CServer* server);
+    CSession(boost::asio::io_context& io_context, std::weak_ptr<CServer> server);
     ~CSession();
 
     tcp::socket& GetSocket();        // 供 acceptor 把新连接绑定到本会话
@@ -61,7 +61,7 @@ private:
 
     tcp::socket _socket;              // 会话对应的socket
     std::string _session_id;          // 会话唯一标识（uuid字符串）
-    CServer* _server;                 // 所属服务器指针（用于清除会话等）
+    std::weak_ptr<CServer> _server;   // 不延长服务器生命周期；回调中 lock 后才能使用
     bool _b_close;                    // 连接是否已关闭
     char _data[MAX_LENGTH];           // 收发共用的缓冲区（直接用数组，避免手动new/delete导致泄漏）
 
