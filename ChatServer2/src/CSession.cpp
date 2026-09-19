@@ -28,7 +28,8 @@ static std::string generate_uuid() {
 }
 
 CSession::CSession(boost::asio::io_context &io_context, CServer *server)
-    : _socket(io_context), _server(server), _b_close(false), _close_after_send(false), _user_uid(0) {
+    : _socket(io_context), _server(server), _b_close(false), _close_after_send(false),
+      _disconnect_handled(false), _user_uid(0) {
     _session_id = generate_uuid(); // 每个会话分配一个唯一id，服务器用它管理会话
     _recv_head_node = std::make_shared<MsgNode>(HEAD_TOTAL_LEN); // 包头固定4字节
     std::cout << "session created, id = " << _session_id << std::endl;
@@ -56,6 +57,8 @@ int CSession::GetUserId() {
 
 // 连接建立后开始接收数据：先读4字节包头
 void CSession::Start() {
+    // Session 在等待 accept 前就已构造，超时计时应从真正接入时开始。
+    UpdateHeartbeat();
     ReadHead(HEAD_TOTAL_LEN);
 }
 
@@ -116,6 +119,59 @@ void CSession::Close() {
     _socket.close(ec); // 重复close不会抛异常，安全
 }
 
+// 统一断线清理入口，读写错误、协议异常和踢人通知发送完成都走这里。
+// 清理顺序：
+// 1. 原子标记保证多个异步回调同时报错时只清理一次，避免在线数重复减一；
+// 2. 关闭 socket，并先注销本机 _sessions、UserMgr 和在线人数；
+// 3. 已登录用户再获取登录锁，串行化“旧连接断开”和“同账号新连接登录”；
+// 4. 只有 Redis 中的 session_id 仍属于本连接时才删除在线路由，避免误删新连接。
+// Redis 或分布式锁暂时不可用时只影响远端路由清理，不得阻断本机会话注销。
+void CSession::HandleDisconnect() {
+    // close() 会令尚未完成的读写回调也收到错误，因此这里必须是幂等入口。
+    if (_disconnect_handled.exchange(true)) {
+        return;
+    }
+
+    // 本地资源不依赖 Redis，优先释放；CServer::ClearSession 本身也是幂等的。
+    Close();
+    if (_server != nullptr) {
+        _server->ClearSession(_session_id);
+    }
+
+    if (_user_uid == 0) {
+        return; // 尚未登录的连接没有 Redis 在线路由
+    }
+
+    // 使用与登录流程相同的用户级分布式锁，避免断线清理和新登录并发改写路由。
+    const auto uid_str = std::to_string(_user_uid);
+    const auto lock_key = LOGIN_LOCK_PREFIX + uid_str;
+    auto lock_result = RedisMgr::GetInstance()->acquireLock(
+        lock_key, LOCK_TIME_OUT, ACQUIRE_TIME_OUT);
+    if (lock_result.result != RedisLockResult::Acquired) {
+        std::cout << "cleanup session failed to acquire login lock, uid = "
+                  << _user_uid << ", session = " << _session_id << std::endl;
+        return;
+    }
+
+    // 无论后续 Get/Del 是否成功，离开作用域时都释放本次持有的登录锁。
+    const auto identifier = lock_result.identifier;
+    Defer defer([identifier, lock_key]() {
+        RedisMgr::GetInstance()->releaseLock(lock_key, identifier);
+    });
+
+    std::string redis_session_id;
+    const bool found = RedisMgr::GetInstance()->Get(
+        USER_SESSION_PREFIX + uid_str, redis_session_id);
+    if (!found || redis_session_id != _session_id) {
+        // ID 不一致说明同一 uid 已经建立了新会话，旧连接只能清理自己，不能动新路由。
+        return;
+    }
+
+    // 两个 key 都由当前会话创建：一个记录 session，一个记录用户所在的 ChatServer。
+    RedisMgr::GetInstance()->Del(USER_SESSION_PREFIX + uid_str);
+    RedisMgr::GetInstance()->Del(USERIPPREFIX + uid_str);
+}
+
 std::shared_ptr<CSession> CSession::SharedSelf() {
     return shared_from_this();
 }
@@ -137,12 +193,11 @@ void CSession::HandleWrite(const boost::system::error_code &error, std::shared_p
                 }
             }
             if (should_close) {
-                Close();
+                HandleDisconnect();
             }
         } else {
             std::cout << "handle write failed, error is " << error.message() << endl;
-            Close();
-            _server->ClearSession(_session_id); // 发送失败说明连接已不可用，清理会话
+            HandleDisconnect();
         }
     } catch (std::exception &e) {
         std::cerr << "Exception code : " << e.what() << endl;
@@ -156,43 +211,13 @@ void CSession::ReadHead(int head_len) {
         try {
             if (ec) {
                 std::cout << "handle read failed, error is " << ec.message() << endl;
-                Close();
-                
-                // 加锁清除session
-                auto uid_str = std::to_string(_user_uid);
-                auto lock_key = LOGIN_LOCK_PREFIX + uid_str;
-                auto lock_result = RedisMgr::GetInstance()->acquireLock(lock_key, LOCK_TIME_OUT, ACQUIRE_TIME_OUT);
-
-                if(lock_result.result != RedisLockResult::Acquired){
-                    return;
-                }
-
-                auto identifier = lock_result.identifier;
-                Defer defer([identifier, lock_key, self, this]() { 
-                    RedisMgr::GetInstance()->releaseLock(lock_key, identifier); 
-                });
-
-                std::string redis_session_id;
-                auto bsuccess = RedisMgr::GetInstance()->Get(USER_SESSION_PREFIX + uid_str, redis_session_id);
-                if(!bsuccess) return;
-                
-                if(redis_session_id != _session_id){
-                    // 服务器异地登录
-                    return;
-                }
-
-                // 清除用户登录信息和ip信息
-                RedisMgr::GetInstance()->Del(USER_SESSION_PREFIX + uid_str);
-                RedisMgr::GetInstance()->Del(USERIPPREFIX + uid_str);
-
-                _server->ClearSession(_session_id);
+                HandleDisconnect();
                 return;
             }
             if (bytes_transfered < HEAD_TOTAL_LEN) {
                 std::cout << "read length not match, read [" << bytes_transfered << "] , total ["
                           << HEAD_TOTAL_LEN << "]" << endl;
-                Close();
-                _server->ClearSession(_session_id);
+                HandleDisconnect();
                 return;
             }
 
@@ -212,8 +237,7 @@ void CSession::ReadHead(int head_len) {
             // 非法长度直接断开，防止恶意包导致内存越界
             if (msg_id <= 0 || msg_id > MAX_LENGTH || msg_len <= 0 || msg_len > MAX_LENGTH) {
                 std::cout << "invalid msg id [" << msg_id << "] or length [" << msg_len << "]" << endl;
-                Close();
-                _server->ClearSession(_session_id);
+                HandleDisconnect();
                 return;
             }
 
@@ -222,8 +246,7 @@ void CSession::ReadHead(int head_len) {
             ReadBody(msg_len);
         } catch (std::exception &e) {
             std::cout << "read head exception : " << e.what() << endl;
-            Close();
-            _server->ClearSession(_session_id);
+            HandleDisconnect();
         }
     });
 }
@@ -235,43 +258,13 @@ void CSession::ReadBody(int body_len) {
         try {
             if (ec) {
                 std::cout << "handle read failed, error is " << ec.message() << endl;
-                Close();
-
-                // 加锁清除session
-                auto uid_str = std::to_string(_user_uid);
-                auto lock_key = LOGIN_LOCK_PREFIX + uid_str;
-                auto lock_result = RedisMgr::GetInstance()->acquireLock(lock_key, LOCK_TIME_OUT, ACQUIRE_TIME_OUT);
-
-                if(lock_result.result != RedisLockResult::Acquired){
-                    return;
-                }
-
-                auto identifier = lock_result.identifier;
-                Defer defer([identifier, lock_key, self, this]() { 
-                    RedisMgr::GetInstance()->releaseLock(lock_key, identifier); 
-                });
-
-                std::string redis_session_id;
-                auto bsuccess = RedisMgr::GetInstance()->Get(USER_SESSION_PREFIX + uid_str, redis_session_id);
-                if(!bsuccess) return;
-                
-                if(redis_session_id != _session_id){
-                    // 服务器异地登录
-                    return;
-                }
-
-                // 清除用户登录信息和ip信息
-                RedisMgr::GetInstance()->Del(USER_SESSION_PREFIX + uid_str);
-                RedisMgr::GetInstance()->Del(USERIPPREFIX + uid_str);
-
-                _server->ClearSession(_session_id);
+                HandleDisconnect();
                 return;
             }
             if (bytes_transfered < static_cast<std::size_t>(body_len)) {
                 std::cout << "read length not match, read [" << bytes_transfered << "] , total ["
                           << body_len << "]" << endl;
-                Close();
-                _server->ClearSession(_session_id);
+                HandleDisconnect();
                 return;
             }
 
@@ -281,6 +274,31 @@ void CSession::ReadBody(int body_len) {
             _recv_msg_node->_data[_recv_msg_node->_total_len] = '\0';
             std::cout << "receive data is " << _recv_msg_node->_data << endl;
 
+            // 心跳属于传输层控制帧，不进入单线程 LogicSystem 队列。
+            // 身份认证仍由登录流程负责；这里仅检测连接是否能收发数据。
+            if (_recv_msg_node->GetMsgId() == ID_HEART_BEAT_REQ) {
+                Json::CharReaderBuilder reader;
+                Json::Value request;
+                std::string errors;
+                std::istringstream body(std::string(_recv_msg_node->_data, body_len));
+                if (!Json::parseFromStream(reader, body, &request, &errors) || !request.isObject()) {
+                    // 错误心跳不续期，沿用协议异常的统一清理路径。
+                    HandleDisconnect();
+                    return;
+                }
+                UpdateHeartbeat();
+                Json::Value heartbeat_rsp;
+                heartbeat_rsp["error"] = ErrorCode::Success;
+                heartbeat_rsp["server_time"] = Json::Int64(std::time(nullptr));
+                Send(heartbeat_rsp.toStyledString(), ID_HEARTBEAT_RSP);
+                ReadHead(HEAD_TOTAL_LEN);
+                return;
+            }
+
+            // 业务帧读满也说明传输仍然活跃；业务 JSON 与权限仍由 LogicSystem 校验。
+            // 半包和零散字节不续期，避免对端只发几个字节就无限占用连接。
+            UpdateHeartbeat();
+
             // 封装成逻辑节点投递给逻辑层处理（登录校验、聊天转发等）
             LogicSystem::GetInstance()->PostMsgToQue(
                 std::make_shared<LogicNode>(shared_from_this(), _recv_msg_node));
@@ -289,8 +307,7 @@ void CSession::ReadBody(int body_len) {
             ReadHead(HEAD_TOTAL_LEN);
         } catch (std::exception &e) {
             std::cout << "read body exception : " << e.what() << endl;
-            Close();
-            _server->ClearSession(_session_id);
+            HandleDisconnect();
         }
     });
 }
@@ -348,4 +365,15 @@ void CSession::NotifyOffline(){
             std::bind(&CSession::HandleWrite, this, std::placeholders::_1, SharedSelf()));
     }
 	return;
+}
+
+bool CSession::isHeartbeatExpired() const {
+    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    return now - _last_heartbeat.load() >= HEARTBEAT_TIMEOUT * 1000LL;
+}
+
+void CSession::UpdateHeartbeat(){
+    _last_heartbeat.store(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
 }

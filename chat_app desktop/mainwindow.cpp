@@ -52,6 +52,17 @@ void MainWindow::SlotOffline()
 void MainWindow::SlotConnectionLost()
 {
     QMessageBox::warning(this, "连接断开", "与聊天服务器的连接已断开，请重新登录。");
+    _login_dlg->showtip(tr("与服务器连接断开，请重新登录"), "err");
+    TcpMgr::GetInstance()->CloseConnection();
+    SlotSwitchLogin();
+}
+
+void MainWindow::SlotHeartbeatTimeout()
+{
+    // 与普通 socket 断开分开提示，让用户明确知道连接是因长期收不到心跳回复而关闭。
+    QMessageBox::warning(this, tr("心跳超时"),
+                         tr("长时间未收到聊天服务器的心跳回复，连接已断开，请重新登录。"));
+    _login_dlg->showtip(tr("心跳超时，请重新登录"), "err");
     TcpMgr::GetInstance()->CloseConnection();
     SlotSwitchLogin();
 }
@@ -106,6 +117,8 @@ MainWindow::MainWindow(QWidget *parent)
     connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_off_line, this, &MainWindow::SlotOffline);
     connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_connection_lost,
             this, &MainWindow::SlotConnectionLost);
+    connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_heartbeat_timeout,
+            this, &MainWindow::SlotHeartbeatTimeout);
 
 }
 

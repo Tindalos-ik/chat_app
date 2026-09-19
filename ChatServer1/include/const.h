@@ -92,6 +92,11 @@ enum MSG_IDS {
 #define USER_SESSION_PREFIX "usession_"
 #define LOCK_COUNT "lockcount"
 
+// 会话在该时间内没有收到任何完整 TCP 包，就被认为已失联。
+#define HEARTBEAT_TIMEOUT 60
+// CServer 定时扫描间隔；正常调度下额外等待约不超过该值，线程阻塞时可能更久。
+#define HEARTBEAT_CHECK_INTERVAL 10
+
 // 持有锁最大时间，防止死锁
 const auto LOCK_TIME_OUT = std::chrono::seconds(10);
 // 分布式锁最大等待时间

@@ -4,13 +4,21 @@
 #include "UserMgr.h"
 #include "RedisMgr.h"
 #include "ConfigMgr.h"
+#include <chrono>
+#include <ctime>
+#include <vector>
 
 using boost::asio::ip::tcp;
 
 CServer::CServer(boost::asio::io_context &io_context, short port)
     : _io_context(io_context), _port(port),
-      _acceptor(io_context, tcp::endpoint(tcp::v4(), port)) {
+      _acceptor(io_context, tcp::endpoint(tcp::v4(), port)),
+      _timer(io_context, std::chrono::seconds(HEARTBEAT_CHECK_INTERVAL))
+{
     std::cout << "Server start success, listen on port : " << _port << std::endl;
+    _timer.async_wait([this](const boost::system::error_code &error){
+        on_timer(error);
+    }); // 启动首次超时检查；回调末尾会重新设置定时器
     StartAccept(); // 构造完成即开始监听
 }
 
@@ -35,11 +43,12 @@ void CServer::StartAccept() {
 void CServer::HandleAccept(std::shared_ptr<CSession> new_session,
                            const boost::system::error_code &error) {
     if (!error) {
-        // 让会话开始接收数据（先读包头）
+        // 先登记，再启动异步读取；否则读错误可能先清理、随后又把失效连接插回 map。
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            _sessions.insert(std::make_pair(new_session->GetSessionId(), new_session));
+        }
         new_session->Start();
-        // 把会话登记到map中，维持其生命周期，防止被提前析构
-        std::lock_guard<std::mutex> lock(_mutex);
-        _sessions.insert(std::make_pair(new_session->GetSessionId(), new_session));
     } else {
         std::cout << "session accept failed, error is " << error.message() << std::endl;
     }
@@ -68,4 +77,43 @@ void CServer::ClearSession(std::string session_id) {
         auto server_name = ConfigMgr::Inst()["SelfChatServer"]["name"];
         RedisMgr::GetInstance()->HIncrBy(LOGIN_COUNT, server_name, -1);
     }
+}
+
+
+void CServer::on_timer(const boost::system::error_code &error)
+{
+    if (error == boost::asio::error::operation_aborted) {
+        return;
+    }
+
+    // 锁内只筛选并保存 shared_ptr，既保护 _sessions，也保证锁外清理期间对象仍然存活。
+    // 收集过期信息，尽量避免加线程锁和分布式锁，容易导致死锁
+    std::vector<std::shared_ptr<CSession>> expired_sessions;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        for (const auto &entry : _sessions) {
+            if (entry.second->isHeartbeatExpired()) {
+                expired_sessions.push_back(entry.second);
+            }
+        }
+    }
+
+    // 不能持有 _mutex 调用 HandleDisconnect，它会通过 ClearSession 再次获取该锁，导致死锁
+    for (const auto &session : expired_sessions) {
+        // 投递到会话自己的 I/O 线程，并重新检查：从扫描到执行之间可能刚收到心跳。
+        // 主 accept/timer 线程不在此同步等待 Redis 登录锁。
+        boost::asio::post(session->GetSocket().get_executor(), [session] {
+            if (session->isHeartbeatExpired()) {
+                std::cout << "session heartbeat timeout, session_id = "
+                          << session->GetSessionId() << std::endl;
+                session->HandleDisconnect();
+            }
+        });
+    }
+
+    // steady_timer 的一次 async_wait 只触发一次，必须重新设置才能形成周期检测。
+    _timer.expires_after(std::chrono::seconds(HEARTBEAT_CHECK_INTERVAL));
+    _timer.async_wait([this](const boost::system::error_code &timer_error) {
+        on_timer(timer_error);
+    });
 }

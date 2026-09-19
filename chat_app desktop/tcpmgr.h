@@ -13,6 +13,8 @@
 #include <functional>
 #include <QObject>
 #include <QMap>
+#include <QElapsedTimer>
+#include <QTimer>
 #include "global.h"
 #include "userdata.h"
 
@@ -32,6 +34,9 @@ private:
 
     void initHandlers();
     void initSigAndSlot();
+    void StartHeartbeat(); // TCP 登录成功后开始周期性发送 1023
+    void StopHeartbeat();  // 断开或主动关闭时停止定时器并清空等待状态
+    void SendHeartbeat();  // 定时器回调：检测上次 1024，随后发送新的 1023
     QMap<ReqId, std::function<void(ReqId id, int len, QByteArray data)>> _handler; //消息id对应的回调函数
 
     QTcpSocket* _socket; //客户端这边只需要一个socket就可以了，很简单
@@ -43,6 +48,8 @@ private:
     bool _disconnect_notified; // 一次连接只通知一次下线/断线，避免重复弹窗
     quint16 _message_id; //消息 ID，标识消息的类型，比如是登录回包，
     quint16 _message_len;
+    QTimer* _heartbeat_timer;             // 客户端心跳发送与超时检查定时器
+    QElapsedTimer _last_heartbeat_rsp;    // 最近一次收到有效 1024 的本地单调时间
 
 public slots:
     void slot_tcp_connect(ServerInfo);
@@ -59,6 +66,7 @@ signals:
     void sig_text_chat(std::shared_ptr<TextChatData>&); // 收到对方推送的文本消息
     void sig_off_line();
     void sig_connection_lost(); // 已登录连接被服务端关闭，但未完整收到踢人通知
+    void sig_heartbeat_timeout(); // 60 秒未收到有效心跳回复，交给主窗口显示专用提示
 };
 
 #endif // TCPMGR_H

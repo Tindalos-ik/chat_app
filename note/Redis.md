@@ -42,7 +42,7 @@ value = <登录 token>
 之后客户端携带 `uid + token` 连接 ChatServer；ChatServer 再通过 gRPC 调用 StatusServer 校验。
 StatusServer 和 ChatServer 都读取同一个 key，所以 token 不需要在两个服务间额外同步。
 
-当前实现的 `RedisMgr::Set()` 没有给 `utoken_<uid>` 设置 TTL。这对教学联调足够，但生产环境应让 token
+`RedisMgr::Set()` 没有给 `utoken_<uid>` 设置 TTL。这对教学联调足够，但生产环境应让 token
 带过期时间，并在校验成功后按业务策略轮换或删除，避免 Redis 长期积累旧 token。
 
 ## 3. 服务负载：StatusServer 选择较空闲的 ChatServer

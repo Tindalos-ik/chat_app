@@ -48,6 +48,7 @@ public:
     // max_len: 消息体长度；msg_id: 消息id（由包头解析出来）
     RecvNode(short max_len, short msg_id) : MsgNode(max_len), _msg_id(msg_id) {
     }
+    short GetMsgId() const { return _msg_id; } // 会话层识别心跳控制帧，只读访问消息 ID
 private:
     short _msg_id; // 消息id，逻辑层根据它找到对应的处理函数
 };

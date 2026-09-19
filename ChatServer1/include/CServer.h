@@ -22,6 +22,8 @@ public:
 
     void ClearSession(std::string session_id); // 会话断开/异常时从 map 中移除并销毁
 
+    void on_timer(const boost::system::error_code& error); // 定时器回调，通过统一断线入口清理超时连接
+
 private:
     void StartAccept();   // 发起一次异步接受连接
     void HandleAccept(std::shared_ptr<CSession> new_session,
@@ -33,6 +35,8 @@ private:
 
     std::map<std::string, std::shared_ptr<CSession>> _sessions; // session_id -> 会话
     std::mutex _mutex; // 保护 _sessions 的线程安全（接受回调在主线程，清理在IO线程）
+
+    boost::asio::steady_timer _timer; // 定时器，用于检测空闲连接，让它跑在主 io_context 上
 };
 
 #endif // CSERVER_H

@@ -85,7 +85,7 @@ void CServer::HandleAccept(std::shared_ptr<CSession> new_session,
 
 - `_sessions`：`map<session_id, shared_ptr<CSession>>`，用互斥锁保护（accept 回调在主线程，清理在 IO 线程）。
 - 会话断开时调用 `ClearSession(session_id)` 从 map 移除，`shared_ptr` 归零后自动析构。
-- `_io_context` 引用保留下来，后续做心跳定时器（`steady_timer`）时会用到。
+- `_io_context` 引用由 `CServer` 持有，并用于驱动 `steady_timer`：每 10 秒扫描一次心跳超时会话。
 
 ---
 
@@ -432,15 +432,21 @@ void CSession::ReadHead(int head_len) {
 ### 9.3 关闭与清理
 
 ```cpp
-void CSession::Close() {
-    std::lock_guard<std::mutex> lock(_session_mtx);
-    _b_close = true;
-    boost::system::error_code ec;
-    _socket.close(ec);   // 关闭后，挂起的异步读写会以 error 回调结束
+void CSession::HandleDisconnect() {
+    if (_disconnect_handled.exchange(true)) {
+        return; // 多个异步回调可能同时报错，完整清理只能执行一次
+    }
+
+    Close();
+    _server->ClearSession(_session_id); // 清本地 map、UserMgr 和在线人数
+
+    // 已登录用户获取 login_lock_<uid>，且 Redis session_id 仍属于本连接时，
+    // 才删除 usession_<uid> 和 uip_<uid>，避免旧连接误删新登录。
 }
 ```
 
-关闭 socket 后，正在进行的 `async_read_some` / `async_write` 会立刻以错误码回调，从而触发 `ClearSession`，形成完整的清理链。
+读错误、写错误、非法协议包和心跳超时统一调用 `HandleDisconnect`。函数先清理本地状态，
+再尝试清理 Redis，因此分布式锁或 Redis 暂时不可用不会造成本机 Session 残留。
 
 ---
 
@@ -449,13 +455,13 @@ void CSession::Close() {
 1. **字节序**：包头里的 `msg_id`、`msg_len` 一律网络字节序，收发都要用 `host_to_network_short` / `network_to_host_short` 转换。
 2. **定长包头**：包头固定 4 字节是解决粘包的基础；先读满包头再读包体，两段都靠"循环读满"保证完整性。
 3. **长度校验**：`msg_len > MAX_LENGTH` 必须断开连接，这是防内存越界的最低要求。
-4. **错误分支要 return**：读包头/包体出错或数据不足时，`Close()` + `ClearSession()` 之后必须 `return`，否则会拿着不完整的数据继续解析。
+4. **错误分支要 return**：读包头/包体出错或数据不足时，调用 `HandleDisconnect()` 后必须 `return`，否则会拿着不完整的数据继续解析。
 5. **缓冲区**：`CSession` 直接用栈数组 `char _data[MAX_LENGTH]`，避免手动 `new/delete` 泄漏；`MsgNode` 构造多分配 1 字节存 `'\0'`，方便打印调试。
 6. **发送队列**：同一 socket 同时只允许一个 `async_write`，消息用 `SendNode` 预先拼好整包再写出。
 7. **接收队列**：网络层与业务层通过 `condition_variable + mutex` 队列解耦，业务单线程消费。
 8. **线程安全**：`_sessions`、`_send_que`、`_msg_que` 各自的互斥锁各管各的，避免共享数据无保护。
 9. **对象存活**：所有异步回调都要持有 `shared_from_this()`，防止会话被提前析构。
-10. **业务扩展状态**：token 校验后的 uid/session 绑定以及同服、跨服互踢已经接入；心跳检测（`steady_timer` + 最后活跃时间）、路由租约和断点续传仍是后续方向。
+10. **会话保活**：`CSession` 对每个完整合法 TCP 包刷新原子化活跃时间，`1023` 在会话层直回 `1024`，`CServer::steady_timer` 每 10 秒检查一次并通过 `HandleDisconnect()` 清理 60 秒无活动会话；路由租约、自动重连和断点续传仍是后续方向。
 
 ---
 

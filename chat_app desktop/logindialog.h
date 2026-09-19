@@ -24,6 +24,8 @@ public:
     explicit LoginDialog(QWidget *parent = nullptr);
     ~LoginDialog();
 
+    void showtip(QString str,QString state);
+
 private slots:
     void on_login_btn_clicked();
 
@@ -38,7 +40,6 @@ private:
 
     Ui::LoginDialog *ui;
 
-    void showtip(QString str,QString state);
 
     QMap<ReqId,std::function<void(const QJsonObject&)>> _handlers; //处理http回包逻辑
 

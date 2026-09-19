@@ -18,7 +18,10 @@ LogicSystem::LogicSystem() : _b_stop(false), _p_server(nullptr) {
 }
 
 LogicSystem::~LogicSystem() {
-    _b_stop = true;        // 置停止标志
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        _b_stop = true; // 和队列消费线程使用同一把锁保护停止标志
+    }
     _consume.notify_one(); // 唤醒工作线程，让它处理完剩余消息后退出
     _worker_thread.join();
 }
@@ -47,37 +50,29 @@ void LogicSystem::DealMsg() {
             _consume.wait(unique_lk);
         }
 
-        // 收到停止请求：把队列剩余消息处理完再退出
-        if (_b_stop) {
-            while (!_msg_que.empty()) {
-                auto msg_node = _msg_que.front();
-                auto call_back_iter = _fun_callbacks.find(msg_node->_recvnode->_msg_id);
-                if (call_back_iter != _fun_callbacks.end()) {
-                    call_back_iter->second(msg_node->_session, msg_node->_recvnode->_msg_id,
-                        std::string(msg_node->_recvnode->_data, msg_node->_recvnode->_cur_len));
-                }
-                _msg_que.pop();
-            }
+        // 停止时仍按正常路径排空已入队消息，空队列才退出。
+        if (_b_stop && _msg_que.empty()) {
             break;
         }
 
-        // 取出队首消息
+        // 锁只保护取消息；数据库/RPC 耗时期间不能阻塞 I/O 线程的 PostMsgToQue，
+        // 否则同一个 I/O 线程上的其他会话也无法继续读心跳。
         auto msg_node = _msg_que.front();
+        _msg_que.pop();
+        unique_lk.unlock();
         auto call_back_iter = _fun_callbacks.find(msg_node->_recvnode->_msg_id);
         if (call_back_iter == _fun_callbacks.end()) {
-            _msg_que.pop();
             std::cout << "msg id [" << msg_node->_recvnode->_msg_id << "] handler not found" << std::endl;
             continue;
         }
 
-        // 调用对应的处理函数（登录、搜索好友、聊天、心跳等）
+        // 单个 worker 仍按顺序处理业务；1023 心跳由 CSession 直接处理。
         call_back_iter->second(msg_node->_session, msg_node->_recvnode->_msg_id,
             std::string(msg_node->_recvnode->_data, msg_node->_recvnode->_cur_len));
-        _msg_que.pop();
     }
 }
 
-// 注册 消息id -> 处理函数 的映射 诸如 登录，搜索好友，聊天，心跳等服务都在这里注册
+// 注册登录、搜索好友、聊天等业务映射；1023 心跳在 CSession 中处理。
 void LogicSystem::RegisterCallBacks() {
     _fun_callbacks[MSG_CHAT_LOGIN] = [this](std::shared_ptr<CSession> session,
                                             const short &msg_id,
@@ -243,6 +238,9 @@ void LogicSystem::LoginHandler(std::shared_ptr<CSession> session, const short &m
                 }
                 // 通知客户端下线
                 old_session->NotifyOffline();
+                // 此处仅立即注销旧连接的本地映射和在线数，不能直接调用 HandleDisconnect：
+                // HandleDisconnect 会关闭 socket，可能导致刚入队的 1021 下线通知尚未写完就丢失。
+                // 发送队列排空后，HandleWrite 会调用 HandleDisconnect 完成 socket 和 Redis 清理。
                 _p_server->ClearSession(old_session->GetSessionId());
             }
         }else{

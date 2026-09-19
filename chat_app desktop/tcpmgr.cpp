@@ -3,9 +3,15 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
+#include <QDateTime>
 #include <limits>
 #include "usermgr.h"
 #include "userdata.h"
+
+namespace {
+constexpr int kHeartbeatIntervalMs = 20 * 1000;
+constexpr int kHeartbeatResponseTimeoutMs = 60 * 1000;
+}
 
 TcpMgr::~TcpMgr()
 {
@@ -19,6 +25,7 @@ bool TcpMgr::IsConnected() const
 
 void TcpMgr::CloseConnection()
 {
+    StopHeartbeat();
     if (_socket) {
         _socket->disconnect();
         _socket->abort();
@@ -37,7 +44,8 @@ void TcpMgr::CloseConnection()
 
 //Qt封装的是异步，我们要在构造函数里面完成各种信号的槽，保证服务的流程进行
 TcpMgr::TcpMgr() : _host(""), _port(0), _b_recy_pending(false), _logged_in(false),
-    _disconnect_notified(false), _message_id(0), _message_len(0)
+    _disconnect_notified(false), _message_id(0), _message_len(0),
+    _heartbeat_timer(new QTimer(this))
 {
     //连接服务器，在这里不好写第一个参数，我们去到LoginDialog里面写
     //connect(, &LoginDialog::sig_connect_tcp, this, &TcpMgr::slot_tcp_connect);
@@ -49,6 +57,12 @@ TcpMgr::TcpMgr() : _host(""), _port(0), _b_recy_pending(false), _logged_in(false
     //连接发送信号用来发送数据，在哪里发送信号呢？可以是对话框中点击发送消息信号，在很多地方都可以，我们设计好槽函数及参数就可以统一处理
     // 其他地方把数据传过来，这里发给服务器
     connect(this, &TcpMgr::sig_send_data, this, &TcpMgr::slot_send_data);
+
+    // 心跳仅在 TCP 登录成功后启动；定时器同时承担“发送下一次 ping”和“检查上次 pong”的职责。
+    _heartbeat_timer->setInterval(kHeartbeatIntervalMs);
+    connect(_heartbeat_timer, &QTimer::timeout, this, [this] {
+        SendHeartbeat();
+    });
 
     // 注册消息
     initHandlers();
@@ -132,6 +146,7 @@ void TcpMgr::initHandlers()
 
         _logged_in = true;
         _disconnect_notified = false;
+        StartHeartbeat();
         emit sig_switch_chatdlg();
     });
 
@@ -338,7 +353,24 @@ void TcpMgr::initHandlers()
         }
         _disconnect_notified = true;
         _logged_in = false;
+        StopHeartbeat(); // 弹窗可能进入嵌套事件循环，先停止，避免期间继续发送心跳。
         emit sig_off_line();
+    };
+
+    _handler[ID_HEARTBEAT_RSP] = [this](ReqId id, int len, QByteArray data){
+        Q_UNUSED(id);
+        Q_UNUSED(len);
+        const QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
+        if (!jsonDoc.isObject()
+            || jsonDoc.object().value("error").toInt(ErrorCodes::ERR_JSON) != ErrorCodes::SUCCESS) {
+            qWarning() << "invalid heartbeat response";
+            return;
+        }
+
+        // 只接受当前已登录连接的成功心跳回复，用单调时钟避免系统时间调整影响超时判断。
+        if (_logged_in) {
+            _last_heartbeat_rsp.restart();
+        }
     };
 
 }
@@ -356,6 +388,7 @@ void TcpMgr::initSigAndSlot()
         qWarning() << "disconnected from server:" << _socket->errorString();
         const bool should_notify = _logged_in && !_disconnect_notified;
         _logged_in = false;
+        StopHeartbeat();
         _disconnect_notified = true;
         _buffer.clear();
         _b_recy_pending = false;
@@ -434,6 +467,7 @@ void TcpMgr::slot_tcp_connect(ServerInfo si)
         _socket = new QTcpSocket(this);
         initSigAndSlot();          // 新对象，重新绑
     }
+    StopHeartbeat();
     _logged_in = false;
     _disconnect_notified = false;
     //客户端连接服务器
@@ -441,6 +475,53 @@ void TcpMgr::slot_tcp_connect(ServerInfo si)
     _host = si.Host;
     _port = static_cast<uint16_t>(si.Port.toUInt()); //QString很好用
     _socket->connectToHost(_host, _port); //这个也是异步的，通过前面的回调函数知道结果
+}
+
+void TcpMgr::StartHeartbeat()
+{
+    if (!_logged_in || !IsConnected()) {
+        return;
+    }
+
+    // 先建立有效的单调计时起点，再立即发送首个 ping，随后每 20 秒发送。
+    _last_heartbeat_rsp.start();
+    _heartbeat_timer->start();
+    SendHeartbeat();
+}
+
+void TcpMgr::StopHeartbeat()
+{
+    if (_heartbeat_timer) {
+        _heartbeat_timer->stop();
+    }
+    _last_heartbeat_rsp.invalidate();
+}
+
+void TcpMgr::SendHeartbeat()
+{
+    if (!_logged_in || !IsConnected()) {
+        StopHeartbeat();
+        return;
+    }
+
+    // 连续 60 秒未收到服务端 1024，连接即使仍显示 ConnectedState 也按假在线处理。
+    if (!_last_heartbeat_rsp.isValid()
+        || _last_heartbeat_rsp.elapsed() >= kHeartbeatResponseTimeoutMs) {
+        qWarning() << "heartbeat response timed out; closing stale TCP connection";
+
+        // 心跳超时有单独的界面提示。先标记本次断线已经通知，避免 abort() 触发
+        // disconnected 后又发送 sig_connection_lost，造成连续弹出两个对话框。
+        _disconnect_notified = true;
+        _logged_in = false;
+        StopHeartbeat();
+        _socket->abort();
+        emit sig_heartbeat_timeout();
+        return;
+    }
+
+    QJsonObject heartbeat_req;
+    heartbeat_req["client_time"] = QString::number(QDateTime::currentMSecsSinceEpoch());
+    emit sig_send_data(ID_HEART_BEAT_REQ,QJsonDocument(heartbeat_req).toJson(QJsonDocument::Compact));
 }
 
 

@@ -149,7 +149,8 @@ Status ChatServiceImpl::NotifyKickUser(ServerContext* context, const KickUserReq
     session->NotifyOffline();
     std::cout << "notify old client offline, uid = " << uid
               << ", session = " << session->GetSessionId() << std::endl;
-    // 清除旧的连接
+    // 这里只立即注销旧连接的本地映射和在线数，保留 socket 让 1021 下线通知发送完成。
+    // 队列排空后 HandleWrite 会调用 HandleDisconnect，统一关闭 socket 并条件清理 Redis。
     _p_server->ClearSession(session->GetSessionId());
 
     return Status::OK;

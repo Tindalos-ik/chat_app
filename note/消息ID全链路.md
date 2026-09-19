@@ -23,19 +23,19 @@ HTTP 负责注册、登录、验证码和重置密码等短请求。登录拿到
 
 ## 2. ID 总表
 
-| ID | 名称 | 方向/载荷 | 当前状态 |
+| ID | 名称 | 方向/载荷 | 处理情况 |
 | ---: | --- | --- | --- |
-| 1001 | `ID_GET_VARIFY_CODE` | HTTP `/get_varifycode`，`{email}` | 已实现 |
-| 1002 | `ID_REG_USER` | HTTP `/user_register`，用户资料和验证码 | 已实现 |
-| 1003 | `ID_RESET_PWD` | HTTP `/user_resetpassword`，用户、邮箱、验证码、新密码 | 已实现 |
+| 1001 | `ID_GET_VARIFY_CODE` | HTTP `/get_varifycode`，`{email}` | GateServer 调用 VarifyServer 发送验证码 |
+| 1002 | `ID_REG_USER` | HTTP `/user_register`，用户资料和验证码 | GateServer 校验后写入用户数据 |
+| 1003 | `ID_RESET_PWD` | HTTP `/user_resetpassword`，用户、邮箱、验证码、新密码 | GateServer 校验后更新密码 |
 | 1004 | `ID_LOGIN_USER` | 预留的 HTTP 登录 ID | 当前登录代码使用 1005，未单独使用 |
 | 1005 | `ID_CHAT_LOGIN` | HTTP 登录回调索引；TCP `{uid,token}` 登录 ChatServer | 两层复用，语义由 `Modules`/传输层区分 |
-| 1006 | `ID_CHAT_LOGIN_RSP` | ChatServer 返回 `{error,uid,token,user,...}` | 已实现 |
-| 1007 | `ID_SEARCH_USER_REQ` | TCP `{uid}`，可传 UID 或用户名 | 已实现 |
-| 1008 | `ID_SEARCH_USER_RSP` | TCP 返回搜索到的用户资料 | 已实现 |
-| 1009 | `ID_ADD_FRIEND_REQ` | TCP `{uid,applyname,bakname,touid}` | 已实现 |
+| 1006 | `ID_CHAT_LOGIN_RSP` | ChatServer 返回 `{error,uid,token,user,...}` | 客户端解析资料并进入聊天页 |
+| 1007 | `ID_SEARCH_USER_REQ` | TCP `{uid}`，可传 UID 或用户名 | ChatServer 按 UID 或用户名查询 |
+| 1008 | `ID_SEARCH_USER_RSP` | TCP 返回搜索到的用户资料 | 客户端展示查询结果 |
+| 1009 | `ID_ADD_FRIEND_REQ` | TCP `{uid,applyname,bakname,touid}` | ChatServer 写申请并通知目标用户 |
 | 1010 | `ID_ADD_FRIEND_RSP` | ChatServer 返回申请写入结果 | 服务端已回包，客户端尚未注册专用 handler |
-| 1011 | `ID_NOTIFY_ADD_FRIEND_REQ` | ChatServer 推送 `{applyuid,name,desc,nick,sex,icon}` 给被申请方 | 已实现 |
+| 1011 | `ID_NOTIFY_ADD_FRIEND_REQ` | ChatServer 推送 `{applyuid,name,desc,nick,sex,icon}` 给被申请方 | 客户端加入新朋友列表 |
 | 1013 | `ID_AUTH_FRIEND_REQ` | 被申请方提交 `{fromuid,bakname,touid}` | ChatServer1/2 已注册并建立双向好友关系 |
 | 1014 | `ID_AUTH_FRIEND_RSP` | 认证请求处理结果 | 客户端已解析好友资料并更新好友列表 |
 | 1015 | `ID_NOTIFY_AUTH_FRIEND_REQ` | 通知申请方同意/拒绝结果 | 同服和跨服通知均已接通 |
@@ -43,7 +43,7 @@ HTTP 负责注册、登录、验证码和重置密码等短请求。登录拿到
 | 1018 | `ID_TEXT_CHAT_MSG_RSP` | 文本消息请求回包 | 客户端已按 `msgid` 输出发送成功/失败日志 |
 | 1019 | `ID_NOTIFY_TEXT_CHAT_MSG_REQ` | 推送对方收到的文本消息 | 客户端已解析；当前打开对应聊天窗口时显示气泡 |
 | 1021 | `ID_NOTIFY_OFF_LINE_REQ` | 重复登录时通知旧客户端下线 | 服务端发送后关闭旧 socket；客户端解析通知或检测已登录连接断开后返回登录页 |
-| 1023/1024 | `ID_HEART_BEAT_REQ/RSP` | 心跳请求/回包 | ID 已定义，当前未完整实现 |
+| 1023/1024 | `ID_HEART_BEAT_REQ/RSP` | 客户端定期 Ping、服务端立即 Pong | 客户端每 20 秒发送，60 秒无回包时弹出心跳超时提示并返回登录页；ChatServer 60 秒无有效收包清理会话 |
 | 1025/1026 | `ID_LOAD_CHAT_THREAD_REQ/RSP` | 加载聊天会话列表 | ID 已定义，当前未完整实现 |
 | 1027/1028 | `ID_CREATE_PRIVATE_CHAT_REQ/RSP` | 创建私聊会话 | ID 已定义，当前未完整实现 |
 | 1029/1030 | `ID_LOAD_CHAT_MSG_REQ/RSP` | 加载会话历史消息 | ID 已定义，当前未完整实现 |

@@ -3,11 +3,15 @@
 #define CSESSION_H
 
 #include <boost/asio.hpp>
+#include <atomic>
+#include <chrono>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <queue>
 #include <mutex>
 #include <string>
+#include <ctime>
 #include "const.h"
 #include "MsgNode.h"
 
@@ -36,9 +40,14 @@ public:
     void Send(char* msg, short max_length, short msgid); // 发送char*消息
     void Send(std::string msg, short msgid);             // 发送std::string消息
     void Close();                    // 关闭连接
+    // 幂等断线入口：关闭 socket，注销本机会话，并按 session_id 条件清理 Redis 在线路由
+    void HandleDisconnect();
     std::shared_ptr<CSession> SharedSelf(); // 返回自身的shared_ptr，防止异步回调期间对象被提前析构
 
     void NotifyOffline(); // 通知用户下线
+
+    bool isHeartbeatExpired() const;         // 使用单调时钟判断是否心跳超时
+    void UpdateHeartbeat();                   // 收到完整 TCP 包后刷新活跃时间
 
 private:
     void ReadHead(int head_len);     // 读包头
@@ -59,10 +68,15 @@ private:
     std::mutex _send_lock;                            // 保护发送队列
     bool _close_after_send;                           // 踢人通知写完后关闭连接，并拒绝继续排队
     std::mutex _session_mtx;                          // 保护关闭操作
+    // Close 会同时唤醒读写回调；用原子标记避免这些回调重复清理、重复修改在线数
+    std::atomic_bool _disconnect_handled;
 
     std::shared_ptr<RecvNode> _recv_msg_node; // 正在接收的消息体节点
     std::shared_ptr<MsgNode> _recv_head_node; // 收到的包头节点（用来解析id和长度）
     int _user_uid;                            // 登录后的用户id，未登录为0
+
+    // 定时器线程读取、会话线程更新，必须使用原子变量避免数据竞争。
+    std::atomic<std::int64_t> _last_heartbeat{0}; // steady_clock 毫秒值，不受系统时间调整影响
 };
 
 /*
