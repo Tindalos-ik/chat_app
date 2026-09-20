@@ -1,6 +1,6 @@
 # chat_app
 
-基于 C++ 的分布式即时聊天项目，包含 Qt 6 桌面客户端、HTTP 网关、状态服务、两个 TCP 聊天服务实例和 Node.js 邮箱验证码服务。
+基于 C++ 的分布式即时聊天项目，包含 Qt 6 桌面客户端、HTTP 网关、状态服务、两个 TCP 聊天服务实例、资源服务和 Node.js 邮箱验证码服务。
 
 项目提供注册、邮箱验证码、登录、找回密码、好友申请/认证、好友列表加载、同账号重复登录互踢、客户端与 ChatServer 的应用层心跳检测，以及在线文本消息的同服/跨服转发。聊天消息暂不持久化，也不支持离线消息补投。
 
@@ -21,6 +21,8 @@ StatusServer -------------------- MySQL / Redis
 ChatServer1 <----- gRPC -------> ChatServer2
   |                               |
   +----------- MySQL / Redis -----+
+
+Qt 桌面客户端 ---- TCP 9090 ----> ResourceServer ----> uploads
 ```
 
 | 组件 | 技术 | 端口 | 职责 |
@@ -30,6 +32,7 @@ ChatServer1 <----- gRPC -------> ChatServer2
 | StatusServer | C++、gRPC | 50052 | ChatServer 负载选择、token 签发和校验 |
 | ChatServer1 | C++、Boost.Asio、gRPC | TCP 8090 / gRPC 50055 | 长连接、会话和消息路由 |
 | ChatServer2 | C++、Boost.Asio、gRPC | TCP 8091 / gRPC 50056 | 第二个聊天服务实例、跨服转发 |
+| ResourceServer | C++、Boost.Asio | TCP 9090 | 图片分片上传、断点续传和资源地址发布 |
 | MySQL | MySQL 8 | X Protocol 33060 | 用户、好友和好友申请数据 |
 | Redis | Redis | 6379 | 验证码、token、在线路由和服务负载 |
 
@@ -41,6 +44,7 @@ chat_app/
 ├── ChatServer2/          # 第二台 TCP/gRPC 聊天服务
 ├── GateServer/           # HTTP 网关
 ├── StatusServer/         # 登录状态与负载均衡服务
+├── ResourceServer/       # 图片分片上传与断点续传服务
 ├── VarifyServer/         # Node.js 邮箱验证码服务
 ├── chat_app desktop/     # Qt 6 桌面客户端
 ├── proto/message.proto   # 所有服务共用的 protobuf/gRPC 协议
@@ -100,6 +104,11 @@ mysql -uroot -p < sql/create_tables.sql
 
 这四份配置应使用同一套数据库、Redis 地址和密码。默认 MySQL 端口是 X DevAPI 的 `33060`，不是传统 MySQL 协议端口 `3306`。
 
+资源服务监听 `ResourceServer/config.ini` 中的 9090 端口，桌面客户端
+`chat_app desktop/config.ini` 的 `[ResourceServer]` 必须指向同一个可达地址。
+上传完成后，客户端把 ResourceServer 返回的 `resource_url` 作为头像字段，
+通过当前已登录的 ChatServer 更新用户资料。
+
 聊天服务的配置还必须保持互相匹配：
 
 | 实例 | TCP 端口 | gRPC 端口 | 服务名 |
@@ -127,7 +136,7 @@ npm install
 
 ## 构建
 
-在仓库根目录配置并构建四个 C++ 服务：
+在仓库根目录配置并构建五个 C++ 服务：
 
 ```powershell
 Set-Location D:\myproject\chat_app
@@ -142,6 +151,7 @@ build\GateServer\Debug\GateServer.exe
 build\StatusServer\Debug\StatusServer.exe
 build\ChatServer1\Debug\ChatServer1.exe
 build\ChatServer2\Debug\ChatServer2.exe
+build\ResourceServer\Debug\ResourceServer.exe
 ```
 
 根目录 CMake 会从 `proto/message.proto` 自动生成 protobuf/gRPC 代码。各服务的 `config.ini` 也会被复制到对应 Debug 目录；服务必须从可执行文件所在目录启动，才能读取这份运行时配置。
@@ -153,12 +163,12 @@ build\ChatServer2\Debug\ChatServer2.exe
 启动前确认 MySQL 与 Redis 均已运行。推荐顺序是：
 
 ```text
-Redis -> VarifyServer -> StatusServer -> ChatServer1 -> ChatServer2 -> GateServer
+Redis -> VarifyServer -> StatusServer -> ChatServer1 -> ChatServer2 -> ResourceServer -> GateServer
 ```
 
 ### 一键启动（Windows）
 
-`start_all.bat` 会分别打开 Redis 和五个服务窗口。脚本中的 `ROOT`、`REDIS` 与 `CFG` 是本机路径和构建配置，首次使用前请检查它们：
+`start_all.bat` 会分别打开 Redis 和六个服务窗口。脚本中的 `ROOT`、`REDIS` 与 `CFG` 是本机路径和构建配置，首次使用前请检查它们：
 
 ```powershell
 Set-Location D:\myproject\chat_app

@@ -20,6 +20,7 @@
 #include <QMouseEvent>
 #include "tcpmgr.h"
 #include "usermgr.h"
+#include "settingdialog.h"
 #include <algorithm>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -45,6 +46,13 @@ ChatDialog::ChatDialog(QWidget *parent)
 {
     ui->setupUi(this);
     ui->list_stack->setCurrentIndex(0); // 默认显示聊天列表（session_list）
+
+    // 设置作为右侧主区域的一页显示，而非独立弹窗。
+    _setting_page = new SettingDialog(ui->chat_stack);
+    _setting_page->setWindowFlags(Qt::Widget);
+    ui->chat_stack->addWidget(_setting_page);
+    connect(_setting_page, &SettingDialog::sig_setting_cancel,
+            this, &ChatDialog::slot_hide_setting);
 
     // 聊天区与输入区之间的分隔条：消息区占满剩余空间，输入区高度可拖拽调节（80~300）
     ui->chat_splitter->setStretchFactor(0, 1); // 消息区可拉伸
@@ -390,8 +398,14 @@ void ChatDialog::slot_side_contact()
 
 void ChatDialog::slot_side_setting()
 {
-    // 设置页还没有实现：先不切换页面，但按钮保持选中态（与聊天/好友一致）
     ClearLabelState(ui->side_settings_lb);
+    ui->chat_stack->setCurrentWidget(_setting_page);
+}
+
+void ChatDialog::slot_hide_setting()
+{
+    ui->chat_stack->setCurrentWidget(ui->chat_page);
+    slot_side_chat();
 }
 
 // 申请好友槽函数，显示新的申请信息和红点

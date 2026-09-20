@@ -42,6 +42,16 @@ int UserMgr::GetUid()
     return _userinfo->_uid;
 }
 
+void UserMgr::UpdateProfile(const QString &nick, const QString &desc, const QString &icon)
+{
+    if (!_userinfo) {
+        _userinfo = std::make_shared<UserInfo>();
+    }
+    _userinfo->_nick = nick;
+    _userinfo->_desc = desc;
+    _userinfo->_icon = icon;
+}
+
 std::vector<std::shared_ptr<ApplyInfo> > UserMgr::GetApplyList()
 {
     return _apply_list;

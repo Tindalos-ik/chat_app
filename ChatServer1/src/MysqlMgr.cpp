@@ -483,6 +483,40 @@ bool MysqlMgr::UpdatePwd(const std::string &name, const std::string &newpwd)
     }
 }
 
+bool MysqlMgr::UpdateUserProfile(int uid, const std::string& nick,
+                                 const std::string& desc, const std::string& icon)
+{
+    auto con = pool_->GetConnection();
+    Defer defer([&con, this]() { pool_->ReturnConnection(std::move(con)); });
+    try {
+        if (con == nullptr) {
+            return false;
+        }
+
+        // fetchOne 会推进结果集游标，因此 SqlResult 不能声明为 const。
+        auto name_result = con->sql("SELECT name FROM user WHERE uid = ?")
+                               .bind(uid).execute();
+        const auto name_row = name_result.fetchOne();
+        if (!name_row) {
+            return false;
+        }
+        const std::string user_name = name_row[0].get<std::string>();
+
+        // desc 是 MySQL 保留字，必须使用反引号；bind 防止资料内容进入 SQL 结构。
+        const std::string sql =
+            "UPDATE user SET nick = ?, `desc` = ?, icon = ? WHERE uid = ?";
+        con->sql(sql).bind(nick).bind(desc).bind(icon).bind(uid).execute();
+
+        // 两种查询入口各有一份缓存，更新后都失效，后续读取统一回源 MySQL。
+        RedisMgr::GetInstance()->Del(USER_BASE_INFO + std::to_string(uid));
+        RedisMgr::GetInstance()->Del(USER_NAME_INFO + user_name);
+        return true;
+    } catch (const std::exception &e) {
+        std::cout << "Exception: " << e.what() << std::endl;
+        return false;
+    }
+}
+
 /**
  * @brief 验证用户密码
  * @param name 用户名

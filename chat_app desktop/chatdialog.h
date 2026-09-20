@@ -12,6 +12,8 @@ namespace Ui {
 class ChatDialog;
 }
 
+class SettingDialog;
+
 class ChatDialog : public QDialog
 {
     Q_OBJECT
@@ -34,7 +36,8 @@ private slots:
     void slot_send_message(); // 发送消息
     void slot_side_chat();      // 侧边栏：聊天
     void slot_side_contact();   // 侧边栏：联系人
-    void slot_side_setting();   // 侧边栏：设置（页面未实现）
+    void slot_side_setting();   // 侧边栏：打开个人设置界面
+    void slot_hide_setting();   // 关闭个人设置界面
     void slot_apply_friend(std::shared_ptr<AddFriendApply>& apply_info); // 添加好友申请
     void slot_auth_friend(std::shared_ptr<FriendInfo>& friend_info); // 好友列表增加一个好友
     void slot_text_chat(std::shared_ptr<TextChatData>& message); // 显示当前会话收到的文本
@@ -47,6 +50,7 @@ private:
     Ui::ChatDialog *ui;
     int _cur_mode = 0;   // 0=聊天列表 1=好友列表，搜索清空后回到当前模式
     QVector<StateWidget*> _lb_list;  // 侧边栏按钮组，保证一次只高亮一个
+    SettingDialog *_setting_page = nullptr;
 
     bool _b_loading = false;       // 防抖标志：加载期间忽略重复触发
     int _loaded_chat_count = 0;   // 已加载的聊天会话条数（示例数据计数）

@@ -26,6 +26,7 @@ public:
     QString GetName();
     QString GetIcon();
     int GetUid();
+    void UpdateProfile(const QString &nick, const QString &desc, const QString &icon);
     // 好友申请在登录会话期间缓存，页面创建时可恢复这些记录。
     std::vector<std::shared_ptr<ApplyInfo>> GetApplyList();
     std::vector<std::shared_ptr<UserInfo>> GetFriendList();

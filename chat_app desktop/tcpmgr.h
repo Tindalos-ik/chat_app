@@ -67,6 +67,7 @@ signals:
     void sig_off_line();
     void sig_connection_lost(); // 已登录连接被服务端关闭，但未完整收到踢人通知
     void sig_heartbeat_timeout(); // 60 秒未收到有效心跳回复，交给主窗口显示专用提示
+    void sig_update_profile_result(int error); // 当前用户资料更新结果
 };
 
 #endif // TCPMGR_H

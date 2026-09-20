@@ -373,6 +373,20 @@ void TcpMgr::initHandlers()
         }
     };
 
+    // 资料回包沿用 ChatServer 的 2+2 字节 framing 与 {"error": ...} 风格。
+    // SettingDialog 收到成功结果后才更新 UserMgr，避免请求失败却显示成已保存。
+    _handler[ID_UPDATE_USER_PROFILE_RSP] = [this](ReqId id, int len, QByteArray data) {
+        Q_UNUSED(id);
+        Q_UNUSED(len);
+        const QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
+        if (!jsonDoc.isObject() || !jsonDoc.object().contains("error")) {
+            qWarning() << "invalid update profile response";
+            emit sig_update_profile_result(ErrorCodes::ERR_JSON);
+            return;
+        }
+        emit sig_update_profile_result(jsonDoc.object().value("error").toInt(ErrorCodes::ERR_JSON));
+    };
+
 }
 
 void TcpMgr::initSigAndSlot()

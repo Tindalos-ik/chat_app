@@ -13,7 +13,8 @@ using boost::asio::ip::tcp;
 CServer::CServer(boost::asio::io_context &io_context, short port)
     : _io_context(io_context), _port(port),
       _acceptor(io_context, tcp::endpoint(tcp::v4(), port)),
-      _timer(io_context, std::chrono::seconds(HEARTBEAT_CHECK_INTERVAL)) {
+      _timer(io_context, std::chrono::seconds(HEARTBEAT_CHECK_INTERVAL))
+{
     std::cout << "Server start success, listen on port : " << _port << std::endl;
 }
 
@@ -43,7 +44,7 @@ void CServer::Stop() {
     // cancel 后回调仍可能被 io_context 调度，因此回调必须只捕获 weak_ptr。
     // 不在这里持有 _mutex 做断线清理，避免与异步回调的 ClearSession 形成锁重入。
     boost::system::error_code ec;
-    _timer.cancel(ec);
+    _timer.cancel();
     _acceptor.cancel(ec);
     _acceptor.close(ec);
 }
@@ -129,13 +130,15 @@ void CServer::ClearSession(std::string session_id) {
     }
 }
 
+
 void CServer::on_timer(const boost::system::error_code &error)
 {
     if (error == boost::asio::error::operation_aborted || _stopping.load()) {
         return;
     }
 
-    // 锁内只筛选并保存 shared_ptr；锁外调用 HandleDisconnect，避免 ClearSession 重入 _mutex。
+    // 锁内只筛选并保存 shared_ptr，既保护 _sessions，也保证锁外清理期间对象仍然存活。
+    // 收集过期信息，尽量避免加线程锁和分布式锁，容易导致死锁
     std::vector<std::shared_ptr<CSession>> expired_sessions;
     {
         std::lock_guard<std::mutex> lock(_mutex);
@@ -146,6 +149,7 @@ void CServer::on_timer(const boost::system::error_code &error)
         }
     }
 
+    // 不能持有 _mutex 调用 HandleDisconnect，它会通过 ClearSession 再次获取该锁，导致死锁
     for (const auto &session : expired_sessions) {
         // 投递到会话自己的 I/O 线程，并重新检查：从扫描到执行之间可能刚收到心跳。
         // 主 accept/timer 线程不在此同步等待 Redis 登录锁。
@@ -158,5 +162,6 @@ void CServer::on_timer(const boost::system::error_code &error)
         });
     }
 
+    // steady_timer 的一次 async_wait 只触发一次，必须重新设置才能形成周期检测。
     StartHeartbeatTimer();
 }

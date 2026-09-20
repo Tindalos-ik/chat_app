@@ -1,6 +1,6 @@
 # 消息 ID 全链路
 
-本文按当前 `chat_app`、`GateServer`、`StatusServer`、`ChatServer1/2` 和 `VarifyServer` 的代码整理。消息 ID 只描述 TCP 长连接上的业务消息；HTTP 接口同样使用 `ReqId` 作为客户端回调索引，但不会把这个 ID 放进 HTTP body。
+本文按当前 `chat_app`、`GateServer`、`StatusServer`、`ChatServer1/2`、`ResourceServer` 和 `VarifyServer` 的代码整理。ChatServer 与 ResourceServer 是两条独立 TCP 连接，各自拥有消息 ID 空间；HTTP 接口同样使用 `ReqId` 作为客户端回调索引，但不会把这个 ID 放进 HTTP body。
 
 > 判断一条链路是否真正完成，要同时检查客户端发送、服务端 callback 注册、服务端业务落库/转发、客户端回包 handler 四个环节。
 
@@ -47,6 +47,10 @@ HTTP 负责注册、登录、验证码和重置密码等短请求。登录拿到
 | 1025/1026 | `ID_LOAD_CHAT_THREAD_REQ/RSP` | 加载聊天会话列表 | ID 已定义，当前未完整实现 |
 | 1027/1028 | `ID_CREATE_PRIVATE_CHAT_REQ/RSP` | 创建私聊会话 | ID 已定义，当前未完整实现 |
 | 1029/1030 | `ID_LOAD_CHAT_MSG_REQ/RSP` | 加载会话历史消息 | ID 已定义，当前未完整实现 |
+| 1031/1032 | `ID_UPDATE_USER_PROFILE_REQ/RSP` | TCP `{uid,nick,desc,icon}` 更新当前用户资料 | ChatServer 以登录会话 UID 鉴权，更新 MySQL 并失效 Redis 用户缓存 |
+
+ResourceServer 的独立协议使用 1003/1004 上传分片、1005/1006 同步断点。
+完成回包包含 `resource_url`；客户端只有拿到该字段后，才向 ChatServer 发送 1031。
 
 ## 3. 注册、验证码和重置密码
 

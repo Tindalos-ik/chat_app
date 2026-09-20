@@ -118,6 +118,10 @@ public:
     //更新密码
     bool UpdatePwd(const std::string& name, const std::string& newpwd);
 
+    // 更新当前用户可编辑资料；uid 来自已认证会话，不接受客户端指定其他用户。
+    bool UpdateUserProfile(int uid, const std::string& nick,
+                           const std::string& desc, const std::string& icon);
+
     //检查用户名和密码是否匹配
     bool CheckPwd(const std::string& name, const std::string& pwd, UserInfo& userInfo);
 

@@ -108,6 +108,64 @@ void LogicSystem::RegisterCallBacks() {
                                             const std::string &msg_data) {
         HandleTextMsg(session, msg_id, msg_data);
     };
+    _fun_callbacks[ID_UPDATE_USER_PROFILE_REQ] = [this](std::shared_ptr<CSession> session,
+                                            const short &msg_id,
+                                            const std::string &msg_data) {
+        UpdateUserProfile(session, msg_id, msg_data);
+    };
+}
+
+void LogicSystem::UpdateUserProfile(std::shared_ptr<CSession> session, const short &msg_id,
+                                    const std::string &msg_data) {
+    (void)msg_id;
+    Json::Value response;
+    Defer defer([session, &response] {
+        session->Send(response.toStyledString(), ID_UPDATE_USER_PROFILE_RSP);
+    });
+
+    const int session_uid = session->GetUserId();
+    if (session_uid <= 0) {
+        response["error"] = ErrorCode::TokenInvalid;
+        return;
+    }
+
+    Json::CharReaderBuilder reader;
+    Json::Value root;
+    std::istringstream input(msg_data);
+    std::string errors;
+    if (!Json::parseFromStream(reader, input, &root, &errors) || !root.isObject() ||
+        !root["nick"].isString() || !root["desc"].isString() ||
+        !root["icon"].isString()) {
+        response["error"] = ErrorCode::Error_Json;
+        return;
+    }
+
+    // uid 只用于客户端关联回包，真正的写入身份始终取已认证会话，禁止越权修改。
+    if (root.isMember("uid") && (!root["uid"].isInt() || root["uid"].asInt() != session_uid)) {
+        response["error"] = ErrorCode::UidInvalid;
+        return;
+    }
+
+    const std::string nick = root["nick"].asString();
+    const std::string desc = root["desc"].asString();
+    const std::string icon = root["icon"].asString();
+    // user 表三个字段都是 varchar(255)。这里按 UTF-8 字节做更保守的上限，
+    // 防止超长 ASCII URL/签名直到 MySQL 才报错；昵称 UI 只允许 24 个字符。
+    if (nick.empty() || nick.size() > 96 || desc.size() > 255 || icon.size() > 255) {
+        response["error"] = ErrorCode::Error_Json;
+        return;
+    }
+
+    if (!MysqlMgr::GetInstance()->UpdateUserProfile(session_uid, nick, desc, icon)) {
+        response["error"] = ErrorCode::RPCFaild;
+        return;
+    }
+
+    response["error"] = ErrorCode::Success;
+    response["uid"] = session_uid;
+    response["nick"] = nick;
+    response["desc"] = desc;
+    response["icon"] = icon;
 }
 
 // 登录处理：解析uid/token -> 请求StatusServer校验 -> 把结果回包给客户端

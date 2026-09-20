@@ -80,6 +80,8 @@ enum MSG_IDS {
     ID_CREATE_PRIVATE_CHAT_RSP = 1028, // 创建私聊回复
     ID_LOAD_CHAT_MSG_REQ = 1029,    // 加载聊天消息请求
     ID_LOAD_CHAT_MSG_RSP = 1030,    // 加载聊天消息回复
+    ID_UPDATE_USER_PROFILE_REQ = 1031, // 更新当前登录用户资料
+    ID_UPDATE_USER_PROFILE_RSP = 1032, // 更新用户资料回包
 };
 
 #define LOGIN_COUNT "login_count"

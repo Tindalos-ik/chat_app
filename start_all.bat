@@ -1,79 +1,80 @@
 @echo off
 chcp 65001 >nul
 setlocal
-rem ============================================================
-rem  chat_app 后端一键启动脚本（Redis + 5 个服务 = 6 个 cmd 窗口）
-rem
-rem  前置条件：
-rem    1. 先编译（顶层 CMake 会构建 GateServer / StatusServer / ChatServer1 / ChatServer2 四个 C++ 服务）：
-rem       "D:\Qt\qt\Tools\CMake_64\bin\cmake.exe" --preset windows-vcpkg
-rem       "D:\Qt\qt\Tools\CMake_64\bin\cmake.exe" --build --preset debug
-rem    2. MySQL / Redis 已启动
-rem    3. VarifyServer 依赖已安装：cd VarifyServer && npm install
-rem
-rem  启动顺序：MySQL(手动) → Redis → VarifyServer → StatusServer → ChatServer1 → ChatServer2 → GateServer
-rem ============================================================
+rem Start Redis and all six backend services.
+rem Build all C++ targets before use and run npm install in VarifyServer once.
+rem The start command uses /D for the working directory and avoids nested commands.
 
 set "ROOT=D:\myproject\chat_app"
 set "REDIS=D:\cppsoft\Redis-x64-5.0.14.1"
-rem 想用 Release 版就把下面改成 Release
+rem Change Debug to Release when starting Release binaries.
 set "CFG=Debug"
 set "STATUS=%ROOT%\build\StatusServer\%CFG%"
 set "CHAT1=%ROOT%\build\ChatServer1\%CFG%"
 set "CHAT2=%ROOT%\build\ChatServer2\%CFG%"
+set "RESOURCE=%ROOT%\build\ResourceServer\%CFG%"
 set "GATE=%ROOT%\build\GateServer\%CFG%"
 
-echo [1/6] 启动 Redis...
+echo [1/7] Starting Redis...
 if not exist "%REDIS%\redis-server.exe" (
-    echo    [错误] 找不到 redis-server.exe，请检查路径：%REDIS%
+    echo [ERROR] redis-server.exe was not found: %REDIS%
     pause
     exit /b 1
 )
-start "Redis" cmd /k "cd /d %REDIS% && redis-server.exe redis.windows.conf"
+start "Redis" /D "%REDIS%" cmd /k redis-server.exe redis.windows.conf
 
-echo [2/6] 启动 VarifyServer...
+echo [2/7] Starting VarifyServer...
 if not exist "%ROOT%\VarifyServer\package.json" (
-    echo    [错误] 找不到 VarifyServer\package.json，请确认项目完整
+    echo [ERROR] VarifyServer\package.json was not found.
     pause
     exit /b 1
 )
 if not exist "%ROOT%\VarifyServer\node_modules" (
-    echo    [提示] VarifyServer 还没装依赖，先执行：cd %ROOT%\VarifyServer ^&^& npm install
+    echo [INFO] Run npm install in %ROOT%\VarifyServer before starting this service.
 )
-start "VarifyServer" cmd /k "cd /d %ROOT%\VarifyServer && npm run serve"
+start "VarifyServer" /D "%ROOT%\VarifyServer" cmd /k npm run serve
 
-echo [3/6] 启动 StatusServer...
+echo [3/7] Starting StatusServer...
 if not exist "%STATUS%\StatusServer.exe" (
-    echo    [错误] 找不到 StatusServer.exe，请先编译！
+    echo [ERROR] StatusServer.exe was not found. Build the project first.
     pause
     exit /b 1
 )
-start "StatusServer" cmd /k "cd /d %STATUS% && StatusServer.exe"
+start "StatusServer" /D "%STATUS%" cmd /k StatusServer.exe
 
-echo [4/6] 启动 ChatServer1（端口 8090 / rpc 50055）...
+echo [4/7] Starting ChatServer1 (TCP 8090, RPC 50055)...
 if not exist "%CHAT1%\ChatServer1.exe" (
-    echo    [错误] 找不到 ChatServer1.exe，请先编译！
+    echo [ERROR] ChatServer1.exe was not found. Build the project first.
     pause
     exit /b 1
 )
-start "ChatServer1" cmd /k "cd /d %CHAT1% && ChatServer1.exe"
+start "ChatServer1" /D "%CHAT1%" cmd /k ChatServer1.exe
 
-echo [5/6] 启动 ChatServer2（端口 8091 / rpc 50056）...
+echo [5/7] Starting ChatServer2 (TCP 8091, RPC 50056)...
 if not exist "%CHAT2%\ChatServer2.exe" (
-    echo    [错误] 找不到 ChatServer2.exe，请先编译！
+    echo [ERROR] ChatServer2.exe was not found. Build the project first.
     pause
     exit /b 1
 )
-start "ChatServer2" cmd /k "cd /d %CHAT2% && ChatServer2.exe"
+start "ChatServer2" /D "%CHAT2%" cmd /k ChatServer2.exe
 
-echo [6/6] 启动 GateServer...
-if not exist "%GATE%\GateServer.exe" (
-    echo    [错误] 找不到 GateServer.exe，请先编译！
+rem ResourceServer owns the independent TCP upload endpoint on port 9090.
+echo [6/7] Starting ResourceServer (TCP 9090)...
+if not exist "%RESOURCE%\ResourceServer.exe" (
+    echo [ERROR] ResourceServer.exe was not found. Build the project first.
     pause
     exit /b 1
 )
-start "GateServer" cmd /k "cd /d %GATE% && GateServer.exe"
+start "ResourceServer" /D "%RESOURCE%" cmd /k ResourceServer.exe
+
+echo [7/7] Starting GateServer...
+if not exist "%GATE%\GateServer.exe" (
+    echo [ERROR] GateServer.exe was not found. Build the project first.
+    pause
+    exit /b 1
+)
+start "GateServer" /D "%GATE%" cmd /k GateServer.exe
 
 echo.
-echo 全部启动完成（Redis + 五个服务），关闭对应 cmd 窗口即可停止。
+echo All services were started. Close each command window to stop its service.
 pause

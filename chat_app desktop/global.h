@@ -51,6 +51,20 @@ enum ReqId{
     ID_CREATE_PRIVATE_CHAT_RSP = 1028, //创建私聊回复
     ID_LOAD_CHAT_MSG_REQ = 1029,      //加载聊天消息
     ID_LOAD_CHAT_MSG_RSP = 1030,      //加载聊天消息
+    // 资料更新走已登录的 ChatServer；服务端以 session UID 鉴权，不能信任请求中的 uid。
+    ID_UPDATE_USER_PROFILE_REQ = 1031, //更新当前用户资料请求：uid/nick/desc/icon
+    ID_UPDATE_USER_PROFILE_RSP = 1032  //更新当前用户资料回包：error
+};
+
+// ResourceServer 使用独立 TCP 连接和 2+4 字节包头；这里的 ID 属于另一套协议，
+// 即使数值与 HTTP/ChatServer ID 重叠也不能混用。
+enum ResourceReqId : quint16 {
+    ID_TEST_REQ = 1001,
+    ID_TEST_RSP = 1002,
+    ID_UPLOAD_FILE_REQ = 1003,
+    ID_UPLOAD_FILE_RSP = 1004,
+    ID_SYNC_FILE_REQ = 1005,
+    ID_SYNC_FILE_RSP = 1006
 };
 
 enum Modules{
