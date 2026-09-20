@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "tcpmgr.h"
 
 #include <QApplication>
 #include <QDebug>
@@ -39,5 +40,16 @@ int main(int argc, char *argv[])
     a.setWindowIcon(QIcon(":/res/chat_app.png"));
     MainWindow w;
     w.show();
-    return QCoreApplication::exec();
+
+    // aboutToQuit 仍在 QApplication 生命周期内发出。先停止心跳并断开 socket 回调，
+    // 避免窗口关闭使事件循环退出后，QTimer/QTcpSocket 的回调重入正在析构的 UI。
+    QObject::connect(&a, &QCoreApplication::aboutToQuit, [] {
+        TcpMgr::GetInstance()->PrepareForShutdown();
+    });
+    const int exitCode = QCoreApplication::exec();
+
+    // 此处 QApplication 仍在作用域中，先释放 TcpMgr 才能安全销毁其心跳定时器。
+    // 若等到静态单例析构阶段，QApplication 可能已经销毁，会触发 Qt6Core 崩溃。
+    TcpMgr::DestroyInstance();
+    return exitCode;
 }

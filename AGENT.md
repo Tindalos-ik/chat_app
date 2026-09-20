@@ -55,7 +55,7 @@
 | [聊天服务器服务.md](note/聊天服务器服务.md) | proto 中定义的 ChatServer gRPC 服务、消息字段与跨服转发约定 |
 | [服务器踢人.md](note/服务器踢人.md) | 同服/跨服重复登录互踢、1021 投递、会话清理与当前边界 |
 | [心跳检测.md](note/心跳检测.md) | 1023/1024 双端心跳、单调时钟、超时参数、幂等清理与复测步骤 |
-| [异常处理.md](note/异常处理.md) | TCP/心跳异常、异步回调对象生命周期与 ChatServer 停止顺序 |
+| [异常处理.md](note/异常处理.md) | TCP/心跳异常、Qt/Asio 异步回调对象生命周期与服务端、客户端停止顺序 |
 | [消息ID全链路.md](note/消息ID全链路.md) | 客户端消息 ID、HTTP/TCP 流程、好友申请认证与聊天通信现状 |
 | [MySQL连接库.md](note/MySQL连接库.md) | X DevAPI / mysqlcppconnx |
 | [Redis.md](note/Redis.md) | Redis 在验证码、token、在线路由、负载、缓存和分布式锁中的作用 |

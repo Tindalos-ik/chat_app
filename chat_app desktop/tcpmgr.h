@@ -28,6 +28,8 @@ public:
     bool IsConnected() const;
 
     void CloseConnection(); //客户端下线时候调用
+    // 应用准备退出时调用：先停止异步回调，保证析构阶段不再触发界面逻辑。
+    void PrepareForShutdown();
 
 private:
     TcpMgr();
@@ -46,6 +48,7 @@ private:
     bool _b_recy_pending; //接收状态标志，标记当前是否正在等待一个完整的数据包，true代表上一个数据没有收全，收全了才能扔给handler处理
     bool _logged_in; // 已收到聊天服务器登录成功回包
     bool _disconnect_notified; // 一次连接只通知一次下线/断线，避免重复弹窗
+    bool _is_shutting_down; // QApplication 退出阶段为 true，禁止再处理 socket 事件
     quint16 _message_id; //消息 ID，标识消息的类型，比如是登录回包，
     quint16 _message_len;
     QTimer* _heartbeat_timer;             // 客户端心跳发送与超时检查定时器

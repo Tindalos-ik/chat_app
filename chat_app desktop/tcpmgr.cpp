@@ -15,7 +15,19 @@ constexpr int kHeartbeatResponseTimeoutMs = 60 * 1000;
 
 TcpMgr::~TcpMgr()
 {
+    // 先让 socket 不再投递回调，再销毁 QTimer。这里不能依赖 deleteLater()：
+    // 此时主事件循环已经结束，延迟删除不会被处理，反而会让对象析构顺序不确定。
+    PrepareForShutdown();
 
+    if (_heartbeat_timer) {
+        delete _heartbeat_timer;
+        _heartbeat_timer = nullptr;
+    }
+
+    if (_socket) {
+        delete _socket;
+        _socket = nullptr;
+    }
 }
 
 bool TcpMgr::IsConnected() const
@@ -42,9 +54,27 @@ void TcpMgr::CloseConnection()
 
 }
 
+void TcpMgr::PrepareForShutdown()
+{
+    // 关闭窗口会使 QCoreApplication::exec() 返回。socket 的 abort() 可能同步发出
+    // disconnected；若此时仍让回调弹出对话框或重启逻辑，就会在退出析构阶段重入 UI。
+    // 因此退出路径只清理网络资源，不再对外发送“连接断开”通知。
+    _is_shutting_down = true;
+    _logged_in = false;
+    _disconnect_notified = true;
+    StopHeartbeat();
+
+    if (_socket) {
+        // initSigAndSlot() 中的连接都把 TcpMgr 作为 context；只断开这组连接，
+        // 避免 abort() 同步触发 lambda 后访问正在退出的对象。
+        QObject::disconnect(_socket, nullptr, this, nullptr);
+        _socket->abort();
+    }
+}
+
 //Qt封装的是异步，我们要在构造函数里面完成各种信号的槽，保证服务的流程进行
 TcpMgr::TcpMgr() : _host(""), _port(0), _b_recy_pending(false), _logged_in(false),
-    _disconnect_notified(false), _message_id(0), _message_len(0),
+    _disconnect_notified(false), _is_shutting_down(false), _message_id(0), _message_len(0),
     _heartbeat_timer(new QTimer(this))
 {
     //连接服务器，在这里不好写第一个参数，我们去到LoginDialog里面写
@@ -392,13 +422,19 @@ void TcpMgr::initHandlers()
 void TcpMgr::initSigAndSlot()
 {
     //_socket连接服务器成功之后，发送信号通知一下
-    connect(_socket, &QTcpSocket::connected, [this](){
+    connect(_socket, &QTcpSocket::connected, this, [this](){
+        if (_is_shutting_down) {
+            return;
+        }
         qDebug() << "connect to server" << Qt::endl;
         emit sig_con_success(true);
     });
 
     // 记录断开原因，便于区分客户端主动退出、服务端关闭和网络错误。
-    connect(_socket, &QTcpSocket::disconnected, [this]{
+    connect(_socket, &QTcpSocket::disconnected, this, [this]{
+        if (_is_shutting_down) {
+            return;
+        }
         qWarning() << "disconnected from server:" << _socket->errorString();
         const bool should_notify = _logged_in && !_disconnect_notified;
         _logged_in = false;
@@ -412,7 +448,10 @@ void TcpMgr::initSigAndSlot()
     });
 
     //在有数据可读时候进行处理
-    connect(_socket,&QTcpSocket::readyRead,[this](){
+    connect(_socket, &QTcpSocket::readyRead, this, [this](){
+        if (_is_shutting_down || !_socket) {
+            return;
+        }
         //读取所有数据到缓冲区
         _buffer.append(_socket->readAll());
 
@@ -469,7 +508,10 @@ void TcpMgr::initSigAndSlot()
 
     //处理错误，直接问ai
     connect(_socket, QOverload<QAbstractSocket::SocketError>::of(&QTcpSocket::errorOccurred),
-            [this](QAbstractSocket::SocketError socketError){
+            this, [this](QAbstractSocket::SocketError socketError){
+                if (_is_shutting_down || !_socket) {
+                    return;
+                }
                 Q_UNUSED(socketError);
                 qDebug() << "Error : " << _socket->errorString();
             });
@@ -481,6 +523,7 @@ void TcpMgr::slot_tcp_connect(ServerInfo si)
         _socket = new QTcpSocket(this);
         initSigAndSlot();          // 新对象，重新绑
     }
+    _is_shutting_down = false;
     StopHeartbeat();
     _logged_in = false;
     _disconnect_notified = false;

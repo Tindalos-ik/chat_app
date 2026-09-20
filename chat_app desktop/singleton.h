@@ -37,6 +37,12 @@ public:
         });
         return _instance;
     }
+
+    // QObject 单例必须在 QApplication 尚存活时释放；否则其中的 QTimer、QTcpSocket
+    // 子对象可能在 Qt 事件系统销毁后才析构，导致 Qt6Core 访问冲突。
+    static void DestroyInstance() {
+        _instance.reset();
+    }
     ~Singleton(){
         std::cout <<  "this is singleton destruct" << std::endl;
     }
