@@ -40,7 +40,7 @@ private:
     short _port;                                    // 监听端口
     boost::asio::ip::tcp::acceptor _acceptor;       // 异步监听器
 
-    std::map<std::string, std::shared_ptr<CSession>> _sessions; // session_id -> 会话
+    std::unordered_map<std::string, std::shared_ptr<CSession>> _sessions; // session_id -> 会话
     std::mutex _mutex; // 保护 _sessions 的线程安全（接受回调在主线程，清理在IO线程）
 
     boost::asio::steady_timer _timer; // 定时器，用于检测空闲连接，让它跑在主 io_context 上

@@ -404,6 +404,45 @@ if (status.ok()) {
 
 > 这是**同步**（阻塞）一元调用：发起后等服务端回包才返回。项目中业务逻辑层（LogicSystem）本来就是独立线程，阻塞调用不会卡住网络收发。
 
+#### Stub 是什么：结合网络编程理解
+
+Stub（桩/代理）可以理解成**远程服务在本进程中的本地代理对象**。它把“组装 Protobuf、走 HTTP/2
+网络、等待回包、反序列化”的细节封装成普通成员函数，因此业务代码看起来像调用本地函数：
+
+```cpp
+Status status = stub->NotifyTextChatMsg(&context, request, &response);
+```
+
+但这行代码并没有直接调用对端 `ChatServiceImpl::NotifyTextChatMsg()` 的 C++ 函数。真实链路是：
+
+```text
+ChatServer1 业务线程
+  -> ChatService::Stub::NotifyTextChatMsg(...)      本地代理
+  -> Protobuf 序列化请求 + gRPC/HTTP2 framing
+  -> Channel 管理到底层 TCP 连接（建立、复用、断开后的再次建连）
+  -> 网络发送到 ChatServer2:50056
+  -> ChatServer2 gRPC 框架解帧、反序列化
+  -> ChatServiceImpl::NotifyTextChatMsg(...)        真正执行的服务端函数
+  -> Protobuf 序列化响应，沿连接返回
+  -> Stub 解包，填充 response 和 grpc::Status
+```
+
+三者职责不要混：
+
+| 对象 | 可以类比成 | 在项目中的职责 |
+| --- | --- | --- |
+| `Channel` | 到某个地址的通信通道管理器 | 记住 `host:rpcport`，管理 HTTP/2/TCP 传输状态与底层建连；不是每次调用都手写 `connect()`。 |
+| `Stub` | 针对某个服务接口的“遥控器” | 提供 `NotifyAddFriend`、`NotifyTextChatMsg` 等类型安全的方法，把本地函数式调用转为 RPC。 |
+| `ClientContext` | 单次请求的信封/控制信息 | 保存 deadline、metadata、取消状态等；每次 RPC 都必须新建，不能跨调用复用。 |
+
+本项目的 `ChatConPool` 实际缓存的是多个 Stub。每个 Stub 创建时传入一个 Channel，业务线程从池里借出
+Stub、调用后归还。它的价值主要是控制并发调用数量和复用代理对象；**Stub 不是一条永远在线的 socket**，
+底层连接是否可用仍由 Channel 和 gRPC 运行时负责。
+
+如果手写 TCP，同一件事需要自己完成：`connect()`、长度/粘包 framing、序列化、`write()`、异步收包、
+请求与响应配对、超时和错误处理。Stub 只是把这些通用网络工作藏到生成代码和 gRPC 库中，业务层仍要根据
+`status.ok()` 判断这次调用是否真正成功。
+
 ### 6.2 连接池（为什么需要）
 
 `CreateChannel` 每次调用都会新建连接，而 Stub 借出/归还频繁。所以项目里用**连接池**管理：
@@ -502,6 +541,34 @@ AddFriendRsp ChatGrpcClient::NotifyAddFriend(std::string server_name, const AddF
 
 > 端口坑：跨服 gRPC 要连的是对端的 **rpcport**（50055/50056），不是对端给客户端用的 TCP 端口（8090/8091）。当前 `ChatGrpcClient` 已读取 `cfg[name]["rpcport"]`。
 
+### 6.4 当前的 gRPC 心跳、断线与重连边界
+
+目前项目的 gRPC 调用都是同步一元 RPC，没有 gRPC 流，也没有业务层定时 Ping。因此代码中**没有显式
+配置 gRPC keepalive 心跳**：`grpc::CreateChannel(...)` 使用默认参数，没有设置
+`GRPC_ARG_KEEPALIVE_TIME_MS`、`GRPC_ARG_KEEPALIVE_TIMEOUT_MS` 等 Channel 参数；各 gRPC 服务端的
+`ServerBuilder` 也没有对应的 keepalive 策略。
+
+连接池保存的是 Stub，不是“已经永久连通的 TCP socket”。Stub 持有 Channel，Channel 会按 gRPC 自身的
+传输状态按需建连；底层连接断开后，gRPC Core 会用内部退避策略尝试恢复传输。因此，**后续新发起的
+RPC 有机会在对端恢复后重新连上**。这属于 gRPC 库的连接管理，不是本项目实现的心跳或业务重连，不能
+据此判断对端始终在线。
+
+本项目也没有为 RPC 写重试循环或 Service Config 重试策略。一次调用返回非 `status.ok()` 后，当前代码
+直接转换成 `RPCFaild` 返回给上层，失败的请求不会自动再发。唯一的显式时限是跨服
+`NotifyKickUser`，它设置了 3 秒 deadline；其余大部分一元调用没有设置 deadline，遇到网络黑洞时可能
+等待较长时间。
+
+```text
+现在：业务发起一次 RPC -> 成功，或 status 非 OK 后返回 RPCFaild
+                     └-> gRPC Channel 可在之后尝试重建底层传输
+
+尚未实现：定时 keepalive Ping、RPC deadline 统一规范、按幂等性选择的指数退避重试、
+          长时间不可用后的熔断/降级与可观测状态上报
+```
+
+> 不能对所有 RPC 机械重试。好友申请、文本转发等调用在“服务端已处理但响应丢失”时重发可能造成重复
+> 推送；需要先给请求增加唯一请求 ID，或让服务端实现幂等去重，才适合启用业务重试。
+
 ---
 
 ## 7. 一次"注册 + 登录"的完整业务闭环
@@ -532,10 +599,9 @@ AddFriendRsp ChatGrpcClient::NotifyAddFriend(std::string server_name, const AddF
 4. 客户端登录聊天服务器
    客户端 ──TCP──► ChatServer
                        │ 解析 MSG_CHAT_LOGIN(uid, token)
-                       │ gRPC Login(uid, token)
+                       │ 直接读取 Redis 的 utoken_<uid> 并校验 token
                        ▼
-                  StatusServer ──► token 匹配则返回 Success
-                       └────────► ChatServer 回包 MSG_CHAT_LOGIN_RSP
+                  token 匹配后，ChatServer 回包 MSG_CHAT_LOGIN_RSP
 
 5. 跨服转发（A 登录在 ChatServer1，B 登录在 ChatServer2）
    用户A ──TCP──► ChatServer1
@@ -579,7 +645,7 @@ proto_codegen -> chat_proto（只编译一次）
 
 ---
 
-## 9. 要点与踩坑总结
+## 9. 总结
 
 1. **.proto 是"合同"**：服务端和客户端必须用同一份 proto 生成代码，字段编号（`= 1`、`= 2`）不能随意改，否则序列化错位。
 2. **包名决定命名空间**：`package message;` 让生成代码都在 `message::` 命名空间下，客户端 `using message::GetVarifyRsp` 等。
@@ -589,5 +655,5 @@ proto_codegen -> chat_proto（只编译一次）
 6. **同步调用的位置**：本项目客户端都是同步一元调用，放在 LogicSystem 的业务线程里，不阻塞 IO 线程。
 7. **统一协议源**：协议文件放在根目录的 `proto/message.proto`，C++ 端通过公共 `chat_proto` 静态库复用生成代码；Node.js 端通过相对路径加载同一份文件，避免各服务协议副本不一致。
 8. **ChatServer 是唯一"双重角色"服务**：既当 gRPC 客户端（调对端 ChatServer），又当 gRPC 服务端（`ChatServiceImpl` 监听 rpcport 50055/50056）。启动时 `BuildAndStart()` 可能返回空指针（端口被占、host 缺失等），必须先判空再 `Wait()`。
-9. **在线跨服业务已接通**：好友申请、认证、批量文本消息和重复登录踢人都通过 `ChatServiceImpl` / `ChatGrpcClient` 落地；离线消息、重试和端到端 ACK 仍未实现。
+9. **在线跨服业务已接通**：好友申请、认证、批量文本消息和重复登录踢人都通过 `ChatServiceImpl` / `ChatGrpcClient` 落地；未显式配置 gRPC keepalive，离线消息、业务重试和端到端 ACK 仍未实现。
 10. **分清 TCP 端口和 gRPC 端口**：ChatServer 的 `port`（8090/8091）是客户端连的 TCP 长连接口，`rpcport`（50055/50056）是另一台 ChatServer 连的 gRPC 口，连接池使用后者。

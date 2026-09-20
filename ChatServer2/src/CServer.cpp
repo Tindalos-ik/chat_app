@@ -134,18 +134,25 @@ void CServer::ClearSession(std::string session_id) {
 void CServer::on_timer(const boost::system::error_code &error)
 {
     if (error == boost::asio::error::operation_aborted || _stopping.load()) {
+        std::cout << "heartbeat timer error " << error.message() << std::endl;
         return;
     }
 
     // 锁内只筛选并保存 shared_ptr，既保护 _sessions，也保证锁外清理期间对象仍然存活。
-    // 收集过期信息，尽量避免加线程锁和分布式锁，容易导致死锁
-    std::vector<std::shared_ptr<CSession>> expired_sessions;
+
+    // 拷贝一份会话列表，后面就不需要加锁了，实现锁的最小化
+    std::unordered_map<std::string, std::shared_ptr<CSession>> sessions_copy;
     {
         std::lock_guard<std::mutex> lock(_mutex);
-        for (const auto &entry : _sessions) {
-            if (entry.second->isHeartbeatExpired()) {
-                expired_sessions.push_back(entry.second);
-            }
+        sessions_copy = _sessions;
+    }
+
+    // 收集过期信息，尽量避免加线程锁和分布式锁，容易导致死锁
+    std::vector<std::shared_ptr<CSession>> expired_sessions;
+    time_t now = time(nullptr);
+    for (const auto &entry : sessions_copy) {
+        if( entry.second->isHeartbeatExpired()) {
+            expired_sessions.push_back(entry.second);
         }
     }
 
