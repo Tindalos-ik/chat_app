@@ -653,13 +653,14 @@ bool MysqlMgr::GetFriendApplyInfo(
     Defer defer([&con, this]() { pool_->ReturnConnection(std::move(con)); });
 
     try {
-        // friend_apply 记录申请关系和处理状态，user 提供申请方的展示资料。
-        // 使用自增 id 倒序表示最新申请优先。
+        // 登录申请列表只展示待处理申请；已同意的用户已经在好友列表中，
+        // 不再重复下发，避免客户端重新登录后仍显示该申请。
+        // user 表提供申请方的展示资料，使用自增 id 倒序保证最新申请优先。
         const std::string sql =
             "SELECT u.uid, u.name, u.`desc`, u.icon, u.nick, fa.status "
             "FROM friend_apply AS fa "
             "INNER JOIN user AS u ON fa.from_uid = u.uid "
-            "WHERE fa.to_uid = ? "
+            "WHERE fa.to_uid = ? AND fa.status = 0 "
             "ORDER BY fa.id DESC";
         auto result = con->sql(sql).bind(recipientUid).execute();
 

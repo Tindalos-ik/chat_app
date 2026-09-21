@@ -168,13 +168,13 @@ rtvalue["icon"] = user_info->icon;
 **第 3 步：加载好友申请列表和好友列表**
 
 ```cpp
-GetFriendApplyInfo(uid, apply_list);   // 数据库查好友申请
+GetFriendApplyInfo(uid, apply_list);   // 只查询 status = 0 的待处理好友申请
 GetFriendList(uid, friend_list);       // 数据库查好友列表
 rtvalue["apply_list"] = ...;           // 一起打包进登录回包
 rtvalue["friend_list"] = ...;
 ```
 
-这一步是为了让客户端登录后立刻能渲染出好友和申请列表，不用再单独发请求。
+这一步是为了让客户端登录后立刻能渲染出好友和待处理申请列表，不用再单独发请求。已经同意或拒绝的申请不会随 `apply_list` 再次下发；已同意的用户直接由好友列表展示。
 
 **第 4 步：分布式踢人（防止同一账号多处登录）**
 
