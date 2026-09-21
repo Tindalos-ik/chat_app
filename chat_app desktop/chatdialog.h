@@ -39,7 +39,8 @@ private slots:
     void slot_side_setting();   // 侧边栏：打开个人设置界面
     void slot_hide_setting();   // 关闭个人设置界面
     void slot_apply_friend(std::shared_ptr<AddFriendApply>& apply_info); // 添加好友申请
-    void slot_auth_friend(std::shared_ptr<FriendInfo>& friend_info); // 好友列表增加一个好友
+    void slot_auth_friend(std::shared_ptr<FriendAuthResult>& authResult); // 好友列表增加好友并保存附加消息
+    void slot_create_private_chat(int uid, int otherUid, qint64 threadId); // 1028 回包建立正式本地会话
     void slot_text_chat(std::shared_ptr<TextChatData>& message); // 显示当前会话收到的文本
 
 protected:
@@ -57,18 +58,22 @@ private:
     int _loaded_con_count = 0;
 
     void addChatUserWid(QListWidget *list, const std::shared_ptr<UserInfo> &userInfo,
-                        const QString &msg, const QString &time, bool red); // 添加聊天用户
+                        const QString &msg, const QString &time, bool red,
+                        qint64 threadId = 0); // 添加聊天用户
     void addConUserWid(QListWidget *list, int uid, const QString &name, const QString &icon); //添加好友
 
     void AddLBGroup(StateWidget *lb);            // 把侧边栏按钮加入互斥组
     void ClearLabelState(StateWidget *lb);       // 清除除 lb 之外所有按钮的选中态
-    void SetCurrentChatUser(const std::shared_ptr<UserInfo> &chatUser);
+    void SetCurrentChatUser(const std::shared_ptr<UserInfo> &chatUser, qint64 threadId = 0);
     void AppendReceivedTextMessage(const std::shared_ptr<TextChatData> &message,
                                    const std::shared_ptr<UserInfo> &sender);
     void UpdateChatSessionPreview(const std::shared_ptr<UserInfo> &userInfo,
                                   const QString &message, bool unread);
+    void SaveFriendAuthMessages(const std::shared_ptr<UserInfo> &friendInfo,
+                                const QList<std::shared_ptr<TextChatData>> &messages);
 
     std::shared_ptr<UserInfo> _current_chatuser;
+    qint64 _current_thread_id = 0;
     QHash<int, QVector<std::shared_ptr<TextChatData>>> _unread_text_messages;
 
 signals:

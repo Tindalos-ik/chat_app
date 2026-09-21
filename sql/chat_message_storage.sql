@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS `private_chat` (
   `user2_id`   BIGINT UNSIGNED NOT NULL,
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`thread_id`),
-  UNIQUE KEY `uniq_private_users` (`user1_id`, `user2_id`),
+  UNIQUE KEY `uniq_private_thread` (`user1_id`, `user2_id`),
   KEY `idx_private_user1_thread` (`user1_id`, `thread_id`),
   KEY `idx_private_user2_thread` (`user2_id`, `thread_id`),
   CONSTRAINT `fk_private_chat_thread`

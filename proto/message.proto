@@ -92,10 +92,21 @@ message SendChatMsgRsp {
     int32 touid = 3; // 消息接收者 id
 }
 
-// 好友认证通知：告诉对端 ChatServer，当前用户已同意或拒绝好友申请。
-message AuthFriendReq {
-    int32 uid = 1; // 处理申请的用户 id
-    int32 touid = 2; // 原好友申请的申请用户 id
+// 好友认证成功后自动写入私聊并通知双方的初始消息。
+// msg_id/thread_id 当前沿用 int32；服务端在落库后会校验其未超出该协议范围。
+message AddFriendMsg{
+  int32 sender_id = 1; // 初始消息发送者（本次认证的同意方）
+  string unique_id = 2; // 稳定的消息唯一标识，网络重试时保持不变
+  int32 msg_id = 3; // chat_message.message_id
+  int32 thread_id = 4; // private_chat.thread_id
+  string msgcontent = 5; // 展示给双方的初始消息正文
+}
+
+// 好友认证通知：fromuid 为认证方，touid 为接收认证通知的原申请方。
+message AuthFriendReq{
+  int32 fromuid = 1;
+  int32 touid = 2;
+  repeated AddFriendMsg textmsgs = 3;
 }
 
 message AuthFriendRsp {

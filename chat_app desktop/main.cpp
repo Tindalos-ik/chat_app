@@ -1,5 +1,6 @@
 #include "mainwindow.h"
 #include "tcpmgr.h"
+#include "localchatstoragemgr.h"
 
 #include <QApplication>
 #include <QDebug>
@@ -51,5 +52,7 @@ int main(int argc, char *argv[])
     // 此处 QApplication 仍在作用域中，先释放 TcpMgr 才能安全销毁其心跳定时器。
     // 若等到静态单例析构阶段，QApplication 可能已经销毁，会触发 Qt6Core 崩溃。
     TcpMgr::DestroyInstance();
+    // QSqlDatabase 的连接也应在 QApplication 仍存活时显式移除，避免 Qt 全局析构顺序不确定。
+    LocalChatStorageMgr::DestroyInstance();
     return exitCode;
 }

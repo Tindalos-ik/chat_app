@@ -113,6 +113,11 @@ void LogicSystem::RegisterCallBacks() {
                                             const std::string &msg_data) {
         UpdateUserProfile(session, msg_id, msg_data);
     };
+    _fun_callbacks[ID_CREATE_PRIVATE_CHAT_REQ] = [this](std::shared_ptr<CSession> session,
+                                            const short &msg_id,
+                                            const std::string &msg_data) {  
+        CreatePrivateChat(session, msg_id, msg_data);
+    };
 }
 
 void LogicSystem::UpdateUserProfile(std::shared_ptr<CSession> session, const short &msg_id,
@@ -578,6 +583,8 @@ void LogicSystem::AuthFriend(std::shared_ptr<CSession> session, const short &msg
     }
 
     rtvalue["uid"] = fromuid;
+    // 1014 的接收者就是认证方；明确回传 touid，供客户端填写本地消息 recv_id。
+    rtvalue["touid"] = touid;
     rtvalue["name"] = user_info->user;
     rtvalue["email"] = user_info->email;
     rtvalue["nick"] = user_info->nick;
@@ -586,14 +593,28 @@ void LogicSystem::AuthFriend(std::shared_ptr<CSession> session, const short &msg
     rtvalue["icon"] = user_info->icon;
     rtvalue["bakname"] = bakname;
 
-    // AddFriend 在一个事务内确认申请并建立双向 friend 记录，同时将申请状态置为已同意。
-    // touid 是处理申请的用户，fromuid 是原申请用户。
-    if (!MysqlMgr::GetInstance()->AddFriend(touid, fromuid, bakname)) {
+    // AddFriend 在一个事务内确认申请、建立双向 friend/private_chat，并写入初始消息。
+    // touid 是处理申请的用户（初始消息发送者），fromuid 是原申请用户。
+    std::vector<FriendAuthMessage> authMessages;
+    if (!MysqlMgr::GetInstance()->AddFriend(touid, fromuid, bakname, authMessages)) {
         rtvalue["error"] = ErrorCode::RPCFaild;
         return;
     }
 
     rtvalue["error"] = ErrorCode::Success;
+    // 1014 与 1015 使用相同的附加消息结构。即使申请方当前不在线，认证方也能
+    // 通过 1014 建立自己的正式本地会话；申请方上线后的完整增量同步后续再补齐。
+    Json::Value textMessages(Json::arrayValue);
+    for (const FriendAuthMessage &message : authMessages) {
+        Json::Value textMessage;
+        textMessage["sender_id"] = static_cast<Json::Int64>(message.senderId);
+        textMessage["unique_id"] = message.uniqueId;
+        textMessage["msg_id"] = static_cast<Json::Int64>(message.messageId);
+        textMessage["thread_id"] = static_cast<Json::Int64>(message.threadId);
+        textMessage["msgcontent"] = message.content;
+        textMessages.append(std::move(textMessage));
+    }
+    rtvalue["textmsgs"] = textMessages;
 
     // 查询redis 查询申请者的服务器
     auto from_ip_key = USERIPPREFIX + std::to_string(fromuid);
@@ -623,6 +644,7 @@ void LogicSystem::AuthFriend(std::shared_ptr<CSession> session, const short &msg
             notify["sex"] = approverInfo.sex;
             notify["icon"] = approverInfo.icon;
             notify["bakname"] = approverInfo.user;
+            notify["textmsgs"] = textMessages;
             std::string return_str = notify.toStyledString();
             applicantSession->Send(return_str, ID_NOTIFY_AUTH_FRIEND_REQ);
         }
@@ -631,8 +653,17 @@ void LogicSystem::AuthFriend(std::shared_ptr<CSession> session, const short &msg
 
     // 申请方在其他服务器时，转发认证结果，由对端服务器通知对应 TCP 会话。
     AuthFriendReq authReq;
-    authReq.set_uid(touid);
+    // AuthFriendReq 的 fromuid 是认证方，touid 是需要接收通知的原申请方。
+    authReq.set_fromuid(touid);
     authReq.set_touid(fromuid);
+    for (const FriendAuthMessage &message : authMessages) {
+        auto *textMessage = authReq.add_textmsgs();
+        textMessage->set_sender_id(static_cast<std::int32_t>(message.senderId));
+        textMessage->set_unique_id(message.uniqueId);
+        textMessage->set_msg_id(static_cast<std::int32_t>(message.messageId));
+        textMessage->set_thread_id(static_cast<std::int32_t>(message.threadId));
+        textMessage->set_msgcontent(message.content);
+    }
     ChatGrpcClient::GetInstance()->NotifyAuthFriend(from_ip_value, authReq);
 } 
 
@@ -715,3 +746,47 @@ void LogicSystem::HandleTextMsg(std::shared_ptr<CSession> session, const short &
     const auto rpcRsp = ChatGrpcClient::GetInstance()->NotifyTextChatMsg(to_ip_value, textChatMsgReq);
     rtvalue["error"] = rpcRsp.error();
 }
+
+void LogicSystem::CreatePrivateChat(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data){
+    Json::CharReaderBuilder reader;
+    Json::Value root;
+    std::istringstream ss(msg_data);
+    std::string errs;
+    bool parse_success = Json::parseFromStream(reader, ss, &root, &errs);
+    if (!parse_success) {
+        std::cout << "Failed to parse JSON data" << std::endl;
+        std::cout << errs << std::endl;
+        return;
+    }
+
+    // uid 必须来自已经完成 ChatServer 登录的 session；请求 JSON 中的 uid 仅为协议兼容字段，
+    // 不可作为身份凭证，否则客户端可以伪造 uid 为任意用户创建会话。
+    const int uid = session ? session->GetUserId() : 0;
+    auto other_id = root["other_id"].asInt();
+
+    Json::Value rtvalue;
+    rtvalue["error"] = ErrorCode::Success;
+    rtvalue["uid"] = uid;
+    rtvalue["other_id"] = other_id;
+
+    Defer defer([this, &rtvalue, session]{
+        std::string return_str = rtvalue.toStyledString();
+        session->Send(return_str, ID_CREATE_PRIVATE_CHAT_RSP); // 发送回包，在出作用域的时候会自动调用，防御式编程处理
+    });
+
+    if (uid <= 0) {
+        rtvalue["error"] = ErrorCode::TokenInvalid;
+        return;
+    }
+
+    // chat_thread.id 是 BIGINT UNSIGNED，调用方使用同样的 64 位类型接收输出参数。
+    std::uint64_t thread_id = 0;
+    bool res = MysqlMgr::GetInstance()->CreatePrivateChat(uid, other_id, thread_id);
+    if(!res){
+        rtvalue["error"] = ErrorCode::Create_Chat_Failed;
+        return;
+    }
+
+    rtvalue["thread_id"] = thread_id;
+}
+

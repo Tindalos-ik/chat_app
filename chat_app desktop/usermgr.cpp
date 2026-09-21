@@ -79,6 +79,17 @@ void UserMgr::AddApplyList(std::shared_ptr<ApplyInfo> apply)
 
 void UserMgr::AddFriendList(std::shared_ptr<UserInfo> newfriend)
 {
+    if (!newfriend || newfriend->_uid <= 0) {
+        return;
+    }
+    // 认证结果可能由 TCP 重连或 gRPC 重试重复投递。好友列表按 uid 保持唯一，
+    // 同一好友再次出现时刷新资料而不是让联系人和聊天列表产生两份业务数据。
+    for (auto &friendInfo : _friend_list) {
+        if (friendInfo && friendInfo->_uid == newfriend->_uid) {
+            friendInfo = std::move(newfriend);
+            return;
+        }
+    }
     _friend_list.push_back(newfriend);
 }
 

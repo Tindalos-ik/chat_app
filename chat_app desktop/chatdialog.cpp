@@ -7,6 +7,7 @@
 #include <QLineEdit>
 #include <QStringLiteral>
 #include <QTimer>
+#include <QDateTime>
 #include "chatuserwid.h"
 #include "conuserwid.h"
 #include "loadingdlg.h"
@@ -20,6 +21,7 @@
 #include <QMouseEvent>
 #include "tcpmgr.h"
 #include "usermgr.h"
+#include "localchatstoragemgr.h"
 #include "settingdialog.h"
 #include <algorithm>
 #include <QJsonDocument>
@@ -106,7 +108,7 @@ ChatDialog::ChatDialog(QWidget *parent)
         if (wid == nullptr || !wid->GetUserInfo()) {
             return;
         }
-        SetCurrentChatUser(wid->GetUserInfo());
+        SetCurrentChatUser(wid->GetUserInfo(), wid->GetThreadId());
     });
 
     connect(ui->contact_list, &ConUserList::sig_loading_con_user,
@@ -167,6 +169,8 @@ ChatDialog::ChatDialog(QWidget *parent)
 
     // tcpmgr发来好友认证信号，聊天界面做出响应
     connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_auth_friend, this, &ChatDialog::slot_auth_friend);
+    connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_create_private_chat,
+            this, &ChatDialog::slot_create_private_chat);
     connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_text_chat, this, &ChatDialog::slot_text_chat);
 
 }
@@ -191,6 +195,7 @@ void ChatDialog::UpdateUserTitle()
 void ChatDialog::RefreshLoginData()
 {
     _current_chatuser.reset();
+    _current_thread_id = 0;
     UpdateUserTitle();
     ClearListItems(ui->session_list, 0);
     ClearListItems(ui->contact_list, 2);
@@ -201,9 +206,27 @@ void ChatDialog::RefreshLoginData()
 
 void ChatDialog::initChatUserList()
 {
+    // 登录时 SQLite 已按 UID 打开。先用持久化会话恢复每个好友对应的 threadId、
+    // 最后消息和未读数；没有缓存的好友仍显示为可点击的临时列表项，threadId 为 0。
+    QHash<qint64, LocalChatThread> cachedPrivateThreads;
+    const auto localStorage = LocalChatStorageMgr::GetInstance();
+    if (localStorage->IsReady()) {
+        for (const LocalChatThread &thread : localStorage->CachedThreads()) {
+            if (thread.threadType == QStringLiteral("private") && thread.peerUid > 0) {
+                cachedPrivateThreads.insert(thread.peerUid, thread);
+            }
+        }
+    }
+
     auto friend_list = UserMgr::GetInstance()->GetFriendList();
     for(const auto &obj : friend_list){
-        addChatUserWid(ui->session_list, obj, "你好", "", false);
+        const LocalChatThread thread = cachedPrivateThreads.value(obj->_uid);
+        addChatUserWid(ui->session_list, obj,
+                        thread.threadId > 0 ? thread.lastMessagePreview : QStringLiteral("你好"),
+                        thread.lastMessageAtMs > 0
+                            ? QDateTime::fromMSecsSinceEpoch(thread.lastMessageAtMs).toString(QStringLiteral("HH:mm"))
+                            : QString(),
+                        thread.unreadCount > 0, thread.threadId);
     }
 }
 
@@ -217,7 +240,8 @@ void ChatDialog::initConUserList()
 
 
 void ChatDialog::addChatUserWid(QListWidget *list, const std::shared_ptr<UserInfo> &userInfo,
-                                const QString &msg, const QString &time, bool red)
+                                const QString &msg, const QString &time, bool red,
+                                qint64 threadId)
 {
     if (!userInfo) {
         return;
@@ -225,6 +249,7 @@ void ChatDialog::addChatUserWid(QListWidget *list, const std::shared_ptr<UserInf
     auto *item = new QListWidgetItem;
     auto *wid = new ChatUserWid;
     wid->SetUserInfo(userInfo);
+    wid->SetThreadId(threadId);
     wid->SetChatMsg(msg);
     wid->SetTime(time);
     wid->ShowRedPoint(red);
@@ -425,17 +450,210 @@ void ChatDialog::slot_apply_friend(std::shared_ptr<AddFriendApply> &apply)
     ui->apply_friend_page->AddNewApply(apply); // 加入新的信息
 }
 
-void ChatDialog::slot_auth_friend(std::shared_ptr<FriendInfo> &friend_info)
+void ChatDialog::slot_auth_friend(std::shared_ptr<FriendAuthResult> &authResult)
 {
-    // 好友列表中加一个新好友
-    auto userinfo = std::make_shared<UserInfo>(friend_info->_uid, friend_info->_name, friend_info->_nick,
-                                               friend_info->_desc,friend_info->_sex, friend_info->_icon);
-    UserMgr::GetInstance()->AddFriendList(userinfo); // 更新好友列表
-    addConUserWid(ui->contact_list, friend_info->_uid, friend_info->_name, friend_info->_icon);
-    // 更新好友信息界面 TODO
+    if (!authResult || !authResult->friendInfo) {
+        return;
+    }
 
-    // 聊天会话列表也要加
-    addChatUserWid(ui->session_list, userinfo, "你好", "", true);
+    const auto &friendInfo = authResult->friendInfo;
+    auto userinfo = std::make_shared<UserInfo>(friendInfo->_uid, friendInfo->_name, friendInfo->_nick,
+                                               friendInfo->_desc, friendInfo->_sex, friendInfo->_icon);
+    UserMgr::GetInstance()->AddFriendList(userinfo);
+
+    // 认证通知可能因重连或 gRPC 重试重复到达；列表项按 uid 去重，消息则交给
+    // SQLite 的 message_id 主键幂等写入。
+    bool hasContactItem = false;
+    for (int index = 2; index < ui->contact_list->count(); ++index) {
+        auto *item = ui->contact_list->item(index);
+        auto *widget = qobject_cast<ConUserWid *>(ui->contact_list->itemWidget(item));
+        if (widget && widget->GetUid() == userinfo->_uid) {
+            hasContactItem = true;
+            break;
+        }
+    }
+    if (!hasContactItem) {
+        addConUserWid(ui->contact_list, userinfo->_uid, userinfo->_name, userinfo->_icon);
+    }
+
+    bool hasChatItem = false;
+    for (int index = 0; index < ui->session_list->count(); ++index) {
+        auto *item = ui->session_list->item(index);
+        auto *widget = qobject_cast<ChatUserWid *>(ui->session_list->itemWidget(item));
+        if (widget && widget->GetUserInfo() && widget->GetUserInfo()->_uid == userinfo->_uid) {
+            hasChatItem = true;
+            break;
+        }
+    }
+    if (!hasChatItem) {
+        // 好友认证携带的消息已经是服务端确认过的首条会话消息。创建列表项时就把
+        // 最新一条作为摘要，避免先显示固定“你好”、稍后才被 SQLite 回写覆盖。
+        std::shared_ptr<TextChatData> latestMessage;
+        for (const auto &message : authResult->textMessages) {
+            if (message && (!latestMessage
+                            || message->GetMessageId() > latestMessage->GetMessageId())) {
+                latestMessage = message;
+            }
+        }
+        const QString preview = latestMessage ? latestMessage->GetContent() : QStringLiteral("你好");
+        const QString time = latestMessage
+                                 ? QDateTime::currentDateTime().toString(QStringLiteral("HH:mm"))
+                                 : QString();
+        const qint64 threadId = latestMessage ? latestMessage->GetThreadId() : 0;
+        addChatUserWid(ui->session_list, userinfo, preview, time, false, threadId);
+    }
+
+    SaveFriendAuthMessages(userinfo, authResult->textMessages);
+}
+
+void ChatDialog::SaveFriendAuthMessages(const std::shared_ptr<UserInfo> &friendInfo,
+                                        const QList<std::shared_ptr<TextChatData>> &messages)
+{
+    const auto currentUser = UserMgr::GetInstance()->GetUserInfo();
+    const auto localStorage = LocalChatStorageMgr::GetInstance();
+    if (!friendInfo || !currentUser || !localStorage->IsReady()) {
+        return;
+    }
+
+    for (const auto &message : messages) {
+        if (!message || message->GetThreadId() <= 0 || message->GetMessageId() <= 0) {
+            continue;
+        }
+
+        LocalChatThread thread;
+        thread.threadId = message->GetThreadId();
+        thread.threadType = QStringLiteral("private");
+        thread.title = friendInfo->_name;
+        thread.peerUid = friendInfo->_uid;
+        thread.lastMessageId = message->GetMessageId();
+        thread.lastMessagePreview = message->GetContent();
+        // AddFriendMsg 没有 created_at 字段；以客户端收到认证通知的时间作为本地排序时间。
+        thread.lastMessageAtMs = QDateTime::currentMSecsSinceEpoch();
+        thread.updatedAtMs = thread.lastMessageAtMs;
+
+        // 合并旧摘要，重复认证通知不能把较新的会话预览或未读数回退。
+        for (const LocalChatThread &cachedThread : localStorage->CachedThreads()) {
+            if (cachedThread.threadId != thread.threadId) {
+                continue;
+            }
+            thread.unreadCount = cachedThread.unreadCount;
+            if (cachedThread.lastMessageId > thread.lastMessageId) {
+                thread.lastMessageId = cachedThread.lastMessageId;
+                thread.lastMessagePreview = cachedThread.lastMessagePreview;
+                thread.lastMessageAtMs = cachedThread.lastMessageAtMs;
+            }
+            break;
+        }
+
+        LocalChatMessage localMessage;
+        localMessage.messageId = message->GetMessageId();
+        localMessage.threadId = message->GetThreadId();
+        localMessage.senderId = message->GetSendUid();
+        localMessage.recvId = message->_to_uid;
+        localMessage.contentType = QStringLiteral("text");
+        localMessage.content = message->GetContent();
+        localMessage.createdAtMs = QDateTime::currentMSecsSinceEpoch();
+        localMessage.updatedAtMs = localMessage.createdAtMs;
+        localMessage.serverStatus = 0;
+        localMessage.sendState = 3;
+        const bool receivedFromFriend = message->GetSendUid() != currentUser->_uid;
+        localMessage.isRead = !receivedFromFriend;
+        // 同一条认证消息可因 TCP/gRPC 重试再次到达；同步游标已经覆盖该 message_id
+        // 时只做 SQLite 的幂等更新，不能再次累计未读数。
+        const bool messageAlreadyKnown = localStorage->SyncCursors().value(thread.threadId, 0)
+                                         >= message->GetMessageId();
+        if (!messageAlreadyKnown && receivedFromFriend
+            && (!_current_chatuser || _current_chatuser->_uid != friendInfo->_uid)) {
+            ++thread.unreadCount;
+        }
+
+        if (!localStorage->SaveReceivedMessages(thread, {localMessage}, message->GetMessageId())) {
+            qWarning() << "save friend authentication message failed:" << localStorage->LastError();
+            continue;
+        }
+
+        // 把服务端确认的 thread_id 绑定到现有 UI 项，之后点击该好友即可进入正式会话。
+        for (int index = 0; index < ui->session_list->count(); ++index) {
+            auto *item = ui->session_list->item(index);
+            auto *widget = qobject_cast<ChatUserWid *>(ui->session_list->itemWidget(item));
+            if (widget && widget->GetUserInfo() && widget->GetUserInfo()->_uid == friendInfo->_uid) {
+                widget->SetThreadId(thread.threadId);
+                widget->SetChatMsg(thread.lastMessagePreview);
+                widget->SetTime(QDateTime::fromMSecsSinceEpoch(thread.lastMessageAtMs)
+                                    .toString(QStringLiteral("HH:mm")));
+                widget->ShowRedPoint(thread.unreadCount > 0);
+                break;
+            }
+        }
+        if (_current_chatuser && _current_chatuser->_uid == friendInfo->_uid) {
+            _current_thread_id = thread.threadId;
+        }
+    }
+}
+
+void ChatDialog::slot_create_private_chat(int uid, int otherUid, qint64 threadId)
+{
+    // 1028 可能在切换账号或断线重连后才到达，先确认它属于当前登录账号，
+    // 防止旧会话回包污染新账号的本地缓存和聊天列表。
+    const auto currentUser = UserMgr::GetInstance()->GetUserInfo();
+    if (!currentUser || currentUser->_uid != uid || threadId <= 0) {
+        qWarning() << "ignore private chat response for another user or invalid thread:" << uid << threadId;
+        return;
+    }
+
+    const auto friends = UserMgr::GetInstance()->GetFriendList();
+    const auto iter = std::find_if(friends.cbegin(), friends.cend(), [otherUid](const auto &friendInfo) {
+        return friendInfo && friendInfo->_uid == otherUid;
+    });
+    if (iter == friends.cend()) {
+        qWarning() << "private chat peer is not in local friend list:" << otherUid;
+        return;
+    }
+
+    // 先持久化正式会话。之后登录时 LocalChatStorageMgr 会加载它，并把 threadId 重新绑定到列表项。
+    LocalChatThread thread;
+    thread.threadId = threadId;
+    thread.threadType = QStringLiteral("private");
+    thread.title = (*iter)->_name;
+    thread.peerUid = otherUid;
+    thread.updatedAtMs = QDateTime::currentMSecsSinceEpoch();
+    const auto localStorage = LocalChatStorageMgr::GetInstance();
+    // 重复点击“发消息”会再次收到同一 threadId。保留已有的最后消息和未读数，
+    // 不能因为一次幂等创建请求把聊天列表摘要重置为空。
+    for (const LocalChatThread &cachedThread : localStorage->CachedThreads()) {
+        if (cachedThread.threadId == threadId) {
+            thread.lastMessageId = cachedThread.lastMessageId;
+            thread.lastMessagePreview = cachedThread.lastMessagePreview;
+            thread.lastMessageAtMs = cachedThread.lastMessageAtMs;
+            thread.unreadCount = cachedThread.unreadCount;
+            break;
+        }
+    }
+    if (localStorage->IsReady() && !localStorage->UpsertThread(thread)) {
+        qWarning() << "save private chat locally failed:" << localStorage->LastError();
+    }
+
+    // 同一好友只能有一个私聊；已有临时列表项时补上 threadId，而不是重复添加 UI 项。
+    ChatUserWid *chatUserWid = nullptr;
+    for (int index = 0; index < ui->session_list->count(); ++index) {
+        auto *item = ui->session_list->item(index);
+        auto *widget = qobject_cast<ChatUserWid *>(ui->session_list->itemWidget(item));
+        if (widget && widget->GetUserInfo() && widget->GetUserInfo()->_uid == otherUid) {
+            chatUserWid = widget;
+            break;
+        }
+    }
+    if (chatUserWid) {
+        chatUserWid->SetThreadId(threadId);
+    } else {
+        addChatUserWid(ui->session_list, *iter, QStringLiteral("你好"), QString(), false, threadId);
+    }
+
+    // 用户可能在等待回包期间已经停留在该好友的聊天页；此时补齐当前会话 ID，
+    // 后续发送消息和拉取历史即可直接使用 _current_thread_id。
+    if (_current_chatuser && _current_chatuser->_uid == otherUid) {
+        _current_thread_id = threadId;
+    }
 }
 
 void ChatDialog::slot_text_chat(std::shared_ptr<TextChatData> &message)
@@ -489,21 +707,26 @@ void ChatDialog::UpdateChatSessionPreview(const std::shared_ptr<UserInfo> &userI
         auto *item = ui->session_list->item(index);
         auto *widget = qobject_cast<ChatUserWid *>(ui->session_list->itemWidget(item));
         if (widget && widget->GetUserInfo() && widget->GetUserInfo()->_uid == userInfo->_uid) {
+            // 会话列表只保留最新一条摘要；每次收到该会话的新消息时同步刷新显示时间。
             widget->SetChatMsg(message);
+            widget->SetTime(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm")));
             widget->ShowRedPoint(unread);
             return;
         }
     }
 
-    addChatUserWid(ui->session_list, userInfo, message, "", unread);
+    // 首次收到消息时创建会话项，摘要和时间必须同时初始化，不能只显示联系人信息。
+    addChatUserWid(ui->session_list, userInfo, message,
+                   QDateTime::currentDateTime().toString(QStringLiteral("HH:mm")), unread);
 }
 
-void ChatDialog::SetCurrentChatUser(const std::shared_ptr<UserInfo> &chatUser)
+void ChatDialog::SetCurrentChatUser(const std::shared_ptr<UserInfo> &chatUser, qint64 threadId)
 {
     if (!chatUser) {
         return;
     }
     _current_chatuser = chatUser;
+    _current_thread_id = threadId;
     ui->chat_title_label->setText(_current_chatuser->_name);
     ui->chat_stack->setCurrentWidget(ui->chat_page);
 

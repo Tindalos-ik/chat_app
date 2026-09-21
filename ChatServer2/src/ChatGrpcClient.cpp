@@ -73,11 +73,11 @@ AddFriendRsp ChatGrpcClient::NotifyAddFriend(std::string server_ip, const AddFri
     
 AuthFriendRsp ChatGrpcClient::NotifyAuthFriend(std::string server_ip, const AuthFriendReq& request){
     AuthFriendRsp rsp;
-    Defer defer([&rsp, &request](){
-        rsp.set_error(ErrorCode::Success);
-        rsp.set_uid(request.uid());
-        rsp.set_touid(request.touid());
-    });
+    // RPC 传输失败和目标服务的业务成功必须区分。先初始化为 RPCFaild，只有远端
+    // 明确写回 response 时才使用其 error，避免连接池不存在时被误报为成功。
+    rsp.set_error(ErrorCode::RPCFaild);
+    rsp.set_uid(request.fromuid());
+    rsp.set_touid(request.touid());
 
     auto find_iter = _pools.find(server_ip); // 找到对应的连接池
     if(find_iter == _pools.end()){
@@ -89,6 +89,9 @@ AuthFriendRsp ChatGrpcClient::NotifyAuthFriend(std::string server_ip, const Auth
     ClientContext context;
     // 获取连接池中的一个连接
     auto stub = pool->getConnnection();
+    if (!stub) {
+        return rsp;
+    }
     Status status = stub->NotifyAuthFriend(&context, request, &rsp); // 调用远程方法
     Defer defercon([&pool, &stub, this](){
         pool->returnConnection(std::move(stub));

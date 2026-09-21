@@ -149,7 +149,6 @@ void CServer::on_timer(const boost::system::error_code &error)
 
     // 收集过期信息，尽量避免加线程锁和分布式锁，容易导致死锁
     std::vector<std::shared_ptr<CSession>> expired_sessions;
-    time_t now = time(nullptr);
     for (const auto &entry : sessions_copy) {
         if( entry.second->isHeartbeatExpired()) {
             expired_sessions.push_back(entry.second);

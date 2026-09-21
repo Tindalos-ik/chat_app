@@ -36,16 +36,16 @@ HTTP 负责注册、登录、验证码和重置密码等短请求。登录拿到
 | 1009 | `ID_ADD_FRIEND_REQ` | TCP `{uid,applyname,bakname,touid}` | ChatServer 写申请并通知目标用户 |
 | 1010 | `ID_ADD_FRIEND_RSP` | ChatServer 返回申请写入结果 | 服务端已回包，客户端尚未注册专用 handler |
 | 1011 | `ID_NOTIFY_ADD_FRIEND_REQ` | ChatServer 推送 `{applyuid,name,desc,nick,sex,icon}` 给被申请方 | 客户端加入新朋友列表 |
-| 1013 | `ID_AUTH_FRIEND_REQ` | 被申请方提交 `{fromuid,bakname,touid}` | ChatServer1/2 已注册并建立双向好友关系 |
-| 1014 | `ID_AUTH_FRIEND_RSP` | 认证请求处理结果 | 客户端已解析好友资料并更新好友列表 |
-| 1015 | `ID_NOTIFY_AUTH_FRIEND_REQ` | 通知申请方同意/拒绝结果 | 同服和跨服通知均已接通 |
+| 1013 | `ID_AUTH_FRIEND_REQ` | 被申请方提交 `{fromuid,bakname,touid}` | ChatServer1 在同一事务内确认好友关系、创建/复用私聊并写入初始消息 |
+| 1014 | `ID_AUTH_FRIEND_RSP` | 认证请求处理结果，含 `textmsgs` | 客户端更新好友列表、绑定 `thread_id` 并把初始消息写入 SQLite |
+| 1015 | `ID_NOTIFY_AUTH_FRIEND_REQ` | 通知申请方认证结果，含同一份 `textmsgs` | 同服和跨服均透传初始消息；客户端以 `msg_id` 幂等缓存 |
 | 1017 | `ID_TEXT_CHAT_MSG_REQ` | TCP `{fromuid,touid,textArray}` 文本请求 | ChatServer1/2 已校验会话 UID 后同服或跨服转发 |
 | 1018 | `ID_TEXT_CHAT_MSG_RSP` | 文本消息请求回包 | 客户端已按 `msgid` 输出发送成功/失败日志 |
 | 1019 | `ID_NOTIFY_TEXT_CHAT_MSG_REQ` | 推送对方收到的文本消息 | 客户端已解析；当前打开对应聊天窗口时显示气泡 |
 | 1021 | `ID_NOTIFY_OFF_LINE_REQ` | 重复登录时通知旧客户端下线 | 服务端发送后关闭旧 socket；客户端解析通知或检测已登录连接断开后返回登录页 |
 | 1023/1024 | `ID_HEART_BEAT_REQ/RSP` | 客户端定期 Ping、服务端立即 Pong | 客户端每 20 秒发送，60 秒无回包时弹出心跳超时提示并返回登录页；ChatServer 60 秒无有效收包清理会话 |
 | 1025/1026 | `ID_LOAD_CHAT_THREAD_REQ/RSP` | 加载聊天会话列表 | ID 已定义，当前未完整实现 |
-| 1027/1028 | `ID_CREATE_PRIVATE_CHAT_REQ/RSP` | 创建私聊会话 | ID 已定义，当前未完整实现 |
+| 1027/1028 | `ID_CREATE_PRIVATE_CHAT_REQ/RSP` | 创建私聊会话 | 客户端好友资料页发送 1027；ChatServer 创建或获取唯一私聊；客户端处理 1028 并写入本地 SQLite 会话缓存 |
 | 1029/1030 | `ID_LOAD_CHAT_MSG_REQ/RSP` | 加载会话历史消息 | ID 已定义，当前未完整实现 |
 | 1031/1032 | `ID_UPDATE_USER_PROFILE_REQ/RSP` | TCP `{uid,nick,desc,icon}` 更新当前用户资料 | ChatServer 以登录会话 UID 鉴权，更新 MySQL 并失效 Redis 用户缓存 |
 
@@ -160,33 +160,66 @@ B 的 `ChatDialog::slot_apply_friend` 将申请缓存到 `UserMgr`，点开“�
 
 ## 7. 好友认证和最终结果
 
-设计上的完整链路如下：
+当前同意好友后的完整链路如下：
 
 ```text
 1. B 在申请列表点击“同意”或“拒绝”
 2. B -> ID_AUTH_FRIEND_REQ
-   {"uid":B 的 uid,"touid":A 的 uid,"agree":true/false}
-3. B 所在 ChatServer 更新 friend_apply 状态
-4. B <- ID_AUTH_FRIEND_RSP
-5. 跨 ChatServer 时，服务端之间通过 gRPC `NotifyAuthFriend` 转发认证结果
-6. A <- ID_NOTIFY_AUTH_FRIEND_REQ
-7. A 更新“等待对方同意”为“已添加”或“已拒绝”
+   {"fromuid":A 的 uid,"bakname":"B 给 A 的备注","touid":B 的 uid}
+3. B 所在 ChatServer 在一个 MySQL 事务中更新 `friend_apply`、双向 `friend`、
+   创建或复用 `private_chat`，并向 `chat_message` 写入一条“已成为好友”初始消息
+4. B <- ID_AUTH_FRIEND_RSP，消息在 `textmsgs` 中返回
+5. A 同服时直接收到 `1015`；跨 ChatServer 时以 gRPC `NotifyAuthFriend(AuthFriendReq)`
+   转发，`AuthFriendReq.fromuid` 是 B，`touid` 是 A，`textmsgs` 原样透传
+6. A <- ID_NOTIFY_AUTH_FRIEND_REQ，带同一条初始消息
+7. 两端客户端先更新好友资料，再按 `thread_id` 建立/更新本地正式会话，并以 `msg_id`
+   主键幂等写入 SQLite；重复通知不会重复增加未读数
 ```
+
+跨服认证的 protobuf 附加消息为：
+
+```proto
+message AddFriendMsg {
+  int32 sender_id = 1;
+  string unique_id = 2;
+  int32 msg_id = 3;
+  int32 thread_id = 4;
+  string msgcontent = 5;
+}
+
+message AuthFriendReq {
+  int32 fromuid = 1;              // 认证方
+  int32 touid = 2;                // 接收通知的原申请方
+  repeated AddFriendMsg textmsgs = 3;
+}
+```
+
+TCP `1014/1015` 将其映射为同名 `textmsgs` 数组。单项 JSON 使用
+`sender_id`、`unique_id`、`msg_id`、`thread_id`、`msgcontent`；客户端仍可读取旧版本的
+`chat_datas` / `sender` / `msg_content`，因此升级客户端后可兼容旧服务端的认证通知。
 
 ## 8. 聊天通信
 
-设计上的单聊链路为：
+文本消息目前仍按用户 UID 路由，并不依赖私聊会话。`1027` 的服务端处理会创建或获取私聊：
 
 ```text
-A -> ID_CREATE_PRIVATE_CHAT_REQ {fromuid,touid}
-A <- ID_CREATE_PRIVATE_CHAT_RSP {thread_id,...}
+客户端好友资料页 -> ID_CREATE_PRIVATE_CHAT_REQ {uid, other_id}
+                  -> ChatServer.CreatePrivateChat
+                  -> MySQL chat_thread/private_chat
+客户端 <- ID_CREATE_PRIVATE_CHAT_RSP {error, uid, other_id, thread_id}
+```
 
+服务端会将两个 UID 排序，并通过 `private_chat(user1_id, user2_id)` 的唯一索引确保同一对用户只对应一个 `thread_id`。并发请求命中已有记录时返回已有会话；竞争创建产生的临时 `chat_thread` 会在同一事务中删除。Qt 客户端发送 1027 后会注册并处理 1028：校验当前登录 uid、写入 `LocalChatStorageMgr`，再将正式 `thread_id` 绑定到对应 `ChatUserWid`。
+
+后续完整单聊链路应为：
+
+```text
 A -> ID_TEXT_CHAT_MSG_REQ {fromuid,touid,textArray:[{content,msgid}]}
 A <- ID_TEXT_CHAT_MSG_RSP {error,fromuid,touid,textArray}
 B <- ID_NOTIFY_TEXT_CHAT_MSG_REQ {error,fromuid,touid,textArray}
 ```
 
-服务端用当前 TCP 会话保存的 UID 校验 `fromuid`，避免客户端伪造发送者。跨 ChatServer 时，发送方服务根据 Redis 的 `uip_<uid>` 找到目标服务，经 gRPC `NotifyTextChatMsg` 转发，再推送给目标用户。当前没有离线消息落库；目标会话不存在会在 `1018` 中返回错误。会话列表和历史消息分别使用 1025/1026、1029/1030 加载。
+服务端用当前 TCP 会话保存的 UID 校验文本请求的 `fromuid`，避免客户端伪造发送者。跨 ChatServer 时，发送方服务根据 Redis 的 `uip_<uid>` 找到目标服务，经 gRPC `NotifyTextChatMsg` 转发，再推送给目标用户。当前没有离线消息落库；目标会话不存在会在 `1018` 中返回错误。会话列表和历史消息分别使用 1025/1026、1029/1030 加载。
 
 ## 9. TCP 包格式
 
@@ -204,7 +237,7 @@ ChatServer TCP 包固定为：
 | --- | --- | --- |
 | GateServer | 验证码、注册、登录、重置密码 | 登录回包字段可继续补充用户资料 |
 | StatusServer | ChatServer 负载选择、token 签发/校验 | 更完整的在线状态管理 |
-| ChatServer | TCP 登录、搜索、好友申请/认证、在线文本转发 | 离线消息、会话/历史消息 |
+| ChatServer | TCP 登录、搜索、好友申请/认证、在线文本转发、私聊会话创建/查询 | 离线消息、会话/历史消息加载 |
 | ChatServer 间 gRPC | 好友申请、认证结果、在线文本转发 | 离线消息补偿和重试 |
 | Qt 客户端 | HTTP 流程、TCP 登录/搜索/好友、在线文本收发 | 发送状态 UI、重试、离线消息展示 |
 | VarifyServer | Redis 验证码、邮件发送 | 邮件失败后的补偿和监控 |

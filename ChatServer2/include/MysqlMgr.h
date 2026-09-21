@@ -8,10 +8,22 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
+#include <cstdint>
 #include <string>
 #include <vector>
 #include "singleton.h"
 #include "data.h"
+
+// 好友认证成功时随通知下发的初始会话消息。
+// 这里使用独立的数据结构，避免数据访问层依赖 protobuf 生成头文件；
+// LogicSystem 再将它转换为 AuthFriendReq::textmsgs。
+struct FriendAuthMessage {
+    std::uint64_t senderId = 0;
+    std::uint64_t messageId = 0;
+    std::uint64_t threadId = 0;
+    std::string uniqueId;
+    std::string content;
+};
 
 /**
  * @class MySqlPool
@@ -149,11 +161,17 @@ public:
         int recipientUid,
         int newStatus);
 
-    // 原子地确认申请并建立双向好友关系；双方备注分别属于各自的好友记录。
+    // 原子地确认申请、建立双向好友关系和唯一私聊，并返回需要通知双方的初始消息。
+    // 事务提交成功前 authMessages 不会被修改，调用方不会把半成品消息推给客户端。
     bool AddFriend(
         int recipientUid,
         int applicantUid,
-        const std::string& recipientRemark);
+        const std::string& recipientRemark,
+        std::vector<FriendAuthMessage>& authMessages);
+
+    // 创建或获取两个用户唯一的私聊；threadId 是输出参数，对应 chat_thread.id（BIGINT UNSIGNED）。
+    // 无论本次创建还是已存在，成功时都会返回同一个会话 ID。
+    bool CreatePrivateChat(int user1Id, int user2Id, std::uint64_t& threadId);
 
 private:
     MysqlMgr();

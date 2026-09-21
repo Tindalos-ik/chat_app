@@ -1,7 +1,9 @@
 #include "MySqlMgr.h"
+#include <algorithm>
 #include <iostream>
 #include <vector>
 #include <sstream>
+#include <limits>
 #include <json.h>
 #include "ConfigMgr.h"
 #include "const.h"
@@ -727,7 +729,10 @@ bool MysqlMgr::UpdateFriendApplyStatus(
 bool MysqlMgr::AddFriend(
     int recipientUid,
     int applicantUid,
-    const std::string& recipientRemark){
+    const std::string& recipientRemark,
+    std::vector<FriendAuthMessage>& authMessages){
+    // 只有整个事务成功后才把消息交给调用方，避免认证失败仍向客户端显示“已是好友”。
+    authMessages.clear();
     if (recipientUid <= 0 || applicantUid <= 0 || recipientUid == applicantUid) {
         return false;
     }
@@ -740,7 +745,7 @@ bool MysqlMgr::AddFriend(
 
     try {
         // 锁住申请记录后确认状态，再写入双向关系，避免“已同意但好友只加了一边”。
-        con->startTransaction();
+        con->startTransaction(); // 事务开始
         const std::string applicationSql =
             "SELECT status, applicant_remark FROM friend_apply "
             "WHERE from_uid = ? AND to_uid = ? FOR UPDATE";
@@ -756,6 +761,7 @@ bool MysqlMgr::AddFriend(
 
         constexpr int kPendingStatus = 0;
         constexpr int kAcceptedStatus = 1;
+        bool acceptedNow = false;
         const int applicationStatus = applicationRow[0].get<int>();
         if (applicationStatus == kPendingStatus) {
             const std::string acceptSql =
@@ -765,6 +771,7 @@ bool MysqlMgr::AddFriend(
                 .bind(applicantUid)
                 .bind(recipientUid)
                 .execute();
+            acceptedNow = true;
         } else if (applicationStatus != kAcceptedStatus) {
             con->rollback();
             return false;
@@ -789,7 +796,104 @@ bool MysqlMgr::AddFriend(
             .bind(applicantRemark)
             .execute();
 
+        // 好友关系和私聊必须在同一个事务内完成。双方 uid 固定按小到大保存，
+        // 才能和 private_chat 的唯一索引 (user1_id, user2_id) 对应起来。
+        const int uid1 = std::min(recipientUid, applicantUid);
+        const int uid2 = std::max(recipientUid, applicantUid);
+        std::uint64_t threadId = 0;
+        const auto existingThread = con->sql(
+            "SELECT thread_id FROM private_chat "
+            "WHERE user1_id = ? AND user2_id = ? FOR UPDATE")
+            .bind(uid1)
+            .bind(uid2)
+            .execute()
+            .fetchOne();
+        if (existingThread) {
+            threadId = existingThread[0].get<std::uint64_t>();
+        } else {
+            auto createThreadResult = con->sql(
+                "INSERT INTO chat_thread (type, created_at) VALUES ('private', NOW())").execute();
+            const std::uint64_t newThreadId = createThreadResult.getAutoIncrementValue();
+            if (newThreadId == 0) {
+                con->rollback();
+                return false;
+            }
+
+            // 唯一索引是最终并发保障。重复键时 LAST_INSERT_ID(thread_id) 会返回赢家，
+            // 本次临时创建的 chat_thread 随后删除，避免留下无法访问的孤儿会话。
+            con->sql(
+                "INSERT INTO private_chat (thread_id, user1_id, user2_id, created_at) "
+                "VALUES (LAST_INSERT_ID(?), ?, ?, NOW()) "
+                "ON DUPLICATE KEY UPDATE thread_id = LAST_INSERT_ID(thread_id)")
+                .bind(newThreadId)
+                .bind(uid1)
+                .bind(uid2)
+                .execute();
+            const auto threadIdRow = con->sql("SELECT LAST_INSERT_ID()").execute().fetchOne();
+            if (!threadIdRow) {
+                con->rollback();
+                return false;
+            }
+            threadId = threadIdRow[0].get<std::uint64_t>();
+            if (threadId != newThreadId) {
+                con->sql("DELETE FROM chat_thread WHERE id = ?").bind(newThreadId).execute();
+            }
+        }
+
+        // textmsgs 的 msg_id/thread_id 当前是 proto int32。数据库使用 BIGINT，超过
+        // int32 范围时拒绝本次事务，不能静默截断成错误的本地会话或消息 ID。
+        if (threadId == 0 || threadId > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max())) {
+            con->rollback();
+            return false;
+        }
+
+        constexpr const char* kFriendAuthContent = "我们已经是好友了，开始聊天吧。";
+        std::uint64_t messageId = 0;
+        // 重复点击“同意”应保持幂等：第一次认证写入初始消息；后续请求复用同一条，
+        // 让网络重试仍可把正确的 message_id 推给客户端。
+        if (!acceptedNow) {
+            const auto existingMessage = con->sql(
+                "SELECT message_id FROM chat_message "
+                "WHERE thread_id = ? AND sender_id = ? AND recv_id = ? AND content = ? "
+                "ORDER BY message_id ASC LIMIT 1")
+                .bind(threadId)
+                .bind(recipientUid)
+                .bind(applicantUid)
+                .bind(kFriendAuthContent)
+                .execute()
+                .fetchOne();
+            if (existingMessage) {
+                messageId = existingMessage[0].get<std::uint64_t>();
+            }
+        }
+        if (messageId == 0) {
+            auto insertMessageResult = con->sql(
+                "INSERT INTO chat_message "
+                "(thread_id, sender_id, recv_id, content, created_at, updated_at, status) "
+                "VALUES (?, ?, ?, ?, NOW(), NOW(), 0)")
+                .bind(threadId)
+                .bind(recipientUid)
+                .bind(applicantUid)
+                .bind(kFriendAuthContent)
+                .execute();
+            messageId = insertMessageResult.getAutoIncrementValue();
+        }
+        if (messageId == 0 || messageId > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max())) {
+            con->rollback();
+            return false;
+        }
+
         con->commit();
+
+        FriendAuthMessage message;
+        message.senderId = static_cast<std::uint64_t>(recipientUid);
+        message.messageId = messageId;
+        message.threadId = threadId;
+        // 系统生成的初始消息没有客户端 UUID；以服务端 message_id 构造稳定标识，
+        // 同一条消息重试时 unique_id 不会变化。
+        message.uniqueId = "friend-auth-" + std::to_string(messageId);
+        message.content = kFriendAuthContent;
+        authMessages.push_back(std::move(message));
         return true;
     } catch (const std::exception& e) {
         try {
@@ -841,6 +945,93 @@ bool MysqlMgr::GetFriendInfo(
         return true;
     } catch (const std::exception& e) {
         std::cout << "Exception: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+bool MysqlMgr::CreatePrivateChat(int user1Id, int user2Id, std::uint64_t& threadId)
+{
+    // 输出参数先清零：调用方只要看到 false，就不会误用上次调用残留的会话 ID。
+    threadId = 0;
+    if (user1Id <= 0 || user2Id <= 0 || user1Id == user2Id) {
+        return false;
+    }
+
+    auto con = pool_->GetConnection();
+    if (con == nullptr) {
+        return false;
+    }
+    Defer defer([&con, this]() { pool_->ReturnConnection(std::move(con)); });
+
+    try {
+        // 私聊双方统一按 uid 小到大保存，(A, B) 与 (B, A) 才能命中同一个唯一索引。
+        const int uid1 = std::min(user1Id, user2Id);
+        const int uid2 = std::max(user1Id, user2Id);
+
+        // 创建 chat_thread、private_chat 和清理并发竞争产生的临时会话必须处于同一事务。
+        con->startTransaction();
+
+        // 已存在时直接返回。FOR UPDATE 同时让常见并发场景在这一行上串行化。
+        const std::string findSql =
+            "SELECT thread_id FROM private_chat "
+            "WHERE user1_id = ? AND user2_id = ? FOR UPDATE";
+        const auto existingRow = con->sql(findSql).bind(uid1).bind(uid2).execute().fetchOne();
+        if (existingRow) {
+            threadId = existingRow[0].get<std::uint64_t>();
+            con->commit();
+            return true;
+        }
+
+        // 尚未找到时先创建统一会话入口。getAutoIncrementValue 只属于当前连接，
+        // 连接被本次事务独占，不会混入连接池中其他请求的自增 ID。
+        // SqlResult::getAutoIncrementValue() 会读取结果状态，Connector/C++ 将它定义为非 const。
+        auto createThreadResult = con->sql(
+            "INSERT INTO chat_thread (type, created_at) VALUES ('private', NOW())").execute();
+        const std::uint64_t newThreadId = createThreadResult.getAutoIncrementValue();
+        if (newThreadId == 0) {
+            con->rollback();
+            return false;
+        }
+
+        // uniq_private_thread 是最后一道并发保障：即使两个事务都先查不到，最终也只允许
+        // 一条 private_chat 记录。LAST_INSERT_ID(?) 保证“本次插入成功”的分支也会设置
+        // 当前连接的会话变量；发生重复时 LAST_INSERT_ID(thread_id) 则写入“赢家”的 ID，
+        // 因而下面无论哪条分支都可用同一种方式读取最终 thread_id。
+        const std::string upsertPrivateChatSql =
+            "INSERT INTO private_chat (thread_id, user1_id, user2_id, created_at) "
+            "VALUES (LAST_INSERT_ID(?), ?, ?, NOW()) "
+            "ON DUPLICATE KEY UPDATE thread_id = LAST_INSERT_ID(thread_id)";
+        con->sql(upsertPrivateChatSql)
+            .bind(newThreadId)
+            .bind(uid1)
+            .bind(uid2)
+            .execute();
+
+        const auto threadIdRow = con->sql("SELECT LAST_INSERT_ID()").execute().fetchOne();
+        if (!threadIdRow) {
+            con->rollback();
+            return false;
+        }
+        threadId = threadIdRow[0].get<std::uint64_t>();
+
+        // 若另一并发请求先创建了私聊，刚插入的 chat_thread 没有任何 private_chat 引用。
+        // 在提交前删除这条临时记录，避免聊天列表出现无法进入的孤儿会话。
+        if (threadId != newThreadId) {
+            con->sql("DELETE FROM chat_thread WHERE id = ?")
+                .bind(newThreadId)
+                .execute();
+        }
+
+        con->commit();
+        return true;
+    } catch (const std::exception& e) {
+        // 事务内任一步失败都回滚；rollback 自身失败不应掩盖原始异常。
+        try {
+            con->rollback();
+        } catch (...) {
+        }
+        threadId = 0;
+        std::cerr << "Exception: " << e.what() << std::endl;
         return false;
     }
 }

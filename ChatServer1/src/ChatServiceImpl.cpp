@@ -48,7 +48,7 @@ Status ChatServiceImpl::NotifyAuthFriend(ServerContext* context, const AuthFrien
     auto touid = request->touid();
     auto session = UserMgr::GetInstance()->GetSession(touid);
     response->set_error(ErrorCode::Success);
-    response->set_uid(request->uid());
+    response->set_uid(request->fromuid());
     response->set_touid(request->touid());
 
     if(session == nullptr){
@@ -57,15 +57,15 @@ Status ChatServiceImpl::NotifyAuthFriend(ServerContext* context, const AuthFrien
     }
 
     // 申请方客户端需要认证者的完整资料来立即创建好友条目。
-    UserInfo approverInfo = MysqlMgr::GetInstance()->GetUserInfo(request->uid());
-    if (approverInfo.uid != request->uid()) {
+    UserInfo approverInfo = MysqlMgr::GetInstance()->GetUserInfo(request->fromuid());
+    if (approverInfo.uid != request->fromuid()) {
         response->set_error(ErrorCode::UidInvalid);
         return Status::OK;
     }
 
     Json::Value rtvalue;
     rtvalue["error"] = ErrorCode::Success;
-    rtvalue["uid"] = request->uid();
+    rtvalue["uid"] = request->fromuid();
     rtvalue["touid"] = request->touid();
     rtvalue["name"] = approverInfo.user;
     rtvalue["nick"] = approverInfo.nick;
@@ -73,6 +73,20 @@ Status ChatServiceImpl::NotifyAuthFriend(ServerContext* context, const AuthFrien
     rtvalue["sex"] = approverInfo.sex;
     rtvalue["icon"] = approverInfo.icon;
     rtvalue["bakname"] = approverInfo.user;
+
+    // gRPC 的 repeated AddFriendMsg 不能直接发送给 Qt；在 TCP JSON 中保留同名
+    // textmsgs 字段和逐项字段名，客户端可按 message_id 幂等写入 SQLite。
+    Json::Value textMessages(Json::arrayValue);
+    for (const auto &message : request->textmsgs()) {
+        Json::Value textMessage;
+        textMessage["sender_id"] = message.sender_id();
+        textMessage["unique_id"] = message.unique_id();
+        textMessage["msg_id"] = message.msg_id();
+        textMessage["thread_id"] = message.thread_id();
+        textMessage["msgcontent"] = message.msgcontent();
+        textMessages.append(std::move(textMessage));
+    }
+    rtvalue["textmsgs"] = textMessages;
 
     std::string return_str = rtvalue.toStyledString();
     session->Send(return_str, ID_NOTIFY_AUTH_FRIEND_REQ); // 发送认证好友请求

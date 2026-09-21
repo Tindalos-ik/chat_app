@@ -2,7 +2,7 @@
 
 基于 C++ 的分布式即时聊天项目，包含 Qt 6 桌面客户端、HTTP 网关、状态服务、两个 TCP 聊天服务实例、资源服务和 Node.js 邮箱验证码服务。
 
-项目提供注册、邮箱验证码、登录、找回密码、好友申请/认证、好友列表加载、同账号重复登录互踢、客户端与 ChatServer 的应用层心跳检测，以及在线文本消息的同服/跨服转发。聊天消息暂不持久化，也不支持离线消息补投。
+项目提供注册、邮箱验证码、登录、找回密码、好友申请/认证、好友列表加载、同账号重复登录互踢、客户端与 ChatServer 的应用层心跳检测，以及在线文本消息的同服/跨服转发。好友认证成功会在 MySQL 中创建或复用私聊、持久化一条初始消息，并在 `1014/1015` 通知中写入客户端 SQLite 缓存。常规在线文本消息的服务端持久化及离线补投协议仍需结合 `note/聊天信息存储方案.md` 接入。
 
 ## 架构
 
@@ -93,7 +93,17 @@ mysql -uroot -p < sql/create_tables.sql
 
 > 重复执行脚本前请留意 `user_id` 的初始插入语句。已有数据时不应重复插入该分配器记录。
 
-### 2. 配置服务端连接信息
+### 2. 初始化聊天会话表
+
+私聊会话创建（TCP `1027/1028` 的服务端入口）依赖额外的会话表。需要启用该能力时，在完成基础建表后执行：
+
+```powershell
+mysql -uroot -p < sql/chat_message_storage.sql
+```
+
+脚本创建 `chat_thread`、`private_chat`、群聊相关表和 `chat_message`。当前 ChatServer 已使用其中的 `chat_thread` 与 `private_chat` 创建或复用私聊；消息持久化、会话列表和历史消息加载仍未接入协议。
+
+### 3. 配置服务端连接信息
 
 按本机 MySQL 和 Redis 的实际账号修改下列文件中的 `[Mysql]`、`[Redis]`：
 
@@ -118,7 +128,7 @@ mysql -uroot -p < sql/create_tables.sql
 
 `StatusServer/config.ini` 的 `[ChatServers]`、每台 ChatServer 的 `[SelfChatServer]` 和 `[PeerServer]` 共同定义这套拓扑。若修改端口、主机或名称，需要同步更新三份相关配置。
 
-### 3. 配置验证码服务
+### 4. 配置验证码服务
 
 ```powershell
 Set-Location VarifyServer
@@ -130,7 +140,7 @@ npm install
 
 > `config.example.json` 中 MySQL 端口为 `3306`。若验证码服务后续需要连接本项目的 MySQL X DevAPI，请按实际 MySQL 配置调整；当前验证码发送流程依赖 SMTP 与 Redis。
 
-### 4. 配置客户端网关地址
+### 5. 配置客户端网关地址
 
 桌面客户端从 `chat_app desktop/config.ini` 的 `[GateServer]` 读取 HTTP 网关地址。默认值为 `localhost:8080`；客户端与服务端不在同一台机器时，改为可访问的网关主机名或 IP。
 
@@ -156,7 +166,7 @@ build\ResourceServer\Debug\ResourceServer.exe
 
 根目录 CMake 会从 `proto/message.proto` 自动生成 protobuf/gRPC 代码。各服务的 `config.ini` 也会被复制到对应 Debug 目录；服务必须从可执行文件所在目录启动，才能读取这份运行时配置。
 
-桌面客户端使用 Qt Creator 打开 `chat_app desktop/CMakeLists.txt`，选择 Qt 6 kit 后构建运行。
+桌面客户端使用 Qt Creator 打开 `chat_app desktop/CMakeLists.txt`，选择带 Qt SQL 模块的 Qt 6 kit 后构建运行。SQLite 使用 Qt 自带的 `QSQLITE` 驱动，不需要安装或启动独立数据库服务。
 
 ## 启动
 
@@ -241,8 +251,9 @@ curl http://127.0.0.1:8080/get_test
 - [心跳检测](note/心跳检测.md)：1023/1024 协议、超时参数、统一清理及复测步骤。
 - [异常处理](note/异常处理.md)：网络异常、异步回调生命周期与 ChatServer 停止顺序。
 
-- [聊天信息收发](聊天信息收发.md)：当前文本聊天的完整 TCP、Redis 路由和 gRPC 跨服转发链路。
+- [聊天信息收发](note/聊天信息收发.md)：当前文本聊天的完整 TCP、Redis 路由和 gRPC 跨服转发链路。
 - [登录全链路](note/login.md)：注册、登录与 token 校验流程。
 - [分布式聊天服务设计](note/分布式聊天服务设计.md)：服务拆分和负载均衡设计。
 - [服务部署](note/服务部署.md)：Windows/Linux 部署笔记。
 - [数据库设计](note/数据库设计.md)：MySQL 表结构说明。
+- [聊天信息存储方案](note/聊天信息存储方案.md)：服务端会话/消息模型、客户端 SQLite 缓存和增量同步边界。

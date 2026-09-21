@@ -66,6 +66,17 @@ void ChatUserWid::ShowRedPoint(bool show)
     ui->red_point->setVisible(show);
 }
 
+void ChatUserWid::SetThreadId(qint64 threadId)
+{
+    // 这里只保存标识，不直接发网络请求；点击列表项时 ChatDialog 取出该值决定当前会话。
+    _threadId = threadId;
+}
+
+qint64 ChatUserWid::GetThreadId() const
+{
+    return _threadId;
+}
+
 QString ChatUserWid::GetName() const
 {
     return _name;

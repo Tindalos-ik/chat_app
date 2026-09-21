@@ -65,7 +65,10 @@ signals:
     void sig_login_failed(int); // 发送给logindialog
     void sig_user_search(std::shared_ptr<SearchInfo>& si); // 发送给searchlist，用于显示搜索结果
     void sig_friend_apply(std::shared_ptr<AddFriendApply>& si); // 发送给chatdialog
-    void sig_auth_friend(std::shared_ptr<FriendInfo>&); // 认证好友成功，发送给chatdialog
+    // 认证成功的好友资料及附加初始消息（含服务端 thread_id/message_id）。
+    void sig_auth_friend(std::shared_ptr<FriendAuthResult>&);
+    // 1028 回包：服务端创建或找到唯一私聊后返回的正式会话 ID。
+    void sig_create_private_chat(int uid, int otherUid, qint64 threadId);
     void sig_text_chat(std::shared_ptr<TextChatData>&); // 收到对方推送的文本消息
     void sig_off_line();
     void sig_connection_lost(); // 已登录连接被服务端关闭，但未完整收到踢人通知

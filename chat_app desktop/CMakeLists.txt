@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.19)
 project(chat_app LANGUAGES CXX)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Core Widgets Network)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Core Widgets Network Sql)
 
 qt_standard_project_setup()
 set(CMAKE_AUTORCC ON) #上面那个只设置了moc和uic，没有设置rcc
@@ -56,6 +56,8 @@ qt_add_executable(chat_app
     settingdialog.h settingdialog.cpp settingdialog.ui
     resourceclient.cpp
     resourceclient.h
+    localchatstoragemgr.h
+    localchatstoragemgr.cpp
     #ini、ui、qrc直接加入可执行文件
 )
 
@@ -66,6 +68,7 @@ target_link_libraries(chat_app
         Qt::Core
         Qt::Widgets
         Qt::Network
+        Qt::Sql
 )
 
 install(TARGETS chat_app

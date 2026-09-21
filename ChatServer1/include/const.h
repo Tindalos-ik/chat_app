@@ -23,6 +23,7 @@ enum ErrorCode{
     TokenInvalid = 1012, //token无效
     SearchUserNoExist = 1013, //搜索的用户不存在
     ServerBusy = 1014, //服务器繁忙
+    Create_Chat_Failed = 1015, //创建聊天失败
 };
 
 //手动定义一个Defer类，里面有一个函数，用于在函数结束时自动执行，比如释放资源，实现类似RAII的功能   这个是go语言中的defer关键字

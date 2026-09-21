@@ -3,6 +3,7 @@
 
 #include <QWidget>
 #include <QSize>
+#include <QtGlobal>
 #include <memory>
 #include "listitembase.h"
 #include "userdata.h"
@@ -30,6 +31,9 @@ public:
     void SetTime(const QString &time);
     void SetHeadIcon(const QString &icon_path); // 加载头像并裁剪成圆形
     void ShowRedPoint(bool show);              // 未读红点
+    // 服务端分配的正式会话 ID；0 表示尚未创建私聊。
+    void SetThreadId(qint64 threadId);
+    qint64 GetThreadId() const;
     QString GetName() const; // 取联系人名字（点击条目后聊天标题用）
     QString GetIcon() const; // 取头像路径
 
@@ -38,6 +42,7 @@ private:
     std::shared_ptr<UserInfo> _userInfo;
     QString _name; // 联系人名字
     QString _icon; // 头像资源路径
+    qint64 _threadId = 0;
 };
 
 #endif // CHATUSERWID_H

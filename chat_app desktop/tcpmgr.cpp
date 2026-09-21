@@ -4,9 +4,11 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QDateTime>
+#include <QVariant>
 #include <limits>
 #include "usermgr.h"
 #include "userdata.h"
+#include "localchatstoragemgr.h"
 
 namespace {
 constexpr int kHeartbeatIntervalMs = 20 * 1000;
@@ -145,6 +147,13 @@ void TcpMgr::initHandlers()
         userMgr->SetUserInfo(std::move(userinfo));
         userMgr->SetToken(json_obj["token"].toString());
 
+        // 本地缓存以登录 uid 隔离。首次登录自动建库建表，已有数据库则读取会话摘要；
+        // 缓存打开失败不应阻断在线登录，后续消息仍可正常收发，只是不能离线查看。
+        if (!LocalChatStorageMgr::GetInstance()->Initialize(uid)) {
+            qWarning() << "local chat cache is unavailable:"
+                       << LocalChatStorageMgr::GetInstance()->LastError();
+        }
+
         std::vector<std::shared_ptr<ApplyInfo>> applyList;
         const QJsonArray applyArray = json_obj.value("apply_list").toArray();
         for (const auto &value : applyArray) {
@@ -270,6 +279,7 @@ void TcpMgr::initHandlers()
     });
 
     // 认证者收到 1014 回包、原申请人收到 1015 通知，二者携带相同的好友资料。
+    // 新服务端会额外带 textmsgs；旧服务端没有该字段时仍可只完成好友列表更新。
     auto handle_auth_friend = [this](ReqId id, int len, QByteArray data){
         Q_UNUSED(len);
         qDebug() << "handle id is " << id << "data is " << data;
@@ -306,15 +316,84 @@ void TcpMgr::initHandlers()
         QString desc = json_obj["desc"].toString();
         int sex = json_obj["sex"].toInt();
         QString icon = json_obj["icon"].toString();
+        const qint64 receiverId = json_obj.value("touid").toVariant().toLongLong();
 
-        auto friendinfo = std::make_shared<FriendInfo>(uid, name, nick, desc, icon, bakname, sex);
+        auto authResult = std::make_shared<FriendAuthResult>();
+        authResult->friendInfo = std::make_shared<FriendInfo>(uid, name, nick, desc, icon, bakname, sex);
 
-        emit sig_auth_friend(friendinfo);
+        // textmsgs 是当前协议字段；chat_datas/sender/msg_content 是旧实现中使用过的
+        // JSON 名称，保留读取兼容性，便于客户端与尚未升级的 ChatServer 互通。
+        QJsonArray textMessages = json_obj.value("textmsgs").toArray();
+        if (textMessages.isEmpty() && json_obj.contains("chat_datas")) {
+            textMessages = json_obj.value("chat_datas").toArray();
+        }
+        for (const QJsonValue &value : textMessages) {
+            const QJsonObject textObj = value.toObject();
+            bool messageIdOk = false;
+            bool threadIdOk = false;
+            const qint64 messageId = textObj.value("msg_id").toVariant().toLongLong(&messageIdOk);
+            const qint64 threadId = textObj.value("thread_id").toVariant().toLongLong(&threadIdOk);
+            const qint64 senderId = textObj.value("sender_id").isUndefined()
+                                        ? textObj.value("sender").toVariant().toLongLong()
+                                        : textObj.value("sender_id").toVariant().toLongLong();
+            const QString content = textObj.value("msgcontent").isUndefined()
+                                        ? textObj.value("msg_content").toString()
+                                        : textObj.value("msgcontent").toString();
+            if (!messageIdOk || !threadIdOk || messageId <= 0 || threadId <= 0
+                || senderId <= 0 || content.isEmpty()) {
+                qWarning() << "ignore invalid friend auth text message";
+                continue;
+            }
+
+            authResult->textMessages.append(std::make_shared<TextChatData>(
+                messageId, textObj.value("unique_id").toString(), threadId, content,
+                senderId, receiverId > 0 ? receiverId : uid));
+        }
+
+        emit sig_auth_friend(authResult);
 
     };
 
     _handler.insert(ID_AUTH_FRIEND_RSP, handle_auth_friend);
     _handler.insert(ID_NOTIFY_AUTH_FRIEND_REQ, handle_auth_friend);
+
+    // 1028 是“会话已由服务端确认”的边界：只有拿到这个回包中的 thread_id，
+    // 客户端才能把好友条目升级为可用于同步和持久化的正式聊天会话。
+    _handler.insert(ID_CREATE_PRIVATE_CHAT_RSP, [this](ReqId id, int len, QByteArray data) {
+        Q_UNUSED(id);
+        Q_UNUSED(len);
+        const QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
+        if (!jsonDoc.isObject()) {
+            qWarning() << "create private chat response is not a JSON object";
+            return;
+        }
+
+        const QJsonObject jsonObj = jsonDoc.object();
+        const int error = jsonObj.value("error").toInt(ErrorCodes::ERR_JSON);
+        if (error != ErrorCodes::SUCCESS) {
+            qWarning() << "create private chat failed, error:" << error;
+            return;
+        }
+
+        // JsonCpp 服务端写入的是 UINT64；QJson 的数值经 QVariant 转换后再取无符号值，
+        // 避免先转成 int 造成高位 thread_id 截断。
+        bool threadIdOk = false;
+        const qulonglong rawThreadId = jsonObj.value("thread_id").toVariant().toULongLong(&threadIdOk);
+        // SQLite 的 INTEGER 和当前 UI 都使用有符号 64 位 ID，拒绝超出可表示范围的服务端值。
+        if (rawThreadId > static_cast<qulonglong>(std::numeric_limits<qint64>::max())) {
+            threadIdOk = false;
+        }
+        const qint64 threadId = threadIdOk ? static_cast<qint64>(rawThreadId) : 0;
+        const int uid = jsonObj.value("uid").toInt();
+        const int otherUid = jsonObj.value("other_id").toInt();
+        if (!threadIdOk || threadId <= 0 || uid <= 0 || otherUid <= 0 || uid == otherUid) {
+            qWarning() << "create private chat response has invalid fields";
+            return;
+        }
+
+        // TcpMgr 不直接操作 UI 或 SQLite，交给 ChatDialog 在同一条 UI 流程中完成。
+        emit sig_create_private_chat(uid, otherUid, threadId);
+    });
 
     _handler.insert(ID_TEXT_CHAT_MSG_RSP, [this](ReqId id, int len, QByteArray data){
         Q_UNUSED(id);
