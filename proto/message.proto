@@ -130,8 +130,15 @@ message TextChatMsgRsp {
 }
 
 message TextChatData {
-    string msgid = 1; // 消息唯一标识
+    string msgid = 1; // 客户端 UUID：发送方关联确认、失败气泡和后续重试使用
     string msgcontent = 2; // 文本消息内容
+    // 以下字段由源 ChatServer 在 MySQL 成功写入 chat_message 后填充。跨服文本通知
+    uint64 message_id = 3; // chat_message.message_id，客户端 SQLite 的去重主键
+    uint64 thread_id = 4; // chat_thread/private_chat 的正式会话 ID
+    int32 sender_id = 5; // 发送者 UID
+    int32 recv_id = 6; // 接收者 UID
+    uint64 created_at_ms = 7; // 服务端确认后的创建时间（Unix 毫秒）
+    int32 status = 8; // 0=未读，1=已读，2=撤回
 }
 
 message KickUserReq{

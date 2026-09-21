@@ -90,6 +90,7 @@ qint64 ChatDataBase::GetCreatedAtMs() const { return _createdAtMs; }
 int ChatDataBase::GetStatus() const { return _status; }
 void ChatDataBase::SetMessageId(qint64 messageId) { _messageId = messageId; }
 void ChatDataBase::SetThreadId(qint64 threadId) { _threadId = threadId; }
+void ChatDataBase::SetCreatedAtMs(qint64 createdAtMs) { _createdAtMs = createdAtMs; }
 void ChatDataBase::SetStatus(int status) { _status = status; }
 
 TextChatData::TextChatData(qint64 messageId, QString uniqueId, qint64 threadId,
@@ -104,5 +105,5 @@ TextChatData::TextChatData(qint64 messageId, QString uniqueId, qint64 threadId,
 {
     SetMessageId(messageId);
     SetStatus(status);
-    _createdAtMs = createdAtMs;
+    SetCreatedAtMs(createdAtMs);
 }

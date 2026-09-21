@@ -782,10 +782,17 @@ void LogicSystem::HandleTextMsg(std::shared_ptr<CSession> session, const short &
     textChatMsgReq.set_touid(touid);
     // 组装已持久化后的消息，跨服目标可直接复用服务端 message_id/thread_id。
     for(const auto &message : storedMessages){
-        // 向 protobuf 的 repeated textmsgs 列表追加一条消息，并返回该元素的可写指针。
+        // 只在 MySQL 已成功写入后才跨服转发这组元数据；目标 ChatServer 可以原样
+        // 映射为新版 ID_NOTIFY_TEXT_CHAT_MSG_REQ，让接收方客户端立即 SQLite 去重落库。
         auto text_msg = textChatMsgReq.add_textmsgs();
         text_msg->set_msgcontent(message.content);
         text_msg->set_msgid(message.uniqueId);
+        text_msg->set_message_id(message.messageId);
+        text_msg->set_thread_id(message.threadId);
+        text_msg->set_sender_id(message.senderId);
+        text_msg->set_recv_id(message.recvId);
+        text_msg->set_created_at_ms(message.createdAtMs);
+        text_msg->set_status(message.status);
     }
 
     std::cout << "text chat cross-server push, from = " << fromuid

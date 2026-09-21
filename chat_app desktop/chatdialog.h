@@ -71,16 +71,12 @@ private:
     void AddLBGroup(StateWidget *lb);            // 把侧边栏按钮加入互斥组
     void ClearLabelState(StateWidget *lb);       // 清除除 lb 之外所有按钮的选中态
     void SetCurrentChatUser(const std::shared_ptr<UserInfo> &chatUser, qint64 threadId = 0);
-    void AppendReceivedTextMessage(const std::shared_ptr<TextChatData> &message,
-                                   const std::shared_ptr<UserInfo> &sender);
     // 把 SQLite 读取出的已确认消息渲染为气泡；调用方已保证消息属于当前会话。
     void AppendStoredTextMessage(const LocalChatMessage &message,
                                  const std::shared_ptr<UserInfo> &friendInfo);
     ChatItemBase *CreateStoredTextChatItem(const LocalChatMessage &message,
                                            const std::shared_ptr<UserInfo> &friendInfo);
     void LoadOlderLocalMessages();
-    void UpdateChatSessionPreview(const std::shared_ptr<UserInfo> &userInfo,
-                                  const QString &message, bool unread);
     void SaveFriendAuthMessages(const std::shared_ptr<UserInfo> &friendInfo,
                                 const QList<std::shared_ptr<TextChatData>> &messages);
 
@@ -91,7 +87,6 @@ private:
     bool _loading_older_local_history = false;
     // UUID -> 乐观展示的消息行。QPointer 会在切换会话或重绘删除气泡后自动置空。
     QHash<QString, QPointer<ChatItemBase>> _pending_text_items;
-    QHash<int, QVector<std::shared_ptr<TextChatData>>> _unread_text_messages;
 
 signals:
     void sig_append_send_chat_msg(std::shared_ptr<TextChatData>&);

@@ -705,96 +705,67 @@ void ChatDialog::slot_text_chat(std::shared_ptr<TextChatData> &message)
 
     const auto currentUser = UserMgr::GetInstance()->GetUserInfo();
     const auto localStorage = LocalChatStorageMgr::GetInstance();
-    const bool hasConfirmedServerId = message->GetThreadId() > 0
-                                      && message->GetMessageId() > 0;
-    if (hasConfirmedServerId && currentUser && localStorage->IsReady()) {
-        // 1019 已携带服务端确认后的 message_id/thread_id。实时通知和登录增量
-        // 回包可能重复或交错抵达，因此和同步回包一样统一写 SQLite，由主键与
-        // 同步游标负责去重；UI 只从提交成功后的 SQLite 摘要刷新。
-        LocalChatThread thread;
-        thread.threadId = message->GetThreadId();
-        thread.threadType = QStringLiteral("private");
-        thread.title = (*iter)->_name;
-        thread.peerUid = (*iter)->_uid;
-
-        for (const LocalChatThread &cachedThread : localStorage->CachedThreads()) {
-            if (cachedThread.threadId == thread.threadId) {
-                thread = cachedThread;
-                // 服务端消息携带的参与人优先级更高，避免旧缓存中的 peerUid 错误。
-                thread.threadType = QStringLiteral("private");
-                thread.title = (*iter)->_name;
-                thread.peerUid = (*iter)->_uid;
-                break;
-            }
-        }
-
-        const qint64 receivedAtMs = message->GetCreatedAtMs() > 0
-                                        ? message->GetCreatedAtMs()
-                                        : QDateTime::currentMSecsSinceEpoch();
-        const bool isCurrentThread = _current_chatuser
-                                     && _current_chatuser->_uid == (*iter)->_uid
-                                     && _current_thread_id == thread.threadId;
-        const bool receivedFromFriend = message->GetSendUid() != currentUser->_uid;
-        const bool messageAlreadyKnown = localStorage->SyncCursors().value(thread.threadId, 0)
-                                         >= message->GetMessageId();
-        if (message->GetMessageId() >= thread.lastMessageId) {
-            thread.lastMessageId = message->GetMessageId();
-            thread.lastMessagePreview = message->GetContent();
-            thread.lastMessageAtMs = receivedAtMs;
-        }
-        thread.updatedAtMs = receivedAtMs;
-        if (!messageAlreadyKnown && receivedFromFriend && !isCurrentThread) {
-            ++thread.unreadCount;
-        }
-
-        LocalChatMessage localMessage;
-        localMessage.messageId = message->GetMessageId();
-        localMessage.threadId = thread.threadId;
-        localMessage.senderId = message->GetSendUid();
-        localMessage.recvId = message->_to_uid;
-        localMessage.contentType = QStringLiteral("text");
-        localMessage.content = message->GetContent();
-        localMessage.createdAtMs = receivedAtMs;
-        localMessage.updatedAtMs = receivedAtMs;
-        localMessage.serverStatus = message->GetStatus();
-        localMessage.sendState = 3;
-        // 用户正在查看此正式会话时，这条消息无需短暂计为未读；否则保留未读状态。
-        localMessage.isRead = !receivedFromFriend || isCurrentThread;
-
-        if (!localStorage->SaveReceivedMessages(thread, {localMessage},
-                                                message->GetMessageId())) {
-            qWarning() << "save real-time text chat message failed:" << localStorage->LastError();
-            return;
-        }
-        emit TcpMgr::GetInstance()->sig_local_chat_synced(thread.threadId);
+    if (!currentUser || !localStorage->IsReady() || message->GetThreadId() <= 0
+        || message->GetMessageId() <= 0) {
+        qWarning() << "ignore text chat without confirmed server metadata";
         return;
     }
 
-    // 旧 1019 没有 server message_id/thread_id，无法安全地落入 SQLite（会和
-    // 增量同步的主键冲突），继续维持旧的内存通知与展示行为。
-    if (!_current_chatuser || _current_chatuser->_uid != message->_from_uid) {
-        _unread_text_messages[message->_from_uid].append(message);
-        UpdateChatSessionPreview(*iter, message->_msg_content, true);
-        qInfo() << "text chat stored as unread, from:" << message->_from_uid;
-        return;
+    // ID_NOTIFY_TEXT_CHAT_MSG_REQ 只接受服务端持久化完成的消息。实时通知和登录增量
+    // 回包可能重复或交错抵达，因此统一写 SQLite，由主键与同步游标负责去重；UI 只从
+    // 提交成功后的 SQLite 摘要刷新。
+    LocalChatThread thread;
+    thread.threadId = message->GetThreadId();
+    thread.threadType = QStringLiteral("private");
+    thread.title = (*iter)->_name;
+    thread.peerUid = (*iter)->_uid;
+
+    for (const LocalChatThread &cachedThread : localStorage->CachedThreads()) {
+        if (cachedThread.threadId == thread.threadId) {
+            thread = cachedThread;
+            thread.threadType = QStringLiteral("private");
+            thread.title = (*iter)->_name;
+            thread.peerUid = (*iter)->_uid;
+            break;
+        }
     }
 
-    UpdateChatSessionPreview(*iter, message->_msg_content, false);
-    AppendReceivedTextMessage(message, *iter);
-}
-
-void ChatDialog::AppendReceivedTextMessage(const std::shared_ptr<TextChatData> &message,
-                                           const std::shared_ptr<UserInfo> &sender)
-{
-    if (!message || !sender) {
-        return;
+    const qint64 receivedAtMs = message->GetCreatedAtMs();
+    const bool isCurrentThread = _current_chatuser
+                                 && _current_chatuser->_uid == (*iter)->_uid
+                                 && _current_thread_id == thread.threadId;
+    const bool receivedFromFriend = message->GetSendUid() != currentUser->_uid;
+    const bool messageAlreadyKnown = localStorage->SyncCursors().value(thread.threadId, 0)
+                                     >= message->GetMessageId();
+    if (message->GetMessageId() >= thread.lastMessageId) {
+        thread.lastMessageId = message->GetMessageId();
+        thread.lastMessagePreview = message->GetContent();
+        thread.lastMessageAtMs = receivedAtMs;
+    }
+    thread.updatedAtMs = receivedAtMs;
+    if (!messageAlreadyKnown && receivedFromFriend && !isCurrentThread) {
+        ++thread.unreadCount;
     }
 
-    auto *chatItem = new ChatItemBase(ChatRole::Other);
-    chatItem->setUserName(sender->_name);
-    chatItem->setUserAvatar(sender->_uid, sender->_icon);
-    chatItem->setWidget(new TextBubble(ChatRole::Other, message->_msg_content));
-    ui->chat_data->appendChatItem(chatItem);
+    LocalChatMessage localMessage;
+    localMessage.messageId = message->GetMessageId();
+    localMessage.threadId = thread.threadId;
+    localMessage.senderId = message->GetSendUid();
+    localMessage.recvId = message->_to_uid;
+    localMessage.contentType = QStringLiteral("text");
+    localMessage.content = message->GetContent();
+    localMessage.createdAtMs = receivedAtMs;
+    localMessage.updatedAtMs = receivedAtMs;
+    localMessage.serverStatus = message->GetStatus();
+    localMessage.sendState = 3;
+    // 用户正在查看此正式会话时，这条消息无需短暂计为未读；否则保留未读状态。
+    localMessage.isRead = !receivedFromFriend || isCurrentThread;
+
+    if (!localStorage->SaveReceivedMessages(thread, {localMessage}, message->GetMessageId())) {
+        qWarning() << "save real-time text chat message failed:" << localStorage->LastError();
+        return;
+    }
+    emit TcpMgr::GetInstance()->sig_local_chat_synced(thread.threadId);
 }
 
 void ChatDialog::slot_local_chat_synced(qint64 threadId)
@@ -934,30 +905,6 @@ void ChatDialog::LoadOlderLocalMessages()
     _loading_older_local_history = false;
 }
 
-void ChatDialog::UpdateChatSessionPreview(const std::shared_ptr<UserInfo> &userInfo,
-                                          const QString &message, bool unread)
-{
-    if (!userInfo) {
-        return;
-    }
-
-    for (int index = 0; index < ui->session_list->count(); ++index) {
-        auto *item = ui->session_list->item(index);
-        auto *widget = qobject_cast<ChatUserWid *>(ui->session_list->itemWidget(item));
-        if (widget && widget->GetUserInfo() && widget->GetUserInfo()->_uid == userInfo->_uid) {
-            // 会话列表只保留最新一条摘要；每次收到该会话的新消息时同步刷新显示时间。
-            widget->SetChatMsg(message);
-            widget->SetTime(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm")));
-            widget->ShowRedPoint(unread);
-            return;
-        }
-    }
-
-    // 首次收到消息时创建会话项，摘要和时间必须同时初始化，不能只显示联系人信息。
-    addChatUserWid(ui->session_list, userInfo, message,
-                   QDateTime::currentDateTime().toString(QStringLiteral("HH:mm")), unread);
-}
-
 void ChatDialog::SetCurrentChatUser(const std::shared_ptr<UserInfo> &chatUser, qint64 threadId)
 {
     if (!chatUser) {
@@ -1003,10 +950,6 @@ void ChatDialog::SetCurrentChatUser(const std::shared_ptr<UserInfo> &chatUser, q
         }
     }
 
-    const auto unread = _unread_text_messages.take(_current_chatuser->_uid);
-    for (const auto &message : unread) {
-        AppendReceivedTextMessage(message, _current_chatuser);
-    }
     for (int index = 0; index < ui->session_list->count(); ++index) {
         auto *item = ui->session_list->item(index);
         auto *widget = qobject_cast<ChatUserWid *>(ui->session_list->itemWidget(item));

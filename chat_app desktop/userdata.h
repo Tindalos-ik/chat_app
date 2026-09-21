@@ -108,6 +108,8 @@ public:
 
     void SetMessageId(qint64 messageId);
     void SetThreadId(qint64 threadId);
+    // 服务端确认后补充创建时间，保持基类成员仍由自身接口维护。
+    void SetCreatedAtMs(qint64 createdAtMs);
     void SetStatus(int status);
 
 private:

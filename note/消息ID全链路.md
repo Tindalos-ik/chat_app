@@ -41,7 +41,7 @@ HTTP 负责注册、登录、验证码和重置密码等短请求。登录拿到
 | `ID_NOTIFY_AUTH_FRIEND_REQ` | 通知申请方认证结果，含同一份 `textmsgs` | 同服和跨服均透传初始消息；客户端以 `msg_id` 幂等缓存 |
 | `ID_TEXT_CHAT_MSG_REQ` | TCP `{fromuid,touid,textArray}` 文本请求 | ChatServer1 先持久化后同服或跨服转发 |
 | `ID_TEXT_CHAT_MSG_RSP` | 文本消息请求回包 | 成功回包带服务端 `message_id/thread_id`，发送方据此写 SQLite |
-| `ID_NOTIFY_TEXT_CHAT_MSG_REQ` | 推送对方收到的文本消息 | 带服务端 ID 的同服推送会实时写 SQLite；旧格式仍兼容内存展示 |
+| `ID_NOTIFY_TEXT_CHAT_MSG_REQ` | 推送对方收到的文本消息 | 每条消息必须带完整服务端元数据；客户端实时写 SQLite，缺字段即丢弃 |
 | `ID_NOTIFY_OFF_LINE_REQ` | 重复登录时通知旧客户端下线 | 服务端发送后关闭旧 socket；客户端解析通知或检测已登录连接断开后返回登录页 |
 | `ID_HEART_BEAT_REQ` / `ID_HEARTBEAT_RSP` | 客户端定期 Ping、服务端立即 Pong | 客户端每 20 秒发送，60 秒无回包时弹出心跳超时提示并返回登录页；ChatServer 60 秒无有效收包清理会话 |
 | `ID_LOAD_CHAT_THREAD_REQ` / `ID_LOAD_CHAT_THREAD_RSP` | 加载聊天会话列表 | 客户端登录后按游标发现新增会话并写 SQLite |
@@ -195,8 +195,8 @@ message AuthFriendReq {
 ```
 
 TCP `ID_AUTH_FRIEND_RSP` / `ID_NOTIFY_AUTH_FRIEND_REQ` 将其映射为同名 `textmsgs` 数组。单项 JSON 使用
-`sender_id`、`unique_id`、`msg_id`、`thread_id`、`msgcontent`；客户端仍可读取旧版本的
-`chat_datas` / `sender` / `msg_content`，因此升级客户端后可兼容旧服务端的认证通知。
+`sender_id`、`unique_id`、`msg_id`、`thread_id`、`msgcontent`；客户端仅接受这些正式字段，
+不再解析历史字段名。
 
 ## 8. 聊天通信
 
@@ -211,15 +211,15 @@ TCP `ID_AUTH_FRIEND_RSP` / `ID_NOTIFY_AUTH_FRIEND_REQ` 将其映射为同名 `te
 
 服务端会将两个 UID 排序，并通过 `private_chat(user1_id, user2_id)` 的唯一索引确保同一对用户只对应一个 `thread_id`。并发请求命中已有记录时返回已有会话；竞争创建产生的临时 `chat_thread` 会在同一事务中删除。Qt 客户端发送 `ID_CREATE_PRIVATE_CHAT_REQ` 后会注册并处理 `ID_CREATE_PRIVATE_CHAT_RSP`：校验当前登录 uid、写入 `LocalChatStorageMgr`，再将正式 `thread_id` 绑定到对应 `ChatUserWid`。
 
-当前 ChatServer1 的完整单聊链路为：
+ChatServer1 和 ChatServer2 使用相同的完整单聊链路：
 
 ```text
 A -> ID_TEXT_CHAT_MSG_REQ {fromuid,touid,textArray:[{content,msgid}]}
-A <- ID_TEXT_CHAT_MSG_RSP {error,fromuid,touid,thread_id,textArray:[{...,message_id,thread_id,...}]}
-B <- ID_NOTIFY_TEXT_CHAT_MSG_REQ {error,fromuid,touid,thread_id,textArray:[{...,message_id,thread_id,...}]}
+A <- ID_TEXT_CHAT_MSG_RSP {error,textArray:[{msgid,content,message_id,thread_id,sender_id,recv_id,created_at_ms,status}]}
+B <- ID_NOTIFY_TEXT_CHAT_MSG_REQ {error,fromuid,touid,textArray:[{msgid,content,message_id,thread_id,sender_id,recv_id,created_at_ms,status}]}
 ```
 
-服务端用当前 TCP 会话保存的 UID 校验文本请求的 `fromuid`，避免客户端伪造发送者。ChatServer1 先写入 MySQL，因而目标离线时 `ID_TEXT_CHAT_MSG_RSP` 返回 `delivered:false`，但不是发送失败；客户端下次登录以 `ID_LOAD_CHAT_THREAD_REQ/RSP`、`ID_LOAD_CHAT_MSG_REQ/RSP` 增量补齐。带服务器 ID 的同服 `ID_NOTIFY_TEXT_CHAT_MSG_REQ` 由 SQLite 去重后立即更新本地历史、摘要和未读数。跨 ChatServer 时，发送方服务根据 Redis 的 `uip_<uid>` 找到目标服务，经 gRPC `NotifyTextChatMsg` 转发；当前 protobuf 尚只含 UUID 和正文，因此另一台服务需同步扩展字段后才能得到同样的实时持久化效果。
+服务端用当前 TCP 会话保存的 UID 校验文本请求的 `fromuid`，避免客户端伪造发送者。ChatServer 先写入 MySQL，因而目标离线时 `ID_TEXT_CHAT_MSG_RSP` 返回 `delivered:false`，但不是发送失败；客户端下次登录以 `ID_LOAD_CHAT_THREAD_REQ/RSP`、`ID_LOAD_CHAT_MSG_REQ/RSP` 增量补齐。发送确认和 `ID_NOTIFY_TEXT_CHAT_MSG_REQ` 都必须携带完整服务端元数据：Qt 以 `message_id` 幂等写 SQLite，并更新本地历史、会话摘要和未读数。跨 ChatServer 时，发送方服务根据 Redis 的 `uip_<uid>` 找到目标服务，经 gRPC `NotifyTextChatMsg` 转发；共享 proto 原样传递上述字段，目标端生成同样的 TCP 通知。成功回包只有在 SQLite 事务提交后才清除临时发送气泡；服务端失败、字段缺失或本地事务失败时，客户端按 `msgid` 显示 `send_fail.png`。两台服务和客户端必须同时部署这版协议，不支持旧通知。
 
 ## 9. TCP 包格式
 
@@ -238,6 +238,6 @@ ChatServer TCP 包固定为：
 | GateServer | 验证码、注册、登录、重置密码 | 登录回包字段可继续补充用户资料 |
 | StatusServer | ChatServer 负载选择、token 签发/校验 | 更完整的在线状态管理 |
 | ChatServer1 | TCP 登录、搜索、好友申请/认证、私聊创建/查询、文本持久化、会话/历史消息加载 | 已读回执、撤回、发送幂等重试 |
-| ChatServer 间 gRPC | 好友申请、认证结果、在线文本转发 | 文本的 `message_id/thread_id` 同步、离线补偿和重试 |
-| Qt 客户端 | HTTP 流程、TCP 登录/搜索/好友、SQLite 历史与增量同步、在线文本收发 | 发送状态 UI、重试、上拉加载更早本地历史 |
+| ChatServer 间 gRPC | 好友申请、认证结果、在线文本转发，以及文本完整元数据同步 | 离线补偿和重试 |
+| Qt 客户端 | HTTP 流程、TCP 登录/搜索/好友、SQLite 历史与增量同步、在线文本收发、发送失败状态和上拉本地历史 | 文本发送重试 |
 | VarifyServer | Redis 验证码、邮件发送 | 邮件失败后的补偿和监控 |

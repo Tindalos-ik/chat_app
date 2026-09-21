@@ -4,6 +4,7 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QDateTime>
+#include <QStringList>
 #include <QVariant>
 #include <limits>
 #include "usermgr.h"
@@ -302,8 +303,8 @@ void TcpMgr::initHandlers()
         emit sig_friend_apply(apply_user);
     });
 
-    // 认证者收到 1014 回包、原申请人收到 1015 通知，二者携带相同的好友资料。
-    // 新服务端会额外带 textmsgs；旧服务端没有该字段时仍可只完成好友列表更新。
+    // 认证者收到 1014 回包、原申请人收到 1015 通知，二者携带相同的好友资料和
+    // textmsgs 初始消息。当前客户端只解析该正式协议，不再兼容历史字段名。
     auto handle_auth_friend = [this](ReqId id, int len, QByteArray data){
         Q_UNUSED(len);
         qDebug() << "handle id is " << id << "data is " << data;
@@ -345,33 +346,24 @@ void TcpMgr::initHandlers()
         auto authResult = std::make_shared<FriendAuthResult>();
         authResult->friendInfo = std::make_shared<FriendInfo>(uid, name, nick, desc, icon, bakname, sex);
 
-        // textmsgs 是当前协议字段；chat_datas/sender/msg_content 是旧实现中使用过的
-        // JSON 名称，保留读取兼容性，便于客户端与尚未升级的 ChatServer 互通。
         QJsonArray textMessages = json_obj.value("textmsgs").toArray();
-        if (textMessages.isEmpty() && json_obj.contains("chat_datas")) {
-            textMessages = json_obj.value("chat_datas").toArray();
-        }
         for (const QJsonValue &value : textMessages) {
             const QJsonObject textObj = value.toObject();
             bool messageIdOk = false;
             bool threadIdOk = false;
             const qint64 messageId = textObj.value("msg_id").toVariant().toLongLong(&messageIdOk);
             const qint64 threadId = textObj.value("thread_id").toVariant().toLongLong(&threadIdOk);
-            const qint64 senderId = textObj.value("sender_id").isUndefined()
-                                        ? textObj.value("sender").toVariant().toLongLong()
-                                        : textObj.value("sender_id").toVariant().toLongLong();
-            const QString content = textObj.value("msgcontent").isUndefined()
-                                        ? textObj.value("msg_content").toString()
-                                        : textObj.value("msgcontent").toString();
+            const qint64 senderId = textObj.value("sender_id").toVariant().toLongLong();
+            const QString uniqueId = textObj.value("unique_id").toString();
+            const QString content = textObj.value("msgcontent").toString();
             if (!messageIdOk || !threadIdOk || messageId <= 0 || threadId <= 0
-                || senderId <= 0 || content.isEmpty()) {
+                || senderId <= 0 || receiverId <= 0 || uniqueId.isEmpty() || content.isEmpty()) {
                 qWarning() << "ignore invalid friend auth text message";
                 continue;
             }
 
             authResult->textMessages.append(std::make_shared<TextChatData>(
-                messageId, textObj.value("unique_id").toString(), threadId, content,
-                senderId, receiverId > 0 ? receiverId : uid));
+                messageId, uniqueId, threadId, content, senderId, receiverId));
         }
 
         emit sig_auth_friend(authResult);
@@ -595,18 +587,15 @@ void TcpMgr::initHandlers()
         const QJsonObject jsonObj = jsonDoc.object();
         const int error = jsonObj.value("error").toInt(ErrorCodes::ERR_JSON);
         const QJsonArray textArray = jsonObj.value("textArray").toArray();
-        for (const QJsonValue &value : textArray) {
-            const QString messageId = value.toObject().value("msgid").toString();
-            qDebug() << "text message" << messageId
-                     << (error == ErrorCodes::SUCCESS ? "sent" : "failed")
-                     << "error:" << error;
-            if (!messageId.isEmpty()) {
-                emit sig_text_chat_send_result(messageId, error == ErrorCodes::SUCCESS);
-            }
-        }
         if (error != ErrorCodes::SUCCESS) {
             // 未被服务端确认的发送消息没有可靠的 message_id，不能写入以服务端
             // message_id 为主键的本地表；发送失败状态仍由现有发送 UI 处理。
+            for (const QJsonValue &value : textArray) {
+                const QString uniqueId = value.toObject().value("msgid").toString();
+                if (!uniqueId.isEmpty()) {
+                    emit sig_text_chat_send_result(uniqueId, false);
+                }
+            }
             return;
         }
 
@@ -621,26 +610,32 @@ void TcpMgr::initHandlers()
         QHash<qint64, LocalChatThread> threads;
         QHash<qint64, QList<LocalChatMessage>> messagesByThread;
         QHash<qint64, qint64> maxMessageIds;
-        const qint64 fallbackThreadId = jsonObj.value("thread_id").toVariant().toLongLong();
+        QHash<qint64, QStringList> uniqueIdsByThread;
         for (const QJsonValue &value : textArray) {
             const QJsonObject textObj = value.toObject();
             bool messageIdOk = false;
             bool threadIdOk = false;
+            bool createdAtOk = false;
             const qint64 messageId = textObj.value("message_id").toVariant()
                                          .toLongLong(&messageIdOk);
-            const qint64 itemThreadId = textObj.value("thread_id").toVariant()
-                                            .toLongLong(&threadIdOk);
-            const qint64 threadId = threadIdOk ? itemThreadId : fallbackThreadId;
-            const qint64 senderId = textObj.value("sender_id").isUndefined()
-                                        ? jsonObj.value("fromuid").toVariant().toLongLong()
-                                        : textObj.value("sender_id").toVariant().toLongLong();
-            const qint64 recvId = textObj.value("recv_id").isUndefined()
-                                      ? jsonObj.value("touid").toVariant().toLongLong()
-                                      : textObj.value("recv_id").toVariant().toLongLong();
+            const qint64 threadId = textObj.value("thread_id").toVariant()
+                                        .toLongLong(&threadIdOk);
+            const qint64 senderId = textObj.value("sender_id").toVariant().toLongLong();
+            const qint64 recvId = textObj.value("recv_id").toVariant().toLongLong();
+            const qint64 createdAtMs = textObj.value("created_at_ms").toVariant()
+                                           .toLongLong(&createdAtOk);
+            const int status = textObj.value("status").toInt(-1);
+            const QString uniqueId = textObj.value("msgid").toString();
             const QString content = textObj.value("content").toString();
             if (!messageIdOk || messageId <= 0 || threadId <= 0 || senderId != currentUser->_uid
-                || recvId <= 0 || recvId == currentUser->_uid || content.isEmpty()) {
+                || recvId <= 0 || recvId == currentUser->_uid || !createdAtOk || createdAtMs <= 0
+                || status < 0 || status > 2 || uniqueId.isEmpty() || content.isEmpty()) {
                 qWarning() << "ignore invalid confirmed text message" << messageId << threadId;
+                // 服务端回包标记为成功却缺少持久化元数据时，不能确认乐观气泡。
+                // 若仍能取到客户端 UUID，则显示失败状态，避免界面永久停留在发送中。
+                if (!uniqueId.isEmpty()) {
+                    emit sig_text_chat_send_result(uniqueId, false);
+                }
                 continue;
             }
 
@@ -673,16 +668,12 @@ void TcpMgr::initHandlers()
             }
 
             LocalChatThread &thread = threads[threadId];
-            const qint64 createdAtMs = textObj.value("created_at_ms").toVariant().toLongLong();
-            const qint64 displayTimeMs = createdAtMs > 0
-                                             ? createdAtMs
-                                             : QDateTime::currentMSecsSinceEpoch();
             if (messageId >= thread.lastMessageId) {
                 thread.lastMessageId = messageId;
                 thread.lastMessagePreview = content;
-                thread.lastMessageAtMs = displayTimeMs;
+                thread.lastMessageAtMs = createdAtMs;
             }
-            thread.updatedAtMs = displayTimeMs;
+            thread.updatedAtMs = createdAtMs;
 
             LocalChatMessage localMessage;
             localMessage.messageId = messageId;
@@ -691,13 +682,14 @@ void TcpMgr::initHandlers()
             localMessage.recvId = recvId;
             localMessage.contentType = QStringLiteral("text");
             localMessage.content = content;
-            localMessage.createdAtMs = displayTimeMs;
-            localMessage.updatedAtMs = displayTimeMs;
-            localMessage.serverStatus = textObj.value("status").toInt();
+            localMessage.createdAtMs = createdAtMs;
+            localMessage.updatedAtMs = createdAtMs;
+            localMessage.serverStatus = status;
             localMessage.sendState = 3;
             localMessage.isRead = true;
             messagesByThread[threadId].append(localMessage);
             maxMessageIds[threadId] = qMax(maxMessageIds.value(threadId, 0), messageId);
+            uniqueIdsByThread[threadId].append(uniqueId);
         }
 
         for (auto threadIter = threads.cbegin(); threadIter != threads.cend(); ++threadIter) {
@@ -705,9 +697,15 @@ void TcpMgr::initHandlers()
             if (!storage->SaveReceivedMessages(threadIter.value(), messagesByThread.value(threadId),
                                                maxMessageIds.value(threadId))) {
                 qWarning() << "save confirmed text messages failed:" << storage->LastError();
+                for (const QString &uniqueId : uniqueIdsByThread.value(threadId)) {
+                    emit sig_text_chat_send_result(uniqueId, false);
+                }
                 continue;
             }
-            // 事务成功后再通知 UI，当前窗口会用确认后的本地记录替换临时气泡。
+            // SQLite 事务提交后才确认乐观气泡，并通知 UI 从本地记录刷新当前会话。
+            for (const QString &uniqueId : uniqueIdsByThread.value(threadId)) {
+                emit sig_text_chat_send_result(uniqueId, true);
+            }
             emit sig_local_chat_synced(threadId);
         }
     });
@@ -730,39 +728,40 @@ void TcpMgr::initHandlers()
         const int fromUid = jsonObj.value("fromuid").toInt();
         const int toUid = jsonObj.value("touid").toInt();
         const QJsonArray textArray = jsonObj.value("textArray").toArray();
+        if (fromUid <= 0 || toUid <= 0 || textArray.isEmpty()) {
+            qWarning() << "text chat notification has invalid envelope";
+            return;
+        }
         qInfo() << "received text chat notification, from:" << fromUid
                 << "to:" << toUid << "count:" << textArray.size();
         for (const QJsonValue &value : textArray) {
             const QJsonObject textObj = value.toObject();
             bool messageIdOk = false;
             bool threadIdOk = false;
+            bool createdAtOk = false;
             const qint64 messageId = textObj.value("message_id").toVariant()
                                          .toLongLong(&messageIdOk);
             const qint64 threadId = textObj.value("thread_id").toVariant()
                                        .toLongLong(&threadIdOk);
             const QString uniqueId = textObj.value("msgid").toString();
             const QString content = textObj.value("content").toString();
-
-            std::shared_ptr<TextChatData> message;
-            if (messageIdOk && threadIdOk && messageId > 0 && threadId > 0) {
-                // 新协议中的服务端 ID 是 SQLite 去重和断线增量同步的依据；时间也
-                // 一并传给界面，避免实时到达时只能使用客户端当前时间排序。
-                const qint64 createdAtMs = textObj.value("created_at_ms").toVariant()
-                                               .toLongLong();
-                const qint64 senderId = textObj.value("sender_id").isUndefined()
-                                            ? fromUid
-                                            : textObj.value("sender_id").toVariant().toLongLong();
-                const qint64 recvId = textObj.value("recv_id").isUndefined()
-                                          ? toUid
-                                          : textObj.value("recv_id").toVariant().toLongLong();
-                message = std::make_shared<TextChatData>(messageId, uniqueId, threadId,
-                                                          content, senderId, recvId,
-                                                          textObj.value("status").toInt(),
-                                                          createdAtMs);
-            } else {
-                // 对尚未升级 1019 字段的旧 ChatServer 保留原有内存展示流程。
-                message = std::make_shared<TextChatData>(uniqueId, content, fromUid, toUid);
+            const qint64 senderId = textObj.value("sender_id").toVariant().toLongLong();
+            const qint64 recvId = textObj.value("recv_id").toVariant().toLongLong();
+            const qint64 createdAtMs = textObj.value("created_at_ms").toVariant()
+                                           .toLongLong(&createdAtOk);
+            const int status = textObj.value("status").toInt(-1);
+            // 文本通知必须来自已持久化的服务端消息。缺少任何元数据时直接拒绝，
+            // 不再降级为内存消息，确保聊天列表、SQLite 和同步游标只有一个事实来源。
+            if (!messageIdOk || !threadIdOk || !createdAtOk || messageId <= 0 || threadId <= 0
+                || senderId != fromUid || recvId != toUid || uniqueId.isEmpty() || content.isEmpty()
+                || createdAtMs <= 0 || status < 0 || status > 2) {
+                qWarning() << "ignore incomplete text chat notification";
+                continue;
             }
+
+            auto message = std::make_shared<TextChatData>(messageId, uniqueId, threadId,
+                                                           content, senderId, recvId,
+                                                           status, createdAtMs);
             emit sig_text_chat(message);
         }
     });

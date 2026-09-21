@@ -119,6 +119,13 @@ Status ChatServiceImpl::NotifyTextChatMsg(ServerContext* context, const TextChat
         Json::Value element;
         element["content"] = msg.msgcontent();
         element["msgid"] = msg.msgid();
+        // 跨服通知直接透传服务端确认后的元数据，Qt 收到后立即按 message_id 去重落库。
+        element["message_id"] = static_cast<Json::UInt64>(msg.message_id());
+        element["thread_id"] = static_cast<Json::UInt64>(msg.thread_id());
+        element["sender_id"] = msg.sender_id();
+        element["recv_id"] = msg.recv_id();
+        element["created_at_ms"] = static_cast<Json::UInt64>(msg.created_at_ms());
+        element["status"] = msg.status();
         text_array.append(element);
     }
     rtvalue["textArray"] = text_array;
