@@ -70,6 +70,8 @@ signals:
     // 1028 回包：服务端创建或找到唯一私聊后返回的正式会话 ID。
     void sig_create_private_chat(int uid, int otherUid, qint64 threadId);
     void sig_text_chat(std::shared_ptr<TextChatData>&); // 收到对方推送的文本消息
+    // 文本请求回包按客户端 UUID 通知 UI，用于清除发送中状态或显示发送失败图标。
+    void sig_text_chat_send_result(const QString &messageId, bool success);
     // 1030 已成功写入 SQLite；界面按 threadId 刷新摘要或当前聊天页。
     void sig_local_chat_synced(qint64 threadId);
     void sig_off_line();

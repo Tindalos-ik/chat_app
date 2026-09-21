@@ -596,9 +596,13 @@ void TcpMgr::initHandlers()
         const int error = jsonObj.value("error").toInt(ErrorCodes::ERR_JSON);
         const QJsonArray textArray = jsonObj.value("textArray").toArray();
         for (const QJsonValue &value : textArray) {
-            qDebug() << "text message" << value.toObject().value("msgid").toString()
+            const QString messageId = value.toObject().value("msgid").toString();
+            qDebug() << "text message" << messageId
                      << (error == ErrorCodes::SUCCESS ? "sent" : "failed")
                      << "error:" << error;
+            if (!messageId.isEmpty()) {
+                emit sig_text_chat_send_result(messageId, error == ErrorCodes::SUCCESS);
+            }
         }
         if (error != ErrorCodes::SUCCESS) {
             // 未被服务端确认的发送消息没有可靠的 message_id，不能写入以服务端

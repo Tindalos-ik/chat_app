@@ -95,13 +95,13 @@ mysql -uroot -p < sql/create_tables.sql
 
 ### 2. 初始化聊天会话表
 
-私聊会话创建（TCP `1027/1028` 的服务端入口）依赖额外的会话表。需要启用该能力时，在完成基础建表后执行：
+私聊会话创建（`ID_CREATE_PRIVATE_CHAT_REQ/RSP` 的服务端入口）依赖额外的会话表。需要启用该能力时，在完成基础建表后执行：
 
 ```powershell
 mysql -uroot -p < sql/chat_message_storage.sql
 ```
 
-脚本创建 `chat_thread`、`private_chat`、群聊相关表和 `chat_message`。ChatServer1 已使用私聊表创建或复用会话，并将好友认证和普通文本消息写入 `chat_message`；桌面端通过 `1025/1026` 发现会话、通过 `1029/1030` 分页增量加载历史。
+脚本创建 `chat_thread`、`private_chat`、群聊相关表和 `chat_message`。ChatServer1 已使用私聊表创建或复用会话，并将好友认证和普通文本消息写入 `chat_message`；桌面端通过 `ID_LOAD_CHAT_THREAD_REQ/RSP` 发现会话、通过 `ID_LOAD_CHAT_MSG_REQ/RSP` 分页增量加载历史。
 
 ### 3. 配置服务端连接信息
 

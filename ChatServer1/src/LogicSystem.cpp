@@ -697,6 +697,11 @@ void LogicSystem::HandleTextMsg(std::shared_ptr<CSession> session, const short &
     rtvalue["error"] = ErrorCode::Success;
     rtvalue["fromuid"] = fromuid;
     rtvalue["touid"] = touid;
+    // 即使后续校验、落库或投递失败，也回传客户端原始 msgid。Qt 端依靠这个 UUID
+    // 找到乐观展示的那一个气泡并显示失败图标；成功落库后会被 confirmedMessages 覆盖。
+    if (textarray.isArray()) {
+        rtvalue["textArray"] = textarray;
+    }
 
     Defer defer([this, &rtvalue, session]{
         std::string return_str = rtvalue.toStyledString();

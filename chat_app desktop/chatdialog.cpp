@@ -174,6 +174,8 @@ ChatDialog::ChatDialog(QWidget *parent)
     connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_create_private_chat,
             this, &ChatDialog::slot_create_private_chat);
     connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_text_chat, this, &ChatDialog::slot_text_chat);
+    connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_text_chat_send_result,
+            this, &ChatDialog::slot_text_chat_send_result);
     connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_local_chat_synced,
             this, &ChatDialog::slot_local_chat_synced);
     connect(ui->chat_data, &ChatView::sig_reach_top,
@@ -386,6 +388,9 @@ void ChatDialog::slot_send_message()
             textArray.append(obj);
             textBytes += utf8Message.size();
             auto txt_msg = std::make_shared<TextChatData>(uuid_str, obj["content"].toString(), userinfo->_uid, _current_chatuser->_uid);
+            // 发送前先展示气泡；服务器回包通过同一个 UUID 找回这一行，失败时在
+            // 气泡左端显示 send_fail.png。成功后删除映射，确认消息由 SQLite 重绘。
+            _pending_text_items.insert(uuid_str, pChatItem);
             emit sig_append_send_chat_msg(txt_msg);
         }
         else if(type == "image")
@@ -510,6 +515,27 @@ void ChatDialog::slot_auth_friend(std::shared_ptr<FriendAuthResult> &authResult)
     }
 
     SaveFriendAuthMessages(userinfo, authResult->textMessages);
+}
+
+void ChatDialog::slot_text_chat_send_result(const QString &messageId, bool success)
+{
+    auto iter = _pending_text_items.find(messageId);
+    if (iter == _pending_text_items.end()) {
+        // 切换会话或 SQLite 确认重绘后，旧气泡可能已经被销毁；此时无需再更新 UI。
+        return;
+    }
+
+    const QPointer<ChatItemBase> chatItem = iter.value();
+    if (success) {
+        _pending_text_items.erase(iter);
+        return;
+    }
+
+    if (chatItem) {
+        chatItem->SetSendFailed(true);
+    }
+    // 失败图标已经展示，不需要长期保留 UUID -> 控件映射；重试会生成新的请求状态。
+    _pending_text_items.erase(iter);
 }
 
 void ChatDialog::SaveFriendAuthMessages(const std::shared_ptr<UserInfo> &friendInfo,

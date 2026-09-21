@@ -4,6 +4,7 @@
 #include <QDialog>
 #include <QHash>
 #include <QListWidget>
+#include <QPointer>
 #include <QVector>
 #include "statewidget.h"
 #include "userdata.h"
@@ -46,6 +47,7 @@ private slots:
     void slot_text_chat(std::shared_ptr<TextChatData>& message); // 显示当前会话收到的文本
     void slot_local_chat_synced(qint64 threadId); // SQLite 增量同步完成后刷新会话摘要
     void slot_load_older_local_messages(); // 聊天窗口到顶部后读取 SQLite 上一页
+    void slot_text_chat_send_result(const QString &messageId, bool success);
 
 protected:
     // 重写事件过滤器实现根据鼠标位置判断是否隐藏搜索框恢复聊天界面
@@ -87,6 +89,8 @@ private:
     qint64 _oldest_local_message_id = 0;
     bool _has_more_local_history = false;
     bool _loading_older_local_history = false;
+    // UUID -> 乐观展示的消息行。QPointer 会在切换会话或重绘删除气泡后自动置空。
+    QHash<QString, QPointer<ChatItemBase>> _pending_text_items;
     QHash<int, QVector<std::shared_ptr<TextChatData>>> _unread_text_messages;
 
 signals:
