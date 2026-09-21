@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <utility>
 #include "singleton.h"
 #include "data.h"
 
@@ -23,6 +24,25 @@ struct FriendAuthMessage {
     std::uint64_t threadId = 0;
     std::string uniqueId;
     std::string content;
+};
+
+// chat_message 与 TCP JSON 之间的服务端确认消息。messageId/threadId 是客户端
+// SQLite 去重和增量同步使用的游标，uniqueId 用于对应客户端本次发送的 UUID。
+struct StoredTextMessage {
+    std::uint64_t messageId = 0;
+    std::uint64_t threadId = 0;
+    int senderId = 0;
+    int recvId = 0;
+    std::string uniqueId;
+    std::string content;
+    std::uint64_t createdAtMs = 0;
+    int status = 0;
+};
+
+struct PrivateChatThread {
+    std::uint64_t threadId = 0;
+    int user1Id = 0;
+    int user2Id = 0;
 };
 
 /**
@@ -172,6 +192,22 @@ public:
     // 创建或获取两个用户唯一的私聊；threadId 是输出参数，对应 chat_thread.id（BIGINT UNSIGNED）。
     // 无论本次创建还是已存在，成功时都会返回同一个会话 ID。
     bool CreatePrivateChat(int user1Id, int user2Id, std::uint64_t& threadId);
+
+    // 先创建或取得双方唯一私聊，再在一个事务内批量写入文本消息。
+    // 成功时 storedMessages 的顺序与 clientMessages 相同，便于客户端按 UUID 确认发送结果。
+    bool SavePrivateTextMessages(int senderUid, int recvUid,
+                                 const std::vector<std::pair<std::string, std::string>>& clientMessages,
+                                 std::uint64_t& threadId,
+                                 std::vector<StoredTextMessage>& storedMessages);
+
+    // 按 (thread_id, message_id) 游标正序读取。调用方传入 limit + 1 即可判断是否还有下一页。
+    // 同时校验 uid 必须属于该私聊，避免客户端借 thread_id 读取他人聊天记录。
+    bool LoadPrivateTextMessages(int uid, std::uint64_t threadId, std::uint64_t afterMessageId,
+                                 int limit, std::vector<StoredTextMessage>& messages);
+
+    // 返回 thread_id 大于 afterThreadId 的私聊，用于登录时发现本地尚不存在的新会话。
+    bool LoadPrivateChatThreads(int uid, std::uint64_t afterThreadId, int limit,
+                                std::vector<PrivateChatThread>& threads);
 
 private:
     MysqlMgr();

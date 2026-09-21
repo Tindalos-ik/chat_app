@@ -44,6 +44,8 @@ private:
     void AddFriendApply(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data); // 添加好友申请
     void AuthFriend(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data); // 好友认证
     void HandleTextMsg(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data); // 处理文本消息
+    void LoadChatMessages(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data); // 按会话游标增量读取历史消息
+    void LoadChatThreads(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data); // 按会话游标发现新增私聊
     void UpdateUserProfile(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data); // 更新当前登录用户资料
     void CreatePrivateChat(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data); // 创建私聊
 

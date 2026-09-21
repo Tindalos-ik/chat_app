@@ -86,13 +86,15 @@ ChatMsgType ChatDataBase::GetMsgType() const { return _messageType; }
 const QString &ChatDataBase::GetContent() const { return _content; }
 qint64 ChatDataBase::GetSendUid() const { return _senderId; }
 const QString &ChatDataBase::GetUniqueId() const { return _uniqueId; }
+qint64 ChatDataBase::GetCreatedAtMs() const { return _createdAtMs; }
 int ChatDataBase::GetStatus() const { return _status; }
 void ChatDataBase::SetMessageId(qint64 messageId) { _messageId = messageId; }
 void ChatDataBase::SetThreadId(qint64 threadId) { _threadId = threadId; }
 void ChatDataBase::SetStatus(int status) { _status = status; }
 
 TextChatData::TextChatData(qint64 messageId, QString uniqueId, qint64 threadId,
-                           QString content, qint64 senderId, qint64 recvId, int status)
+                           QString content, qint64 senderId, qint64 recvId, int status,
+                           qint64 createdAtMs)
     : ChatDataBase(std::move(uniqueId), threadId, ChatFormType::Private,
                    ChatMsgType::Text, content, senderId)
     , _msg_id(GetUniqueId())
@@ -102,4 +104,5 @@ TextChatData::TextChatData(qint64 messageId, QString uniqueId, qint64 threadId,
 {
     SetMessageId(messageId);
     SetStatus(status);
+    _createdAtMs = createdAtMs;
 }

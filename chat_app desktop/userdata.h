@@ -102,6 +102,8 @@ public:
     const QString &GetContent() const;
     qint64 GetSendUid() const;
     const QString &GetUniqueId() const;
+    // 服务端确认时写入的创建时间（毫秒）。旧协议没有该字段时为 0。
+    qint64 GetCreatedAtMs() const;
     int GetStatus() const;
 
     void SetMessageId(qint64 messageId);
@@ -116,6 +118,7 @@ private:
     ChatMsgType _messageType = ChatMsgType::Text;
     QString _content;
     qint64 _senderId = 0;
+    qint64 _createdAtMs = 0;
     int _status = 0;
 };
 
@@ -126,7 +129,7 @@ public:
     TextChatData(QString msgId, QString content, int fromUid, int toUid);
     TextChatData(qint64 messageId, QString uniqueId, qint64 threadId,
                  QString content, qint64 senderId, qint64 recvId,
-                 int status = 0);
+                 int status = 0, qint64 createdAtMs = 0);
 
     // 兼容层：旧文本收发链路直接访问这些字段；新代码优先使用 ChatDataBase getter。
     QString _msg_id;

@@ -2,7 +2,7 @@
 
 基于 C++ 的分布式即时聊天项目，包含 Qt 6 桌面客户端、HTTP 网关、状态服务、两个 TCP 聊天服务实例、资源服务和 Node.js 邮箱验证码服务。
 
-项目提供注册、邮箱验证码、登录、找回密码、好友申请/认证、好友列表加载、同账号重复登录互踢、客户端与 ChatServer 的应用层心跳检测，以及在线文本消息的同服/跨服转发。好友认证成功会在 MySQL 中创建或复用私聊、持久化一条初始消息，并在 `1014/1015` 通知中写入客户端 SQLite 缓存。常规在线文本消息的服务端持久化及离线补投协议仍需结合 `note/聊天信息存储方案.md` 接入。
+项目提供注册、邮箱验证码、登录、找回密码、好友申请/认证、好友列表加载、同账号重复登录互踢、客户端与 ChatServer 的应用层心跳检测，以及在线文本消息的同服/跨服转发。好友认证和 ChatServer1 的普通文本消息都会创建或复用私聊并持久化到 MySQL；桌面端以 SQLite 缓存会话、实时通知和登录后的增量历史。跨 ChatServer 的文本转发字段同步由部署方维护，详见 `note/聊天信息存储方案.md`。
 
 ## 架构
 
@@ -101,7 +101,7 @@ mysql -uroot -p < sql/create_tables.sql
 mysql -uroot -p < sql/chat_message_storage.sql
 ```
 
-脚本创建 `chat_thread`、`private_chat`、群聊相关表和 `chat_message`。当前 ChatServer 已使用其中的 `chat_thread` 与 `private_chat` 创建或复用私聊；消息持久化、会话列表和历史消息加载仍未接入协议。
+脚本创建 `chat_thread`、`private_chat`、群聊相关表和 `chat_message`。ChatServer1 已使用私聊表创建或复用会话，并将好友认证和普通文本消息写入 `chat_message`；桌面端通过 `1025/1026` 发现会话、通过 `1029/1030` 分页增量加载历史。
 
 ### 3. 配置服务端连接信息
 

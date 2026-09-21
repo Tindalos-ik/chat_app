@@ -30,6 +30,8 @@
 #include <QMessageBox>
 
 namespace {
+constexpr int kLocalHistoryPageSize = 50;
+
 void ClearListItems(QListWidget *list, int firstIndex)
 {
     for (int index = list->count() - 1; index >= firstIndex; --index) {
@@ -172,6 +174,10 @@ ChatDialog::ChatDialog(QWidget *parent)
     connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_create_private_chat,
             this, &ChatDialog::slot_create_private_chat);
     connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_text_chat, this, &ChatDialog::slot_text_chat);
+    connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_local_chat_synced,
+            this, &ChatDialog::slot_local_chat_synced);
+    connect(ui->chat_data, &ChatView::sig_reach_top,
+            this, &ChatDialog::slot_load_older_local_messages);
 
 }
 
@@ -671,6 +677,75 @@ void ChatDialog::slot_text_chat(std::shared_ptr<TextChatData> &message)
         return;
     }
 
+    const auto currentUser = UserMgr::GetInstance()->GetUserInfo();
+    const auto localStorage = LocalChatStorageMgr::GetInstance();
+    const bool hasConfirmedServerId = message->GetThreadId() > 0
+                                      && message->GetMessageId() > 0;
+    if (hasConfirmedServerId && currentUser && localStorage->IsReady()) {
+        // 1019 已携带服务端确认后的 message_id/thread_id。实时通知和登录增量
+        // 回包可能重复或交错抵达，因此和同步回包一样统一写 SQLite，由主键与
+        // 同步游标负责去重；UI 只从提交成功后的 SQLite 摘要刷新。
+        LocalChatThread thread;
+        thread.threadId = message->GetThreadId();
+        thread.threadType = QStringLiteral("private");
+        thread.title = (*iter)->_name;
+        thread.peerUid = (*iter)->_uid;
+
+        for (const LocalChatThread &cachedThread : localStorage->CachedThreads()) {
+            if (cachedThread.threadId == thread.threadId) {
+                thread = cachedThread;
+                // 服务端消息携带的参与人优先级更高，避免旧缓存中的 peerUid 错误。
+                thread.threadType = QStringLiteral("private");
+                thread.title = (*iter)->_name;
+                thread.peerUid = (*iter)->_uid;
+                break;
+            }
+        }
+
+        const qint64 receivedAtMs = message->GetCreatedAtMs() > 0
+                                        ? message->GetCreatedAtMs()
+                                        : QDateTime::currentMSecsSinceEpoch();
+        const bool isCurrentThread = _current_chatuser
+                                     && _current_chatuser->_uid == (*iter)->_uid
+                                     && _current_thread_id == thread.threadId;
+        const bool receivedFromFriend = message->GetSendUid() != currentUser->_uid;
+        const bool messageAlreadyKnown = localStorage->SyncCursors().value(thread.threadId, 0)
+                                         >= message->GetMessageId();
+        if (message->GetMessageId() >= thread.lastMessageId) {
+            thread.lastMessageId = message->GetMessageId();
+            thread.lastMessagePreview = message->GetContent();
+            thread.lastMessageAtMs = receivedAtMs;
+        }
+        thread.updatedAtMs = receivedAtMs;
+        if (!messageAlreadyKnown && receivedFromFriend && !isCurrentThread) {
+            ++thread.unreadCount;
+        }
+
+        LocalChatMessage localMessage;
+        localMessage.messageId = message->GetMessageId();
+        localMessage.threadId = thread.threadId;
+        localMessage.senderId = message->GetSendUid();
+        localMessage.recvId = message->_to_uid;
+        localMessage.contentType = QStringLiteral("text");
+        localMessage.content = message->GetContent();
+        localMessage.createdAtMs = receivedAtMs;
+        localMessage.updatedAtMs = receivedAtMs;
+        localMessage.serverStatus = message->GetStatus();
+        localMessage.sendState = 3;
+        // 用户正在查看此正式会话时，这条消息无需短暂计为未读；否则保留未读状态。
+        localMessage.isRead = !receivedFromFriend || isCurrentThread;
+
+        if (!localStorage->SaveReceivedMessages(thread, {localMessage},
+                                                message->GetMessageId())) {
+            qWarning() << "save real-time text chat message failed:" << localStorage->LastError();
+            return;
+        }
+        emit TcpMgr::GetInstance()->sig_local_chat_synced(thread.threadId);
+        return;
+    }
+
+    // 旧 1019 没有 server message_id/thread_id，无法安全地落入 SQLite（会和
+    // 增量同步的主键冲突），继续维持旧的内存通知与展示行为。
     if (!_current_chatuser || _current_chatuser->_uid != message->_from_uid) {
         _unread_text_messages[message->_from_uid].append(message);
         UpdateChatSessionPreview(*iter, message->_msg_content, true);
@@ -694,6 +769,143 @@ void ChatDialog::AppendReceivedTextMessage(const std::shared_ptr<TextChatData> &
     chatItem->setUserAvatar(sender->_uid, sender->_icon);
     chatItem->setWidget(new TextBubble(ChatRole::Other, message->_msg_content));
     ui->chat_data->appendChatItem(chatItem);
+}
+
+void ChatDialog::slot_local_chat_synced(qint64 threadId)
+{
+    const auto storage = LocalChatStorageMgr::GetInstance();
+    if (threadId <= 0 || !storage->IsReady()) {
+        return;
+    }
+
+    // SQLite 是消息与摘要的唯一事实来源。每次同步完成后从缓存摘要刷新 UI，
+    // 避免 TCP 分页回包顺序不同导致左侧列表显示了过期的最后消息。
+    LocalChatThread thread;
+    bool found = false;
+    for (const LocalChatThread &cachedThread : storage->CachedThreads()) {
+        if (cachedThread.threadId == threadId) {
+            thread = cachedThread;
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        return;
+    }
+
+    bool hasSessionItem = false;
+    for (int index = 0; index < ui->session_list->count(); ++index) {
+        auto *item = ui->session_list->item(index);
+        auto *widget = qobject_cast<ChatUserWid *>(ui->session_list->itemWidget(item));
+        if (widget && widget->GetThreadId() == threadId) {
+            widget->SetChatMsg(thread.lastMessagePreview);
+            widget->SetTime(thread.lastMessageAtMs > 0
+                                ? QDateTime::fromMSecsSinceEpoch(thread.lastMessageAtMs)
+                                      .toString(QStringLiteral("HH:mm"))
+                                : QString());
+            widget->ShowRedPoint(thread.unreadCount > 0);
+            hasSessionItem = true;
+            break;
+        }
+    }
+
+    // 实时 1019 可能早于会话列表回包到达。只要好友资料已在本地，就在 SQLite
+    // 事务完成后补建列表项，避免消息已落库但用户在左侧看不到这段正式会话。
+    if (!hasSessionItem && thread.threadType == QStringLiteral("private")) {
+        const auto friends = UserMgr::GetInstance()->GetFriendList();
+        const auto friendIter = std::find_if(friends.cbegin(), friends.cend(),
+                                             [&thread](const auto &friendInfo) {
+            return friendInfo && friendInfo->_uid == thread.peerUid;
+        });
+        if (friendIter != friends.cend()) {
+            addChatUserWid(ui->session_list, *friendIter, thread.lastMessagePreview,
+                           thread.lastMessageAtMs > 0
+                               ? QDateTime::fromMSecsSinceEpoch(thread.lastMessageAtMs)
+                                     .toString(QStringLiteral("HH:mm"))
+                               : QString(),
+                           thread.unreadCount > 0, thread.threadId);
+        }
+    }
+
+    if (_current_chatuser && _current_thread_id == threadId) {
+        // 当前会话已经可见时重新从 SQLite 读取，确保增量消息立即显示，同时不会
+        // 依赖网络回包中的临时对象跨线程保存。
+        SetCurrentChatUser(_current_chatuser, threadId);
+    }
+}
+
+void ChatDialog::AppendStoredTextMessage(const LocalChatMessage &message,
+                                         const std::shared_ptr<UserInfo> &friendInfo)
+{
+    if (auto *chatItem = CreateStoredTextChatItem(message, friendInfo)) {
+        ui->chat_data->appendChatItem(chatItem);
+    }
+}
+
+ChatItemBase *ChatDialog::CreateStoredTextChatItem(const LocalChatMessage &message,
+                                                    const std::shared_ptr<UserInfo> &friendInfo)
+{
+    const auto self = UserMgr::GetInstance()->GetUserInfo();
+    if (!self || !friendInfo) {
+        return nullptr;
+    }
+
+    // 历史消息由 sender_id 决定左右侧，而不是由当前打开账号推测；这样离线同步到的
+    // 自己发送消息也会保持右侧气泡，好友发送消息保持左侧气泡。
+    const bool sentBySelf = message.senderId == self->_uid;
+    const auto &displayUser = sentBySelf ? self : friendInfo;
+    auto *chatItem = new ChatItemBase(sentBySelf ? ChatRole::Self : ChatRole::Other);
+    chatItem->setUserName(displayUser->_name);
+    chatItem->setUserAvatar(displayUser->_uid, displayUser->_icon);
+    chatItem->setWidget(new TextBubble(sentBySelf ? ChatRole::Self : ChatRole::Other,
+                                       message.content));
+    return chatItem;
+}
+
+void ChatDialog::slot_load_older_local_messages()
+{
+    LoadOlderLocalMessages();
+}
+
+void ChatDialog::LoadOlderLocalMessages()
+{
+    const auto storage = LocalChatStorageMgr::GetInstance();
+    if (_loading_older_local_history || !_has_more_local_history || _current_thread_id <= 0
+        || _oldest_local_message_id <= 0 || !_current_chatuser || !storage->IsReady()) {
+        return;
+    }
+
+    _loading_older_local_history = true;
+    const qint64 loadingThreadId = _current_thread_id;
+    const QList<LocalChatMessage> olderMessages = storage->LoadMessagesBefore(
+        loadingThreadId, _oldest_local_message_id, kLocalHistoryPageSize);
+    // SQLite 查询目前在 UI 线程同步完成，但仍保留会话 ID 校验；后续若改成异步任务，
+    // 用户在查询期间切换会话时不会把 A 的历史插入 B 的窗口。
+    if (loadingThreadId != _current_thread_id) {
+        _loading_older_local_history = false;
+        return;
+    }
+    if (olderMessages.isEmpty()) {
+        _has_more_local_history = false;
+        _loading_older_local_history = false;
+        return;
+    }
+
+    QList<QWidget *> historyItems;
+    for (const LocalChatMessage &message : olderMessages) {
+        if (message.contentType == QStringLiteral("text")) {
+            if (auto *chatItem = CreateStoredTextChatItem(message, _current_chatuser)) {
+                historyItems.append(chatItem);
+            }
+        }
+    }
+    if (!historyItems.isEmpty()) {
+        ui->chat_data->prependChatItems(historyItems);
+    }
+    // LoadMessagesBefore 的结果按 message_id 正序返回，首项就是下一次分页边界。
+    _oldest_local_message_id = olderMessages.first().messageId;
+    _has_more_local_history = olderMessages.size() >= kLocalHistoryPageSize;
+    _loading_older_local_history = false;
 }
 
 void ChatDialog::UpdateChatSessionPreview(const std::shared_ptr<UserInfo> &userInfo,
@@ -725,10 +937,45 @@ void ChatDialog::SetCurrentChatUser(const std::shared_ptr<UserInfo> &chatUser, q
     if (!chatUser) {
         return;
     }
+    const auto storage = LocalChatStorageMgr::GetInstance();
+    // 从联系人页进入时没有 ChatUserWid 传来的 threadId，按 peerUid 在本地摘要中补齐。
+    if (threadId <= 0 && storage->IsReady()) {
+        for (const LocalChatThread &thread : storage->CachedThreads()) {
+            if (thread.threadType == QStringLiteral("private") && thread.peerUid == chatUser->_uid) {
+                threadId = thread.threadId;
+                break;
+            }
+        }
+    }
     _current_chatuser = chatUser;
     _current_thread_id = threadId;
+    _oldest_local_message_id = 0;
+    _has_more_local_history = false;
+    _loading_older_local_history = false;
     ui->chat_title_label->setText(_current_chatuser->_name);
     ui->chat_stack->setCurrentWidget(ui->chat_page);
+
+    // 会话切换时必须先移除旧气泡，再按 message_id 正序读取本地最近记录；
+    // LocalChatStorageMgr 已在 SQL 中完成分页和排序，界面层不再自行倒序处理。
+    ui->chat_data->ClearChatItems();
+    if (threadId > 0 && storage->IsReady()) {
+        const QList<LocalChatMessage> recentMessages = storage->LoadRecentMessages(
+            threadId, kLocalHistoryPageSize);
+        for (const LocalChatMessage &message : recentMessages) {
+            if (message.contentType == QStringLiteral("text")) {
+                AppendStoredTextMessage(message, _current_chatuser);
+            }
+        }
+        if (!recentMessages.isEmpty()) {
+            _oldest_local_message_id = recentMessages.first().messageId;
+            // 满一页仅表示“可能还有更早记录”；到顶部再查一页，空结果才最终停止。
+            _has_more_local_history = recentMessages.size() >= kLocalHistoryPageSize;
+        }
+        // 此时用户已经进入该会话，SQLite 中此前未读的历史消息应被标记已读。
+        if (!storage->MarkThreadRead(threadId)) {
+            qWarning() << "mark local chat thread read failed:" << storage->LastError();
+        }
+    }
 
     const auto unread = _unread_text_messages.take(_current_chatuser->_uid);
     for (const auto &message : unread) {

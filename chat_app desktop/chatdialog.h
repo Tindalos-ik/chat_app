@@ -13,6 +13,8 @@ class ChatDialog;
 }
 
 class SettingDialog;
+class ChatItemBase;
+struct LocalChatMessage;
 
 class ChatDialog : public QDialog
 {
@@ -42,6 +44,8 @@ private slots:
     void slot_auth_friend(std::shared_ptr<FriendAuthResult>& authResult); // 好友列表增加好友并保存附加消息
     void slot_create_private_chat(int uid, int otherUid, qint64 threadId); // 1028 回包建立正式本地会话
     void slot_text_chat(std::shared_ptr<TextChatData>& message); // 显示当前会话收到的文本
+    void slot_local_chat_synced(qint64 threadId); // SQLite 增量同步完成后刷新会话摘要
+    void slot_load_older_local_messages(); // 聊天窗口到顶部后读取 SQLite 上一页
 
 protected:
     // 重写事件过滤器实现根据鼠标位置判断是否隐藏搜索框恢复聊天界面
@@ -67,6 +71,12 @@ private:
     void SetCurrentChatUser(const std::shared_ptr<UserInfo> &chatUser, qint64 threadId = 0);
     void AppendReceivedTextMessage(const std::shared_ptr<TextChatData> &message,
                                    const std::shared_ptr<UserInfo> &sender);
+    // 把 SQLite 读取出的已确认消息渲染为气泡；调用方已保证消息属于当前会话。
+    void AppendStoredTextMessage(const LocalChatMessage &message,
+                                 const std::shared_ptr<UserInfo> &friendInfo);
+    ChatItemBase *CreateStoredTextChatItem(const LocalChatMessage &message,
+                                           const std::shared_ptr<UserInfo> &friendInfo);
+    void LoadOlderLocalMessages();
     void UpdateChatSessionPreview(const std::shared_ptr<UserInfo> &userInfo,
                                   const QString &message, bool unread);
     void SaveFriendAuthMessages(const std::shared_ptr<UserInfo> &friendInfo,
@@ -74,6 +84,9 @@ private:
 
     std::shared_ptr<UserInfo> _current_chatuser;
     qint64 _current_thread_id = 0;
+    qint64 _oldest_local_message_id = 0;
+    bool _has_more_local_history = false;
+    bool _loading_older_local_history = false;
     QHash<int, QVector<std::shared_ptr<TextChatData>>> _unread_text_messages;
 
 signals:

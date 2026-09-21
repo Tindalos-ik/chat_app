@@ -1,6 +1,7 @@
 #ifndef CHATVIEW_H
 #define CHATVIEW_H
 #include <QScrollArea>
+#include <QList>
 #include <QVBoxLayout>
 #include <QTimer>
 #include <QWheelEvent>
@@ -39,7 +40,15 @@ public:
 
     void appendChatItem(QWidget *item); // 尾插
     void prependChatItem(QWidget *item); // 头插
+    // 一页历史一次头插，统一补偿滚动位置，避免逐条插入时视口跳动。
+    void prependChatItems(const QList<QWidget *> &items);
     void insertChatItem(QWidget *before, QWidget* item); //中间插
+    // 切换会话前清空旧会话气泡，但保留内部布局末尾的弹簧占位控件。
+    void ClearChatItems();
+
+signals:
+    // 用户滚到顶部时请求上一页本地历史；仅在实际存在可滚动距离时发出。
+    void sig_reach_top();
 
 protected:
     // 事件过滤器：已装到 m_pScrollArea->viewport() 上（鼠标实际悬浮在 viewport），
@@ -59,6 +68,7 @@ private:
 private:
     QScrollArea *m_pScrollArea; // 滚动区域：真正的视口，气泡都加在它内部内容 widget 的布局上
     bool isAppended;            // 防抖标志：尾插后 500ms 内只自动滚底一次（配合 onVScrollBarMoved）
+    bool _isPrepending = false; // 批量头插期间抑制“已到顶部”信号，避免递归加载。
 };
 
 #endif // CHATVIEW_H

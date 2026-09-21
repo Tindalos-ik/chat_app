@@ -186,6 +186,30 @@ void TcpMgr::initHandlers()
         _logged_in = true;
         _disconnect_notified = false;
         StartHeartbeat();
+
+        // 本地最大 thread_id 是“已发现会话”的游标。登录后先拉取比它更新的私聊；
+        // 空数据库传 0，即可分页获得该账号全部私聊。
+        QJsonObject loadThreadsRequest;
+        loadThreadsRequest["after_thread_id"] = QString::number(
+            LocalChatStorageMgr::GetInstance()->MaxKnownThreadId());
+        loadThreadsRequest["page_size"] = 100;
+        emit sig_send_data(ID_LOAD_CHAT_THREAD_REQ,
+                           QJsonDocument(loadThreadsRequest).toJson(QJsonDocument::Compact));
+
+        // 已知会话也可能在本账号离线期间收到了新消息；逐会话使用自己的游标同步。
+        const auto storage = LocalChatStorageMgr::GetInstance();
+        for (const LocalChatThread &thread : storage->CachedThreads()) {
+            if (thread.threadType != QStringLiteral("private") || thread.threadId <= 0) {
+                continue;
+            }
+            QJsonObject loadMessagesRequest;
+            loadMessagesRequest["thread_id"] = QString::number(thread.threadId);
+            loadMessagesRequest["after_message_id"] = QString::number(
+                storage->SyncCursors().value(thread.threadId, 0));
+            loadMessagesRequest["page_size"] = 100;
+            emit sig_send_data(ID_LOAD_CHAT_MSG_REQ,
+                               QJsonDocument(loadMessagesRequest).toJson(QJsonDocument::Compact));
+        }
         emit sig_switch_chatdlg();
     });
 
@@ -395,6 +419,170 @@ void TcpMgr::initHandlers()
         emit sig_create_private_chat(uid, otherUid, threadId);
     });
 
+    _handler.insert(ID_LOAD_CHAT_THREAD_RSP, [this](ReqId id, int len, QByteArray data) {
+        Q_UNUSED(id);
+        Q_UNUSED(len);
+        const QJsonDocument document = QJsonDocument::fromJson(data);
+        if (!document.isObject()) {
+            qWarning() << "load chat threads response is not a JSON object";
+            return;
+        }
+        const QJsonObject response = document.object();
+        if (response.value("error").toInt(ErrorCodes::ERR_JSON) != ErrorCodes::SUCCESS) {
+            qWarning() << "load chat threads failed:" << response.value("error").toInt();
+            return;
+        }
+        const auto currentUser = UserMgr::GetInstance()->GetUserInfo();
+        const auto storage = LocalChatStorageMgr::GetInstance();
+        if (!currentUser || !storage->IsReady() || response.value("uid").toInt() != currentUser->_uid) {
+            return;
+        }
+
+        for (const QJsonValue &value : response.value("threads").toArray()) {
+            const QJsonObject item = value.toObject();
+            bool threadIdOk = false;
+            const qint64 threadId = item.value("thread_id").toVariant().toLongLong(&threadIdOk);
+            const int user1Id = item.value("user1_id").toInt();
+            const int user2Id = item.value("user2_id").toInt();
+            const int peerUid = user1Id == currentUser->_uid ? user2Id : user1Id;
+            if (!threadIdOk || threadId <= 0 || peerUid <= 0 || peerUid == currentUser->_uid) {
+                continue;
+            }
+            LocalChatThread thread;
+            thread.threadId = threadId;
+            thread.threadType = QStringLiteral("private");
+            thread.peerUid = peerUid;
+            for (const auto &friendInfo : UserMgr::GetInstance()->GetFriendList()) {
+                if (friendInfo && friendInfo->_uid == peerUid) {
+                    thread.title = friendInfo->_name;
+                    break;
+                }
+            }
+            if (thread.title.isEmpty()) {
+                thread.title = QString::number(peerUid);
+            }
+            // 增量发现会话只补齐元数据，不能将已有的本地消息摘要、时间和未读数清零。
+            for (const LocalChatThread &cachedThread : storage->CachedThreads()) {
+                if (cachedThread.threadId == threadId) {
+                    thread.lastMessageId = cachedThread.lastMessageId;
+                    thread.lastMessagePreview = cachedThread.lastMessagePreview;
+                    thread.lastMessageAtMs = cachedThread.lastMessageAtMs;
+                    thread.unreadCount = cachedThread.unreadCount;
+                    break;
+                }
+            }
+            if (!storage->UpsertThread(thread)) {
+                qWarning() << "save synced chat thread failed:" << storage->LastError();
+                continue;
+            }
+            emit sig_create_private_chat(currentUser->_uid, peerUid, threadId);
+
+            // 每个会话独立维护 message_id 游标：新会话从 0 开始，已有会话只取缺失部分。
+            QJsonObject loadMessagesRequest;
+            loadMessagesRequest["thread_id"] = QString::number(threadId);
+            loadMessagesRequest["after_message_id"] = QString::number(
+                storage->SyncCursors().value(threadId, 0));
+            loadMessagesRequest["page_size"] = 100;
+            emit sig_send_data(ID_LOAD_CHAT_MSG_REQ,
+                               QJsonDocument(loadMessagesRequest).toJson(QJsonDocument::Compact));
+        }
+
+        if (response.value("load_more").toBool()) {
+            QJsonObject nextRequest;
+            nextRequest["after_thread_id"] = response.value("next_thread_id").toVariant().toString();
+            nextRequest["page_size"] = 100;
+            emit sig_send_data(ID_LOAD_CHAT_THREAD_REQ,
+                               QJsonDocument(nextRequest).toJson(QJsonDocument::Compact));
+        }
+    });
+
+    _handler.insert(ID_LOAD_CHAT_MSG_RSP, [this](ReqId id, int len, QByteArray data) {
+        Q_UNUSED(id);
+        Q_UNUSED(len);
+        const QJsonDocument document = QJsonDocument::fromJson(data);
+        if (!document.isObject()) {
+            qWarning() << "load chat messages response is not a JSON object";
+            return;
+        }
+        const QJsonObject response = document.object();
+        if (response.value("error").toInt(ErrorCodes::ERR_JSON) != ErrorCodes::SUCCESS) {
+            qWarning() << "load chat messages failed:" << response.value("error").toInt();
+            return;
+        }
+        bool threadIdOk = false;
+        const qint64 threadId = response.value("thread_id").toVariant().toLongLong(&threadIdOk);
+        const auto currentUser = UserMgr::GetInstance()->GetUserInfo();
+        const auto storage = LocalChatStorageMgr::GetInstance();
+        if (!threadIdOk || threadId <= 0 || !currentUser || !storage->IsReady()) {
+            return;
+        }
+
+        LocalChatThread thread;
+        bool foundThread = false;
+        for (const LocalChatThread &cachedThread : storage->CachedThreads()) {
+            if (cachedThread.threadId == threadId) {
+                thread = cachedThread;
+                foundThread = true;
+                break;
+            }
+        }
+        if (!foundThread) {
+            qWarning() << "ignore messages for an unknown local thread:" << threadId;
+            return;
+        }
+
+        QList<LocalChatMessage> localMessages;
+        qint64 maxMessageId = storage->SyncCursors().value(threadId, 0);
+        for (const QJsonValue &value : response.value("messages").toArray()) {
+            const QJsonObject item = value.toObject();
+            bool messageIdOk = false;
+            const qint64 messageId = item.value("message_id").toVariant().toLongLong(&messageIdOk);
+            if (!messageIdOk || messageId <= 0) {
+                continue;
+            }
+            LocalChatMessage message;
+            message.messageId = messageId;
+            message.threadId = threadId;
+            message.senderId = item.value("sender_id").toInt();
+            message.recvId = item.value("recv_id").toInt();
+            message.content = item.value("content").toString();
+            message.createdAtMs = item.value("created_at_ms").toVariant().toLongLong();
+            message.updatedAtMs = message.createdAtMs;
+            message.serverStatus = item.value("status").toInt();
+            message.sendState = 3;
+            message.isRead = message.senderId == currentUser->_uid;
+            if (message.senderId <= 0 || message.content.isEmpty()) {
+                continue;
+            }
+            localMessages.append(message);
+            maxMessageId = qMax(maxMessageId, message.messageId);
+            if (message.messageId >= thread.lastMessageId) {
+                thread.lastMessageId = message.messageId;
+                thread.lastMessagePreview = message.content;
+                thread.lastMessageAtMs = message.createdAtMs;
+            }
+        }
+
+        if (!localMessages.isEmpty() && !storage->SaveReceivedMessages(thread, localMessages, maxMessageId)) {
+            qWarning() << "save synced chat messages failed:" << storage->LastError();
+            return;
+        }
+        if (!localMessages.isEmpty()) {
+            // 先确保 SQLite 事务提交成功，再让 UI 从缓存刷新；不能提前发信号，
+            // 否则 ChatDialog 可能读到旧摘要或不完整消息页。
+            emit sig_local_chat_synced(threadId);
+        }
+
+        if (response.value("load_more").toBool()) {
+            QJsonObject nextRequest;
+            nextRequest["thread_id"] = QString::number(threadId);
+            nextRequest["after_message_id"] = response.value("next_message_id").toVariant().toString();
+            nextRequest["page_size"] = 100;
+            emit sig_send_data(ID_LOAD_CHAT_MSG_REQ,
+                               QJsonDocument(nextRequest).toJson(QJsonDocument::Compact));
+        }
+    });
+
     _handler.insert(ID_TEXT_CHAT_MSG_RSP, [this](ReqId id, int len, QByteArray data){
         Q_UNUSED(id);
         Q_UNUSED(len);
@@ -411,6 +599,112 @@ void TcpMgr::initHandlers()
             qDebug() << "text message" << value.toObject().value("msgid").toString()
                      << (error == ErrorCodes::SUCCESS ? "sent" : "failed")
                      << "error:" << error;
+        }
+        if (error != ErrorCodes::SUCCESS) {
+            // 未被服务端确认的发送消息没有可靠的 message_id，不能写入以服务端
+            // message_id 为主键的本地表；发送失败状态仍由现有发送 UI 处理。
+            return;
+        }
+
+        const auto currentUser = UserMgr::GetInstance()->GetUserInfo();
+        const auto storage = LocalChatStorageMgr::GetInstance();
+        if (!currentUser || !storage->IsReady()) {
+            return;
+        }
+
+        // 一次 1017 可批量发送多条文本。按 thread_id 聚合后，每个会话只提交一
+        // 次 SQLite 事务，避免每确认一条消息就重复刷新会话列表和当前聊天窗口。
+        QHash<qint64, LocalChatThread> threads;
+        QHash<qint64, QList<LocalChatMessage>> messagesByThread;
+        QHash<qint64, qint64> maxMessageIds;
+        const qint64 fallbackThreadId = jsonObj.value("thread_id").toVariant().toLongLong();
+        for (const QJsonValue &value : textArray) {
+            const QJsonObject textObj = value.toObject();
+            bool messageIdOk = false;
+            bool threadIdOk = false;
+            const qint64 messageId = textObj.value("message_id").toVariant()
+                                         .toLongLong(&messageIdOk);
+            const qint64 itemThreadId = textObj.value("thread_id").toVariant()
+                                            .toLongLong(&threadIdOk);
+            const qint64 threadId = threadIdOk ? itemThreadId : fallbackThreadId;
+            const qint64 senderId = textObj.value("sender_id").isUndefined()
+                                        ? jsonObj.value("fromuid").toVariant().toLongLong()
+                                        : textObj.value("sender_id").toVariant().toLongLong();
+            const qint64 recvId = textObj.value("recv_id").isUndefined()
+                                      ? jsonObj.value("touid").toVariant().toLongLong()
+                                      : textObj.value("recv_id").toVariant().toLongLong();
+            const QString content = textObj.value("content").toString();
+            if (!messageIdOk || messageId <= 0 || threadId <= 0 || senderId != currentUser->_uid
+                || recvId <= 0 || recvId == currentUser->_uid || content.isEmpty()) {
+                qWarning() << "ignore invalid confirmed text message" << messageId << threadId;
+                continue;
+            }
+
+            if (!threads.contains(threadId)) {
+                LocalChatThread thread;
+                thread.threadId = threadId;
+                thread.threadType = QStringLiteral("private");
+                thread.peerUid = recvId;
+                thread.title = QString::number(recvId);
+                for (const auto &friendInfo : UserMgr::GetInstance()->GetFriendList()) {
+                    if (friendInfo && friendInfo->_uid == recvId) {
+                        thread.title = friendInfo->_name;
+                        break;
+                    }
+                }
+                // 发送回包可能和登录增量同步并发到达。已有摘要优先保留，只用
+                // 本批次中更大的 message_id 覆盖，不能让迟到的确认回包倒退摘要。
+                for (const LocalChatThread &cachedThread : storage->CachedThreads()) {
+                    if (cachedThread.threadId == threadId) {
+                        thread = cachedThread;
+                        thread.threadType = QStringLiteral("private");
+                        thread.peerUid = recvId;
+                        if (thread.title.isEmpty()) {
+                            thread.title = QString::number(recvId);
+                        }
+                        break;
+                    }
+                }
+                threads.insert(threadId, thread);
+            }
+
+            LocalChatThread &thread = threads[threadId];
+            const qint64 createdAtMs = textObj.value("created_at_ms").toVariant().toLongLong();
+            const qint64 displayTimeMs = createdAtMs > 0
+                                             ? createdAtMs
+                                             : QDateTime::currentMSecsSinceEpoch();
+            if (messageId >= thread.lastMessageId) {
+                thread.lastMessageId = messageId;
+                thread.lastMessagePreview = content;
+                thread.lastMessageAtMs = displayTimeMs;
+            }
+            thread.updatedAtMs = displayTimeMs;
+
+            LocalChatMessage localMessage;
+            localMessage.messageId = messageId;
+            localMessage.threadId = threadId;
+            localMessage.senderId = senderId;
+            localMessage.recvId = recvId;
+            localMessage.contentType = QStringLiteral("text");
+            localMessage.content = content;
+            localMessage.createdAtMs = displayTimeMs;
+            localMessage.updatedAtMs = displayTimeMs;
+            localMessage.serverStatus = textObj.value("status").toInt();
+            localMessage.sendState = 3;
+            localMessage.isRead = true;
+            messagesByThread[threadId].append(localMessage);
+            maxMessageIds[threadId] = qMax(maxMessageIds.value(threadId, 0), messageId);
+        }
+
+        for (auto threadIter = threads.cbegin(); threadIter != threads.cend(); ++threadIter) {
+            const qint64 threadId = threadIter.key();
+            if (!storage->SaveReceivedMessages(threadIter.value(), messagesByThread.value(threadId),
+                                               maxMessageIds.value(threadId))) {
+                qWarning() << "save confirmed text messages failed:" << storage->LastError();
+                continue;
+            }
+            // 事务成功后再通知 UI，当前窗口会用确认后的本地记录替换临时气泡。
+            emit sig_local_chat_synced(threadId);
         }
     });
 
@@ -436,9 +730,35 @@ void TcpMgr::initHandlers()
                 << "to:" << toUid << "count:" << textArray.size();
         for (const QJsonValue &value : textArray) {
             const QJsonObject textObj = value.toObject();
-            auto message = std::make_shared<TextChatData>(textObj.value("msgid").toString(),
-                                                           textObj.value("content").toString(),
-                                                           fromUid, toUid);
+            bool messageIdOk = false;
+            bool threadIdOk = false;
+            const qint64 messageId = textObj.value("message_id").toVariant()
+                                         .toLongLong(&messageIdOk);
+            const qint64 threadId = textObj.value("thread_id").toVariant()
+                                       .toLongLong(&threadIdOk);
+            const QString uniqueId = textObj.value("msgid").toString();
+            const QString content = textObj.value("content").toString();
+
+            std::shared_ptr<TextChatData> message;
+            if (messageIdOk && threadIdOk && messageId > 0 && threadId > 0) {
+                // 新协议中的服务端 ID 是 SQLite 去重和断线增量同步的依据；时间也
+                // 一并传给界面，避免实时到达时只能使用客户端当前时间排序。
+                const qint64 createdAtMs = textObj.value("created_at_ms").toVariant()
+                                               .toLongLong();
+                const qint64 senderId = textObj.value("sender_id").isUndefined()
+                                            ? fromUid
+                                            : textObj.value("sender_id").toVariant().toLongLong();
+                const qint64 recvId = textObj.value("recv_id").isUndefined()
+                                          ? toUid
+                                          : textObj.value("recv_id").toVariant().toLongLong();
+                message = std::make_shared<TextChatData>(messageId, uniqueId, threadId,
+                                                          content, senderId, recvId,
+                                                          textObj.value("status").toInt(),
+                                                          createdAtMs);
+            } else {
+                // 对尚未升级 1019 字段的旧 ChatServer 保留原有内存展示流程。
+                message = std::make_shared<TextChatData>(uniqueId, content, fromUid, toUid);
+            }
             emit sig_text_chat(message);
         }
     });

@@ -108,6 +108,16 @@ void LogicSystem::RegisterCallBacks() {
                                             const std::string &msg_data) {
         HandleTextMsg(session, msg_id, msg_data);
     };
+    _fun_callbacks[ID_LOAD_CHAT_MSG_REQ] = [this](std::shared_ptr<CSession> session,
+                                            const short &msg_id,
+                                            const std::string &msg_data) {
+        LoadChatMessages(session, msg_id, msg_data);
+    };
+    _fun_callbacks[ID_LOAD_CHAT_THREAD_REQ] = [this](std::shared_ptr<CSession> session,
+                                               const short &msg_id,
+                                               const std::string &msg_data) {
+        LoadChatThreads(session, msg_id, msg_data);
+    };
     _fun_callbacks[ID_UPDATE_USER_PROFILE_REQ] = [this](std::shared_ptr<CSession> session,
                                             const short &msg_id,
                                             const std::string &msg_data) {
@@ -687,7 +697,6 @@ void LogicSystem::HandleTextMsg(std::shared_ptr<CSession> session, const short &
     rtvalue["error"] = ErrorCode::Success;
     rtvalue["fromuid"] = fromuid;
     rtvalue["touid"] = touid;
-    rtvalue["textArray"] = textarray;
 
     Defer defer([this, &rtvalue, session]{
         std::string return_str = rtvalue.toStyledString();
@@ -699,13 +708,49 @@ void LogicSystem::HandleTextMsg(std::shared_ptr<CSession> session, const short &
         return;
     }
 
-    // 查询redis 查询对端的服务器
+    std::vector<std::pair<std::string, std::string>> clientMessages;
+    clientMessages.reserve(textarray.size());
+    for (const auto& textObj : textarray) {
+        const std::string uniqueId = textObj["msgid"].asString();
+        const std::string content = textObj["content"].asString();
+        if (uniqueId.empty() || content.empty()) {
+            rtvalue["error"] = ErrorCode::Error_Json;
+            return;
+        }
+        clientMessages.emplace_back(uniqueId, content);
+    }
+
+    // 先持久化再投递：接收方离线时消息仍可在下次按 message_id 游标增量同步。
+    std::uint64_t threadId = 0;
+    std::vector<StoredTextMessage> storedMessages;
+    if (!MysqlMgr::GetInstance()->SavePrivateTextMessages(
+            fromuid, touid, clientMessages, threadId, storedMessages)) {
+        rtvalue["error"] = ErrorCode::RPCFaild;
+        return;
+    }
+    rtvalue["thread_id"] = static_cast<Json::UInt64>(threadId);
+    Json::Value confirmedMessages(Json::arrayValue);
+    for (const StoredTextMessage& message : storedMessages) {
+        Json::Value confirmed;
+        confirmed["msgid"] = message.uniqueId;
+        confirmed["content"] = message.content;
+        confirmed["message_id"] = static_cast<Json::UInt64>(message.messageId);
+        confirmed["thread_id"] = static_cast<Json::UInt64>(message.threadId);
+        confirmed["sender_id"] = message.senderId;
+        confirmed["recv_id"] = message.recvId;
+        confirmed["created_at_ms"] = static_cast<Json::UInt64>(message.createdAtMs);
+        confirmed["status"] = message.status;
+        confirmedMessages.append(std::move(confirmed));
+    }
+    rtvalue["textArray"] = confirmedMessages;
+
+    // 查询 Redis 决定是否实时投递；查不到并不是保存失败，1018 仍确认消息已落库。
     auto to_ip_key = USERIPPREFIX + std::to_string(touid);
     std::string to_ip_value;
     bool b_ip = RedisMgr::GetInstance()->Get(to_ip_key, to_ip_value);
     if(!b_ip){
         std::cout << "text chat target is offline, uid = " << touid << std::endl;
-        rtvalue["error"] = ErrorCode::UidInvalid;
+        rtvalue["delivered"] = false;
         return;
     }
 
@@ -718,9 +763,10 @@ void LogicSystem::HandleTextMsg(std::shared_ptr<CSession> session, const short &
                       << ", to = " << touid << std::endl;
             std::string return_str = rtvalue.toStyledString();
             toSession->Send(return_str, ID_NOTIFY_TEXT_CHAT_MSG_REQ);
+            rtvalue["delivered"] = true;
         } else {
             std::cout << "text chat target session missing, uid = " << touid << std::endl;
-            rtvalue["error"] = ErrorCode::UidInvalid;
+            rtvalue["delivered"] = false;
         }
         return;
     }
@@ -729,22 +775,126 @@ void LogicSystem::HandleTextMsg(std::shared_ptr<CSession> session, const short &
     TextChatMsgReq textChatMsgReq;
     textChatMsgReq.set_fromuid(fromuid);
     textChatMsgReq.set_touid(touid);
-    // 组装消息
-    for(auto &text_obj : textarray){
-        auto content = text_obj["content"].asString();
-        auto msgid = text_obj["msgid"].asString();
-        std::cout << "content: " << content << std::endl;
-        std::cout << "msgid: " << msgid << std::endl;
+    // 组装已持久化后的消息，跨服目标可直接复用服务端 message_id/thread_id。
+    for(const auto &message : storedMessages){
         // 向 protobuf 的 repeated textmsgs 列表追加一条消息，并返回该元素的可写指针。
         auto text_msg = textChatMsgReq.add_textmsgs();
-        text_msg->set_msgcontent(content);
-        text_msg->set_msgid(msgid);
+        text_msg->set_msgcontent(message.content);
+        text_msg->set_msgid(message.uniqueId);
     }
 
     std::cout << "text chat cross-server push, from = " << fromuid
               << ", to = " << touid << ", server = " << to_ip_value << std::endl;
     const auto rpcRsp = ChatGrpcClient::GetInstance()->NotifyTextChatMsg(to_ip_value, textChatMsgReq);
     rtvalue["error"] = rpcRsp.error();
+    rtvalue["delivered"] = rpcRsp.error() == ErrorCode::Success;
+}
+
+void LogicSystem::LoadChatThreads(std::shared_ptr<CSession> session, const short &msg_id,
+                                  const std::string &msg_data)
+{
+    Json::Value response;
+    response["error"] = ErrorCode::Success;
+    Defer defer([&response, session] { session->Send(response.toStyledString(), ID_LOAD_CHAT_THREAD_RSP); });
+
+    Json::CharReaderBuilder reader;
+    Json::Value request;
+    std::istringstream stream(msg_data);
+    std::string errors;
+    if (!session || !Json::parseFromStream(reader, stream, &request, &errors)) {
+        response["error"] = ErrorCode::Error_Json;
+        return;
+    }
+    const int uid = session->GetUserId();
+    const std::uint64_t afterThreadId = request.get("after_thread_id", 0).asUInt64();
+    const int pageSize = request.get("page_size", 100).asInt();
+    if (uid <= 0 || pageSize <= 0 || pageSize > 1000) {
+        response["error"] = ErrorCode::Error_Json;
+        return;
+    }
+    std::vector<PrivateChatThread> threads;
+    if (!MysqlMgr::GetInstance()->LoadPrivateChatThreads(uid, afterThreadId, pageSize + 1, threads)) {
+        response["error"] = ErrorCode::RPCFaild;
+        return;
+    }
+    const bool loadMore = threads.size() > static_cast<size_t>(pageSize);
+    if (loadMore) {
+        threads.pop_back();
+    }
+    Json::Value threadArray(Json::arrayValue);
+    std::uint64_t nextThreadId = afterThreadId;
+    for (const PrivateChatThread& thread : threads) {
+        Json::Value item;
+        item["thread_id"] = static_cast<Json::UInt64>(thread.threadId);
+        item["type"] = "private";
+        item["user1_id"] = thread.user1Id;
+        item["user2_id"] = thread.user2Id;
+        threadArray.append(std::move(item));
+        nextThreadId = thread.threadId;
+    }
+    response["uid"] = uid;
+    response["threads"] = threadArray;
+    response["next_thread_id"] = static_cast<Json::UInt64>(nextThreadId);
+    response["load_more"] = loadMore;
+}
+
+void LogicSystem::LoadChatMessages(std::shared_ptr<CSession> session, const short &msg_id,
+                                   const std::string &msg_data)
+{
+    Json::Value response;
+    response["error"] = ErrorCode::Success;
+    Defer defer([&response, session] {
+        session->Send(response.toStyledString(), ID_LOAD_CHAT_MSG_RSP);
+    });
+
+    Json::CharReaderBuilder reader;
+    Json::Value request;
+    std::istringstream stream(msg_data);
+    std::string errors;
+    if (!Json::parseFromStream(reader, stream, &request, &errors) || !session) {
+        response["error"] = ErrorCode::Error_Json;
+        return;
+    }
+
+    const int uid = session->GetUserId();
+    const std::uint64_t threadId = request["thread_id"].asUInt64();
+    const std::uint64_t afterMessageId = request.get("after_message_id", 0).asUInt64();
+    const int pageSize = request.get("page_size", 50).asInt();
+    if (uid <= 0 || threadId == 0 || pageSize <= 0 || pageSize > 1000) {
+        response["error"] = ErrorCode::Error_Json;
+        return;
+    }
+
+    // 多取一条只用于判断 load_more；真正返回给客户端的永远不超过 pageSize 条。
+    std::vector<StoredTextMessage> messages;
+    if (!MysqlMgr::GetInstance()->LoadPrivateTextMessages(
+            uid, threadId, afterMessageId, pageSize + 1, messages)) {
+        response["error"] = ErrorCode::RPCFaild;
+        return;
+    }
+    const bool loadMore = messages.size() > static_cast<size_t>(pageSize);
+    if (loadMore) {
+        messages.pop_back();
+    }
+
+    Json::Value messageArray(Json::arrayValue);
+    std::uint64_t nextMessageId = afterMessageId;
+    for (const StoredTextMessage& message : messages) {
+        Json::Value item;
+        item["message_id"] = static_cast<Json::UInt64>(message.messageId);
+        item["thread_id"] = static_cast<Json::UInt64>(message.threadId);
+        item["sender_id"] = message.senderId;
+        item["recv_id"] = message.recvId;
+        item["content"] = message.content;
+        item["created_at_ms"] = static_cast<Json::UInt64>(message.createdAtMs);
+        item["status"] = message.status;
+        messageArray.append(std::move(item));
+        nextMessageId = message.messageId;
+    }
+    response["thread_id"] = static_cast<Json::UInt64>(threadId);
+    response["messages"] = messageArray;
+    response["next_message_id"] = static_cast<Json::UInt64>(nextMessageId);
+    response["load_more"] = loadMore;
 }
 
 void LogicSystem::CreatePrivateChat(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data){

@@ -40,6 +40,14 @@ ChatView::ChatView(QWidget *parent): QWidget(parent),isAppended(false)
     m_pScrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff); // 默认不显示
     QScrollBar *pVScrollBar = m_pScrollArea->verticalScrollBar();
     connect(pVScrollBar, &QScrollBar::rangeChanged, this, &ChatView::onVScrollBarMoved); // 尾插后自动滚到底
+    connect(pVScrollBar, &QScrollBar::valueChanged, this, [this, pVScrollBar](int value) {
+        // rangeChanged 时滚动条值有可能暂时仍为 0；尾插和头插期间都不是用户的
+        // “翻到最顶”操作，必须忽略，防止首次渲染或批量插入递归触发加载。
+        if (!isAppended && !_isPrepending && pVScrollBar->maximum() > pVScrollBar->minimum()
+            && value <= pVScrollBar->minimum()) {
+            emit sig_reach_top();
+        }
+    });
 
     // 把垂直滚动条从"并排"改成"叠在右侧"：悬浮出现时不会挤占消息宽度
     QHBoxLayout *pHLayout_2 = new QHBoxLayout();
@@ -69,9 +77,65 @@ void ChatView::appendChatItem(QWidget *item)
     isAppended = true; // 加入内容 会触发 rangeChanged，滚动条向下滑一下
 }
 
+void ChatView::ClearChatItems()
+{
+    QWidget *content = m_pScrollArea ? m_pScrollArea->widget() : nullptr;
+    auto *layout = content ? qobject_cast<QVBoxLayout *>(content->layout()) : nullptr;
+    if (layout == nullptr) {
+        return;
+    }
+
+    // 最后一项是构造函数创建的弹簧，负责把消息顶到顶部，绝不能一起删除。
+    while (layout->count() > 1) {
+        QLayoutItem *item = layout->takeAt(0);
+        if (item == nullptr) {
+            continue;
+        }
+        delete item->widget();
+        delete item;
+    }
+    isAppended = false;
+}
+
 void ChatView::prependChatItem(QWidget *item)
 {
-    // 实现思路 = insertWidget(0, item) + 滚动位置补偿（记录原 offset，插入后补回来，防止列表跳动）
+    if (item != nullptr) {
+        prependChatItems({item});
+    }
+}
+
+void ChatView::prependChatItems(const QList<QWidget *> &items)
+{
+    QWidget *content = m_pScrollArea ? m_pScrollArea->widget() : nullptr;
+    auto *layout = content ? qobject_cast<QVBoxLayout *>(content->layout()) : nullptr;
+    if (layout == nullptr || items.isEmpty()) {
+        return;
+    }
+
+    QScrollBar *scrollBar = m_pScrollArea->verticalScrollBar();
+    const int oldValue = scrollBar->value();
+    const int oldMaximum = scrollBar->maximum();
+    _isPrepending = true;
+
+    // items 按时间正序传入。头插时要从末尾倒着插，最终页面仍是“旧 -> 新”。
+    for (auto iter = items.crbegin(); iter != items.crend(); ++iter) {
+        if (*iter != nullptr) {
+            layout->insertWidget(0, *iter);
+        }
+    }
+    layout->activate();
+
+    // 布局和滚动范围会在本事件循环末尾才完全更新。以最大值的增量补偿当前位置，
+    // 使用户原来正在看的那条消息保持在同一屏幕位置，而不是被新历史顶走。
+    QTimer::singleShot(0, this, [this, oldValue, oldMaximum] {
+        if (!m_pScrollArea) {
+            return;
+        }
+        QScrollBar *scrollBar = m_pScrollArea->verticalScrollBar();
+        const int insertedHeight = qMax(0, scrollBar->maximum() - oldMaximum);
+        scrollBar->setValue(qMin(scrollBar->maximum(), oldValue + insertedHeight));
+        _isPrepending = false;
+    });
 }
 
 void ChatView::insertChatItem(QWidget *before, QWidget *item)
@@ -108,7 +172,7 @@ void ChatView::initStyleSheet()
 // 滚动条范围变化时触发：尾插新消息后自动滚到底部
 void ChatView::onVScrollBarMoved(int min, int max)
 {
-    if(isAppended){ // 防抖：只有刚尾插过（500ms 内）才自动滚底，避免干扰用户手动滚动
+    if(isAppended && !_isPrepending){ // 头插历史时绝不能沿用尾插的自动滚底标志
         QScrollBar *pVScrollBar = m_pScrollArea->verticalScrollBar();
         pVScrollBar->setSliderPosition(pVScrollBar->maximum()); // 滑到最底
         // 500ms 内 rangeChanged 可能多次触发，500ms 后重置标志

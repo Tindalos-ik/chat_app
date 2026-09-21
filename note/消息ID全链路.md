@@ -211,15 +211,15 @@ TCP `1014/1015` 将其映射为同名 `textmsgs` 数组。单项 JSON 使用
 
 服务端会将两个 UID 排序，并通过 `private_chat(user1_id, user2_id)` 的唯一索引确保同一对用户只对应一个 `thread_id`。并发请求命中已有记录时返回已有会话；竞争创建产生的临时 `chat_thread` 会在同一事务中删除。Qt 客户端发送 1027 后会注册并处理 1028：校验当前登录 uid、写入 `LocalChatStorageMgr`，再将正式 `thread_id` 绑定到对应 `ChatUserWid`。
 
-后续完整单聊链路应为：
+当前 ChatServer1 的完整单聊链路为：
 
 ```text
 A -> ID_TEXT_CHAT_MSG_REQ {fromuid,touid,textArray:[{content,msgid}]}
-A <- ID_TEXT_CHAT_MSG_RSP {error,fromuid,touid,textArray}
-B <- ID_NOTIFY_TEXT_CHAT_MSG_REQ {error,fromuid,touid,textArray}
+A <- ID_TEXT_CHAT_MSG_RSP {error,fromuid,touid,thread_id,textArray:[{...,message_id,thread_id,...}]}
+B <- ID_NOTIFY_TEXT_CHAT_MSG_REQ {error,fromuid,touid,thread_id,textArray:[{...,message_id,thread_id,...}]}
 ```
 
-服务端用当前 TCP 会话保存的 UID 校验文本请求的 `fromuid`，避免客户端伪造发送者。跨 ChatServer 时，发送方服务根据 Redis 的 `uip_<uid>` 找到目标服务，经 gRPC `NotifyTextChatMsg` 转发，再推送给目标用户。当前没有离线消息落库；目标会话不存在会在 `1018` 中返回错误。会话列表和历史消息分别使用 1025/1026、1029/1030 加载。
+服务端用当前 TCP 会话保存的 UID 校验文本请求的 `fromuid`，避免客户端伪造发送者。ChatServer1 先写入 MySQL，因而目标离线时 `1018` 返回 `delivered:false`，但不是发送失败；客户端下次登录以 1025/1026、1029/1030 增量补齐。带服务器 ID 的同服 `1019` 由 SQLite 去重后立即更新本地历史、摘要和未读数。跨 ChatServer 时，发送方服务根据 Redis 的 `uip_<uid>` 找到目标服务，经 gRPC `NotifyTextChatMsg` 转发；当前 protobuf 尚只含 UUID 和正文，因此另一台服务需同步扩展字段后才能得到同样的实时持久化效果。
 
 ## 9. TCP 包格式
 
@@ -237,7 +237,7 @@ ChatServer TCP 包固定为：
 | --- | --- | --- |
 | GateServer | 验证码、注册、登录、重置密码 | 登录回包字段可继续补充用户资料 |
 | StatusServer | ChatServer 负载选择、token 签发/校验 | 更完整的在线状态管理 |
-| ChatServer | TCP 登录、搜索、好友申请/认证、在线文本转发、私聊会话创建/查询 | 离线消息、会话/历史消息加载 |
-| ChatServer 间 gRPC | 好友申请、认证结果、在线文本转发 | 离线消息补偿和重试 |
-| Qt 客户端 | HTTP 流程、TCP 登录/搜索/好友、在线文本收发 | 发送状态 UI、重试、离线消息展示 |
+| ChatServer1 | TCP 登录、搜索、好友申请/认证、私聊创建/查询、文本持久化、会话/历史消息加载 | 已读回执、撤回、发送幂等重试 |
+| ChatServer 间 gRPC | 好友申请、认证结果、在线文本转发 | 文本的 `message_id/thread_id` 同步、离线补偿和重试 |
+| Qt 客户端 | HTTP 流程、TCP 登录/搜索/好友、SQLite 历史与增量同步、在线文本收发 | 发送状态 UI、重试、上拉加载更早本地历史 |
 | VarifyServer | Redis 验证码、邮件发送 | 邮件失败后的补偿和监控 |
