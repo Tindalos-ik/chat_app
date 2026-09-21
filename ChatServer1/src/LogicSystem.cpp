@@ -1,5 +1,8 @@
 #include "LogicSystem.h"
 #include <json.h>
+#include <charconv>
+#include <cstdint>
+#include <system_error>
 #include <sstream>
 #include <iostream>
 #include <cctype>
@@ -10,6 +13,30 @@
 #include "CServer.h"
 
 using namespace std;
+
+namespace {
+
+// Qt 为避免 JSON double 损失 64 位整数精度，将 thread_id/message_id 游标以字符串发送。
+// 这里仅接受十进制无符号整数字符串；格式不正确的请求由调用方返回 Error_Json。
+bool ParseUint64StringField(const Json::Value& object, const char* fieldName,
+                            std::uint64_t& value)
+{
+    if (!object.isObject() || !object.isMember(fieldName) || !object[fieldName].isString()) {
+        return false;
+    }
+
+    const std::string text = object[fieldName].asString();
+    if (text.empty()) {
+        return false;
+    }
+
+    const char* begin = text.data();
+    const char* end = begin + text.size();
+    const auto result = std::from_chars(begin, end, value, 10);
+    return result.ec == std::errc() && result.ptr == end;
+}
+
+} // namespace
 
 LogicSystem::LogicSystem() : _b_stop(false), _p_server(nullptr) {
     RegisterCallBacks(); // 注册消息处理函数
@@ -76,8 +103,18 @@ void LogicSystem::DealMsg() {
         }
 
         // 单个 worker 仍按顺序处理业务；1023 心跳由 CSession 直接处理。
-        call_back_iter->second(msg_node->_session, msg_node->_recvnode->_msg_id,
-            std::string(msg_node->_recvnode->_data, msg_node->_recvnode->_cur_len));
+        // 业务处理器运行在线程入口之外，必须兜底捕获异常；否则任意一次 JSON、
+        // MySQL 或 Redis 异常都会触发 std::terminate 并终止整个 ChatServer 进程。
+        try {
+            call_back_iter->second(msg_node->_session, msg_node->_recvnode->_msg_id,
+                std::string(msg_node->_recvnode->_data, msg_node->_recvnode->_cur_len));
+        } catch (const std::exception& e) {
+            std::cerr << "logic handler exception, msg id ["
+                      << msg_node->_recvnode->_msg_id << "]: " << e.what() << std::endl;
+        } catch (...) {
+            std::cerr << "logic handler unknown exception, msg id ["
+                      << msg_node->_recvnode->_msg_id << "]" << std::endl;
+        }
     }
 }
 
@@ -813,12 +850,17 @@ void LogicSystem::LoadChatThreads(std::shared_ptr<CSession> session, const short
     Json::Value request;
     std::istringstream stream(msg_data);
     std::string errors;
-    if (!session || !Json::parseFromStream(reader, stream, &request, &errors)) {
+    if (!session || !Json::parseFromStream(reader, stream, &request, &errors)
+        || !request.isObject()) {
         response["error"] = ErrorCode::Error_Json;
         return;
     }
     const int uid = session->GetUserId();
-    const std::uint64_t afterThreadId = request.get("after_thread_id", 0).asUInt64();
+    std::uint64_t afterThreadId = 0;
+    if (!ParseUint64StringField(request, "after_thread_id", afterThreadId)) {
+        response["error"] = ErrorCode::Error_Json;
+        return;
+    }
     const int pageSize = request.get("page_size", 100).asInt();
     if (uid <= 0 || pageSize <= 0 || pageSize > 1000) {
         response["error"] = ErrorCode::Error_Json;
@@ -863,14 +905,20 @@ void LogicSystem::LoadChatMessages(std::shared_ptr<CSession> session, const shor
     Json::Value request;
     std::istringstream stream(msg_data);
     std::string errors;
-    if (!Json::parseFromStream(reader, stream, &request, &errors) || !session) {
+    if (!Json::parseFromStream(reader, stream, &request, &errors) || !session
+        || !request.isObject()) {
         response["error"] = ErrorCode::Error_Json;
         return;
     }
 
     const int uid = session->GetUserId();
-    const std::uint64_t threadId = request["thread_id"].asUInt64();
-    const std::uint64_t afterMessageId = request.get("after_message_id", 0).asUInt64();
+    std::uint64_t threadId = 0;
+    std::uint64_t afterMessageId = 0;
+    if (!ParseUint64StringField(request, "thread_id", threadId)
+        || !ParseUint64StringField(request, "after_message_id", afterMessageId)) {
+        response["error"] = ErrorCode::Error_Json;
+        return;
+    }
     const int pageSize = request.get("page_size", 50).asInt();
     if (uid <= 0 || threadId == 0 || pageSize <= 0 || pageSize > 1000) {
         response["error"] = ErrorCode::Error_Json;
