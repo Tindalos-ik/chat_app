@@ -15,7 +15,9 @@ enum ErrorCodes {
     ResourceNotFound = 1016, // resource_id 不存在，或其文件已丢失
     ResourceNotCompleted = 1017, // 资源仍在上传，不能读取半成品
     DownloadFileError = 1018, // 打开、定位或读取已发布资源失败
-    ResourceNotImage = 1019 // 已完成资源不是可识别的 PNG/JPEG/GIF/WebP 图片
+    ResourceNotImage = 1019, // 已完成资源不是可识别的 PNG/JPEG/GIF/WebP 图片
+    ResourceAccessDenied = 1020, // 登录凭证无效，或用户不属于该私聊/资源
+    ResourceAuthorizationUnavailable = 1021 // 无法联系鉴权依赖，不能放行下载
 };
 
 

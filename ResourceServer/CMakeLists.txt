@@ -21,6 +21,7 @@ set(SOURCE_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/LogicWorker.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ResourceVerifier.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ResourceServiceImpl.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/ResourceAccessAuthorizer.cpp
 )
 
 link_directories("D:/cppsoft/vcpkg/installed/x64-windows/lib") # 添加 vcpkg 的 lib 路径，库文件搜索路径
@@ -46,6 +47,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     chat_proto
     gRPC::grpc++
     protobuf::libprotobuf
+    mysqlcppconnx
 )
 
 

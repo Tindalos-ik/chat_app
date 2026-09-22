@@ -81,12 +81,15 @@ CREATE TABLE IF NOT EXISTS `chat_message` (
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                ON UPDATE CURRENT_TIMESTAMP,
+  `displayed_at` DATETIME(3) NULL DEFAULT NULL
+               COMMENT '接收端确认已实际显示的时间；不等同于 status=已读',
   `status`     TINYINT NOT NULL DEFAULT 0
                COMMENT '0=未读, 1=已读, 2=已撤回',
   PRIMARY KEY (`message_id`),
   KEY `idx_thread_created` (`thread_id`, `created_at`),
   KEY `idx_thread_message` (`thread_id`, `message_id`),
   KEY `idx_recv_status_message` (`recv_id`, `status`, `message_id`),
+  KEY `idx_recv_displayed_message` (`recv_id`, `displayed_at`, `message_id`),
   KEY `idx_message_type_id` (`message_type`, `message_id`),
   CONSTRAINT `fk_message_thread`
     FOREIGN KEY (`thread_id`) REFERENCES `chat_thread` (`id`)

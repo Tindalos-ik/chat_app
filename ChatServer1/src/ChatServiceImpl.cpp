@@ -186,6 +186,59 @@ Status ChatServiceImpl::NotifyImageChatMsg(ServerContext* context, const ImageCh
     return Status::OK;
 }
 
+Status ChatServiceImpl::NotifyMessageDisplayed(ServerContext* context, const MessageDisplayedReq* request,
+                                               MessageDisplayedRsp* response) {
+    // RPC 只负责把已经持久化的展示结果投递给本机在线发送端，不能以 RPC 参数为准
+    // 再次修改数据库；这样重试和跨服重复投递至多造成重复 UI 通知，不会篡改状态。
+    (void)context;
+    response->set_error(ErrorCode::Success);
+    if (!request || request->sender_id() <= 0 || request->reader_id() <= 0 || request->thread_id() == 0
+        || request->message_ids_size() == 0 || request->message_ids_size() > 100) {
+        response->set_error(ErrorCode::Error_Json);
+        return Status::OK;
+    }
+    const auto session = UserMgr::GetInstance()->GetSession(request->sender_id());
+    if (!session) {
+        return Status::OK; // 发送端离线时其下次 1030 同步会读取 displayed_at。
+    }
+    Json::Value notification;
+    notification["error"] = ErrorCode::Success;
+    notification["thread_id"] = static_cast<Json::UInt64>(request->thread_id());
+    notification["reader_id"] = request->reader_id();
+    notification["peer_displayed"] = true;
+    Json::Value messageIds(Json::arrayValue);
+    for (std::uint64_t id : request->message_ids()) {
+        messageIds.append(static_cast<Json::UInt64>(id));
+    }
+    notification["message_ids"] = messageIds;
+    session->Send(notification.toStyledString(), ID_NOTIFY_MESSAGE_DISPLAYED);
+    return Status::OK;
+}
+
+Status ChatServiceImpl::NotifyThreadRead(ServerContext* context, const ThreadReadReq* request,
+                                         ThreadReadRsp* response) {
+    // 已读状态在来源 ChatServer 的事务路径中确认。本端仅作在线通知，离线时返回成功
+    // 以避免来源端将“接收者不在线”误判为持久化失败并重试状态更新。
+    (void)context;
+    response->set_error(ErrorCode::Success);
+    if (!request || request->sender_id() <= 0 || request->reader_id() <= 0 || request->thread_id() == 0
+        || request->read_through_message_id() == 0) {
+        response->set_error(ErrorCode::Error_Json);
+        return Status::OK;
+    }
+    const auto session = UserMgr::GetInstance()->GetSession(request->sender_id());
+    if (!session) {
+        return Status::OK;
+    }
+    Json::Value notification;
+    notification["error"] = ErrorCode::Success;
+    notification["thread_id"] = static_cast<Json::UInt64>(request->thread_id());
+    notification["reader_id"] = request->reader_id();
+    notification["read_through_message_id"] = static_cast<Json::UInt64>(request->read_through_message_id());
+    session->Send(notification.toStyledString(), ID_NOTIFY_THREAD_READ);
+    return Status::OK;
+}
+
 
 Status ChatServiceImpl::NotifyKickUser(ServerContext* context, const KickUserReq* request, KickUserRsp* response){
     // 查询用户是否在本服务器

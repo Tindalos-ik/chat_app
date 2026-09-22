@@ -26,6 +26,9 @@ public:
     QString GetName();
     QString GetIcon();
     int GetUid();
+    // ResourceServer 的 1007 下载使用与 ChatServer 登录相同的 token 鉴权。
+    // token 仅在构造下载请求时读取，不能写入缓存或日志。
+    QString GetToken() const;
     void UpdateProfile(const QString &nick, const QString &desc, const QString &icon);
     // 好友申请在登录会话期间缓存，页面创建时可恢复这些记录。
     std::vector<std::shared_ptr<ApplyInfo>> GetApplyList();

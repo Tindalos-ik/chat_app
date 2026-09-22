@@ -6,6 +6,7 @@
 #include "ConfigMgr.h"
 #include "Base64.h"
 #include "ResourceVerifier.h"
+#include "ResourceAccessAuthorizer.h"
 #include <algorithm>
 #include <cstdint>
 #include <filesystem>
@@ -434,7 +435,8 @@ void LogicWorker::HandleUploadFile(std::shared_ptr<CSession> session, const shor
 }
 
 // 下载请求：
-// {"resource_id":"<upload_id>", "offset":0, "chunk_size":2048}
+// {"resource_id":"<upload_id>", "thread_id":42, "uid":10001,
+//  "token":"<login token>", "offset":0, "chunk_size":2048}
 // 下载响应：
 // {"error":0, "resource_id":"...", "total_size":..., "offset":...,
 //  "data":"<base64>", "is_last":false, "name":"image.png"}
@@ -461,20 +463,37 @@ void LogicWorker::HandleDownloadFile(std::shared_ptr<CSession> session, const sh
 
     const std::string resource_id = request["resource_id"].asString();
     if (!IsNonNegativeInteger(request["offset"]) || !IsNonNegativeInteger(request["chunk_size"]) ||
+        !IsNonNegativeInteger(request["thread_id"]) || !request["uid"].isInt() ||
         !IsSafeUploadId(resource_id)) {
         response["error"] = ErrorCodes::Error_Json;
         return;
     }
     const Json::UInt64 offset = request["offset"].asUInt64();
     const Json::UInt64 requested_chunk_size = request["chunk_size"].asUInt64();
+    const Json::UInt64 thread_id = request["thread_id"].asUInt64();
+    const int uid = request["uid"].asInt();
+    const std::string token = request["token"].asString();
     if (requested_chunk_size == 0 || requested_chunk_size > kMaxDownloadChunkSize) {
         response["error"] = ErrorCodes::Error_Json;
+        return;
+    }
+
+    // 在拿文件锁、触及文件系统前先完成身份与会话资源归属校验。每个 1007 都携带
+    // 当前登录 token，不能把一次通过的连接当作永久授权。
+    const ResourceAccessResult access = ResourceAccessAuthorizer::Instance()
+        .AuthorizePrivateDownload(uid, token, thread_id, resource_id);
+    if (access != ResourceAccessResult::Authorized) {
+        const ErrorCodes error = access == ResourceAccessResult::Denied
+            ? ErrorCodes::ResourceAccessDenied
+            : ErrorCodes::ResourceAuthorizationUnavailable;
+        FillDownloadResponse(response, error, resource_id, 0, 0, false);
         return;
     }
 
     // 仅记录资源 ID、偏移和请求大小，方便确认接收客户端是否真的发起下载；不记录
     // Base64 正文，以免服务器日志膨胀或泄露图片内容。
     std::cout << "image download request, resource_id=" << resource_id
+              << ", uid=" << uid << ", thread_id=" << thread_id
               << ", offset=" << offset << ", chunk_size=" << requested_chunk_size << std::endl;
 
     // 与上传、续传、完成重命名共用同一把锁，防止读到刚好被替换的文件。

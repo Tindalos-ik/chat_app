@@ -34,7 +34,9 @@ ConfigMgr::ConfigMgr()
     for (const auto& [section_name, section_info] : _config_map) {
         std::cout << "[" << section_name << "]" << std::endl;
         for (const auto& [key, value] : section_info._section_datas) {
-            std::cout << key << " = " << value << std::endl;
+            // ResourceServer 的下载鉴权需要 MySQL 配置；启动调试输出不能把密码
+            // 留在控制台或服务日志中。
+            std::cout << key << " = " << (key == "passwd" ? "***" : value) << std::endl;
         }
     }
 }

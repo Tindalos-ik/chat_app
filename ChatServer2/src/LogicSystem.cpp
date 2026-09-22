@@ -54,6 +54,7 @@ Json::Value BuildVerifiedImageJson(const StoredTextMessage& message) {
     item["recv_id"] = message.recvId;
     item["created_at_ms"] = static_cast<Json::UInt64>(message.createdAtMs);
     item["status"] = message.status;
+    item["peer_displayed"] = message.peerDisplayed;
     return item;
 }
 
@@ -63,6 +64,52 @@ bool IsNonNegativeJsonInteger(const Json::Value& value) {
     return value.isUInt() || value.isUInt64() ||
         (value.isInt() && value.asInt() >= 0) ||
         (value.isInt64() && value.asInt64() >= 0);
+}
+
+// 1030 的消息体由 2 字节长度字段承载。历史分页将单个 JSON 包限定为 4 KiB，
+// 给图片元数据等可变字段留出确定边界；使用与实际发送完全相同的紧凑序列化结果计数，
+// 不能根据消息数量或字段长度估算。
+constexpr std::size_t kMaxHistoryResponseJsonBytes = 4 * 1024;
+
+std::string SerializeCompactJson(const Json::Value& value) {
+    Json::StreamWriterBuilder builder;
+    builder["indentation"] = "";
+    return Json::writeString(builder, value);
+}
+
+Json::Value BuildHistoryMessageJson(const StoredTextMessage& message) {
+    Json::Value item;
+    item["message_id"] = static_cast<Json::UInt64>(message.messageId);
+    item["thread_id"] = static_cast<Json::UInt64>(message.threadId);
+    item["sender_id"] = message.senderId;
+    item["recv_id"] = message.recvId;
+    item["content"] = message.content;
+    item["message_type"] = message.messageType;
+    if (message.messageType == "image") {
+        // 离线图片下载依赖这些已由 ResourceServer 核验过的元数据。
+        item["msgid"] = message.uniqueId;
+        item["resource_id"] = message.resourceId;
+        item["name"] = message.name;
+        item["mime_type"] = message.mimeType;
+        item["file_size"] = static_cast<Json::UInt64>(message.fileSize);
+        item["width"] = message.width;
+        item["height"] = message.height;
+    }
+    item["created_at_ms"] = static_cast<Json::UInt64>(message.createdAtMs);
+    item["status"] = message.status;
+    item["peer_displayed"] = message.peerDisplayed;
+    return item;
+}
+
+Json::Value BuildHistoryResponse(std::uint64_t threadId, std::uint64_t nextMessageId,
+                                 const Json::Value& messages, bool loadMore) {
+    Json::Value response;
+    response["error"] = ErrorCode::Success;
+    response["thread_id"] = static_cast<Json::UInt64>(threadId);
+    response["messages"] = messages;
+    response["next_message_id"] = static_cast<Json::UInt64>(nextMessageId);
+    response["load_more"] = loadMore;
+    return response;
 }
 
 } // namespace
@@ -198,6 +245,14 @@ void LogicSystem::RegisterCallBacks() {
                                             const short &msg_id,
                                             const std::string &msg_data) {  
         CreatePrivateChat(session, msg_id, msg_data);
+    };
+    _fun_callbacks[ID_MESSAGE_DISPLAY_ACK_REQ] = [this](std::shared_ptr<CSession> session,
+                                                   const short &msg_id, const std::string &msg_data) {
+        HandleMessageDisplayed(session, msg_id, msg_data);
+    };
+    _fun_callbacks[ID_MARK_THREAD_READ_REQ] = [this](std::shared_ptr<CSession> session,
+                                               const short &msg_id, const std::string &msg_data) {
+        HandleThreadRead(session, msg_id, msg_data);
     };
 }
 
@@ -805,6 +860,10 @@ void LogicSystem::HandleTextMsg(std::shared_ptr<CSession> session, const short &
         return;
     }
     rtvalue["thread_id"] = static_cast<Json::UInt64>(threadId);
+    // “落库成功”“已排入实时 TCP 发送队列”“对方实际显示”是三个不同阶段。
+    rtvalue["persisted"] = true;
+    rtvalue["realtime_delivered"] = false;
+    rtvalue["peer_displayed"] = false;
     Json::Value confirmedMessages(Json::arrayValue);
     for (const StoredTextMessage& message : storedMessages) {
         Json::Value confirmed;
@@ -840,6 +899,7 @@ void LogicSystem::HandleTextMsg(std::shared_ptr<CSession> session, const short &
             std::string return_str = rtvalue.toStyledString();
             toSession->Send(return_str, ID_NOTIFY_TEXT_CHAT_MSG_REQ);
             rtvalue["delivered"] = true;
+            rtvalue["realtime_delivered"] = true;
         } else {
             std::cout << "text chat target session missing, uid = " << touid << std::endl;
             rtvalue["delivered"] = false;
@@ -869,8 +929,14 @@ void LogicSystem::HandleTextMsg(std::shared_ptr<CSession> session, const short &
     std::cout << "text chat cross-server push, from = " << fromuid
               << ", to = " << touid << ", server = " << to_ip_value << std::endl;
     const auto rpcRsp = ChatGrpcClient::GetInstance()->NotifyTextChatMsg(to_ip_value, textChatMsgReq);
-    rtvalue["error"] = rpcRsp.error();
+    // MySQL 已提交后，跨服实时投递失败不是发送失败。保留 error=Success 让发送端
+    // 确认“已保存”，再单独报告 realtime_delivered/delivery_error；否则用户会重发并
+    // 产生重复持久化消息。
     rtvalue["delivered"] = rpcRsp.error() == ErrorCode::Success;
+    rtvalue["realtime_delivered"] = rpcRsp.error() == ErrorCode::Success;
+    if (rpcRsp.error() != ErrorCode::Success) {
+        rtvalue["delivery_error"] = rpcRsp.error();
+    }
 }
 
 void LogicSystem::HandleImageMsg(std::shared_ptr<CSession> session, const short &msg_id,
@@ -976,6 +1042,9 @@ void LogicSystem::HandleImageMsg(std::shared_ptr<CSession> session, const short 
     }
     response["thread_id"] = static_cast<Json::UInt64>(threadId);
     response["imageArray"] = canonicalImages;
+    response["persisted"] = true;
+    response["realtime_delivered"] = false;
+    response["peer_displayed"] = false;
 
     // 落库成功即为 1034 成功。实时推送只是加速路径；对端离线、路由失效或跨服 RPC
     // 失败时仍可经 1029/1030 增量取回，不能诱导发送方重复上传或重复落库。
@@ -999,6 +1068,7 @@ void LogicSystem::HandleImageMsg(std::shared_ptr<CSession> session, const short 
             notification["delivered"] = true;
             targetSession->Send(notification.toStyledString(), ID_NOTIFY_IMAGE_CHAT_MSG_REQ);
             response["delivered"] = true;
+            response["realtime_delivered"] = true;
             std::cout << "image chat local push succeeded, from=" << fromuid
                       << ", to=" << touid << std::endl;
         } else {
@@ -1030,6 +1100,7 @@ void LogicSystem::HandleImageMsg(std::shared_ptr<CSession> session, const short 
     }
     const auto pushResponse = ChatGrpcClient::GetInstance()->NotifyImageChatMsg(targetServer, pushRequest);
     response["delivered"] = pushResponse.error() == ErrorCode::Success;
+    response["realtime_delivered"] = pushResponse.error() == ErrorCode::Success;
     if (pushResponse.error() != ErrorCode::Success) {
         response["delivery_error"] = pushResponse.error();
         std::cout << "image chat cross-server push failed, from=" << fromuid
@@ -1097,19 +1168,33 @@ void LogicSystem::LoadChatThreads(std::shared_ptr<CSession> session, const short
 void LogicSystem::LoadChatMessages(std::shared_ptr<CSession> session, const short &msg_id,
                                    const std::string &msg_data)
 {
-    Json::Value response;
-    response["error"] = ErrorCode::Success;
-    Defer defer([&response, session] {
-        session->Send(response.toStyledString(), ID_LOAD_CHAT_MSG_RSP);
-    });
+    (void)msg_id;
+    if (!session) {
+        return;
+    }
+    auto sendResponse = [session](const Json::Value& response) {
+        std::string payload = SerializeCompactJson(response);
+        if (payload.size() > kMaxHistoryResponseJsonBytes) {
+            // 这里是兜底，正常成功路径在逐条加入时已测量。任何将来新增的固定字段
+            // 也不能绕过帧上限而被截断写入 2 字节长度协议。
+            Json::Value errorResponse;
+            errorResponse["error"] = ErrorCode::MessageTooLarge;
+            payload = SerializeCompactJson(errorResponse);
+        }
+        session->Send(payload, ID_LOAD_CHAT_MSG_RSP);
+    };
+    auto sendError = [&sendResponse](int error) {
+        Json::Value response;
+        response["error"] = error;
+        sendResponse(response);
+    };
 
     Json::CharReaderBuilder reader;
     Json::Value request;
     std::istringstream stream(msg_data);
     std::string errors;
-    if (!Json::parseFromStream(reader, stream, &request, &errors) || !session
-        || !request.isObject()) {
-        response["error"] = ErrorCode::Error_Json;
+    if (!Json::parseFromStream(reader, stream, &request, &errors) || !request.isObject()) {
+        sendError(ErrorCode::Error_Json);
         return;
     }
 
@@ -1118,12 +1203,12 @@ void LogicSystem::LoadChatMessages(std::shared_ptr<CSession> session, const shor
     std::uint64_t afterMessageId = 0;
     if (!ParseUint64StringField(request, "thread_id", threadId)
         || !ParseUint64StringField(request, "after_message_id", afterMessageId)) {
-        response["error"] = ErrorCode::Error_Json;
+        sendError(ErrorCode::Error_Json);
         return;
     }
     const int pageSize = request.get("page_size", 50).asInt();
     if (uid <= 0 || threadId == 0 || pageSize <= 0 || pageSize > 1000) {
-        response["error"] = ErrorCode::Error_Json;
+        sendError(ErrorCode::Error_Json);
         return;
     }
 
@@ -1131,43 +1216,192 @@ void LogicSystem::LoadChatMessages(std::shared_ptr<CSession> session, const shor
     std::vector<StoredTextMessage> messages;
     if (!MysqlMgr::GetInstance()->LoadPrivateTextMessages(
             uid, threadId, afterMessageId, pageSize + 1, messages)) {
-        response["error"] = ErrorCode::RPCFaild;
+        sendError(ErrorCode::RPCFaild);
         return;
     }
-    const bool loadMore = messages.size() > static_cast<size_t>(pageSize);
-    if (loadMore) {
-        messages.pop_back();
-    }
 
+    // 除了请求页大小外，按实际 JSON 序列化后的字节数再切一层。客户端已按
+    // next_message_id/load_more 拉取下一页，因此较小的实际页仍是同一份 1030 协议。
     Json::Value messageArray(Json::arrayValue);
     std::uint64_t nextMessageId = afterMessageId;
+    size_t returnedCount = 0;
     for (const StoredTextMessage& message : messages) {
-        Json::Value item;
-        item["message_id"] = static_cast<Json::UInt64>(message.messageId);
-        item["thread_id"] = static_cast<Json::UInt64>(message.threadId);
-        item["sender_id"] = message.senderId;
-        item["recv_id"] = message.recvId;
-        item["content"] = message.content;
-        item["message_type"] = message.messageType;
-        if (message.messageType == "image") {
-            // 历史/增量读取必须同样携带下载所需的可信图片元数据；否则离线消息只能看到空气泡。
-            item["msgid"] = message.uniqueId;
-            item["resource_id"] = message.resourceId;
-            item["name"] = message.name;
-            item["mime_type"] = message.mimeType;
-            item["file_size"] = static_cast<Json::UInt64>(message.fileSize);
-            item["width"] = message.width;
-            item["height"] = message.height;
+        if (returnedCount >= static_cast<size_t>(pageSize)) {
+            break;
         }
-        item["created_at_ms"] = static_cast<Json::UInt64>(message.createdAtMs);
-        item["status"] = message.status;
-        messageArray.append(std::move(item));
+
+        Json::Value candidateArray = messageArray;
+        candidateArray.append(BuildHistoryMessageJson(message));
+        // 先按 load_more=true 测量：这比最终没有后续页时的 false 至少不小，
+        // 因而最终实际发送的 JSON 也一定不超过预算。
+        const Json::Value candidateResponse = BuildHistoryResponse(
+            threadId, message.messageId, candidateArray, true);
+        if (SerializeCompactJson(candidateResponse).size() > kMaxHistoryResponseJsonBytes) {
+            if (messageArray.empty()) {
+                // 不能拆分一条消息而让客户端把片段当作完整内容，也不能不推进游标后让
+                // 客户端无限请求同一条。因此明确失败并保留原游标，供上层处理。
+                sendError(ErrorCode::MessageTooLarge);
+                return;
+            }
+            break;
+        }
+
+        messageArray = std::move(candidateArray);
         nextMessageId = message.messageId;
+        ++returnedCount;
     }
-    response["thread_id"] = static_cast<Json::UInt64>(threadId);
-    response["messages"] = messageArray;
-    response["next_message_id"] = static_cast<Json::UInt64>(nextMessageId);
-    response["load_more"] = loadMore;
+
+    // messages 最多有 pageSize + 1 条。未放入的多取一条既可能来自请求页边界，
+    // 也可能来自 4 KiB 边界；两种情况都必须让客户端从本帧游标继续读取。
+    const bool loadMore = returnedCount < messages.size();
+    sendResponse(BuildHistoryResponse(threadId, nextMessageId, messageArray, loadMore));
+}
+
+void LogicSystem::HandleMessageDisplayed(std::shared_ptr<CSession> session, const short &msg_id,
+                                         const std::string &msg_data)
+{
+    // 1036 是客户端的展示确认，而非可信的“消息已读”声明。服务端只接受当前会话
+    // 对属于自己的私聊消息做状态提升，数据库层还会再次校验成员关系和接收者身份。
+    (void)msg_id;
+    if (!session || session->GetUserId() <= 0) {
+        return;
+    }
+    Json::CharReaderBuilder reader;
+    Json::Value request;
+    std::istringstream stream(msg_data);
+    std::string errors;
+    std::uint64_t threadId = 0;
+    if (!Json::parseFromStream(reader, stream, &request, &errors) || !request.isObject()
+        || !ParseUint64StringField(request, "thread_id", threadId)
+        || !request["message_ids"].isArray() || request["message_ids"].empty()
+        || request["message_ids"].size() > 100) {
+        return;
+    }
+    std::vector<std::uint64_t> messageIds;
+    messageIds.reserve(request["message_ids"].size());
+    for (const Json::Value& item : request["message_ids"]) {
+        if (!item.isString()) {
+            return;
+        }
+        std::uint64_t messageId = 0;
+        const std::string value = item.asString();
+        const auto result = std::from_chars(value.data(), value.data() + value.size(), messageId, 10);
+        if (value.empty() || result.ec != std::errc() || result.ptr != value.data() + value.size() || messageId == 0) {
+            return;
+        }
+        messageIds.push_back(messageId);
+    }
+    std::vector<DisplayReceipt> receipts;
+    if (!MysqlMgr::GetInstance()->MarkMessagesDisplayed(session->GetUserId(), threadId, messageIds, receipts)) {
+        std::cerr << "message display ack persistence failed, reader=" << session->GetUserId()
+                  << ", thread=" << threadId << std::endl;
+        return;
+    }
+    for (const DisplayReceipt& receipt : receipts) {
+        ForwardDisplayReceipt(receipt);
+    }
+}
+
+void LogicSystem::HandleThreadRead(std::shared_ptr<CSession> session, const short &msg_id,
+                                   const std::string &msg_data)
+{
+    // 已读游标来自客户端，因此不能直接据此通知对端；必须先持久化并由数据库筛出
+    // 从未读变为已读的实际记录，避免伪造游标和重复请求产生错误回执。
+    (void)msg_id;
+    if (!session || session->GetUserId() <= 0) {
+        return;
+    }
+    Json::CharReaderBuilder reader;
+    Json::Value request;
+    std::istringstream stream(msg_data);
+    std::string errors;
+    std::uint64_t threadId = 0;
+    std::uint64_t readThroughMessageId = 0;
+    if (!Json::parseFromStream(reader, stream, &request, &errors) || !request.isObject()
+        || !ParseUint64StringField(request, "thread_id", threadId)
+        || !ParseUint64StringField(request, "read_through_message_id", readThroughMessageId)) {
+        return;
+    }
+    std::vector<ReadReceipt> receipts;
+    if (!MysqlMgr::GetInstance()->MarkPrivateThreadRead(session->GetUserId(), threadId,
+                                                        readThroughMessageId, receipts)) {
+        std::cerr << "thread read receipt persistence failed, reader=" << session->GetUserId()
+                  << ", thread=" << threadId << std::endl;
+        return;
+    }
+    for (const ReadReceipt& receipt : receipts) {
+        ForwardReadReceipt(receipt);
+    }
+}
+
+void LogicSystem::ForwardDisplayReceipt(const DisplayReceipt& receipt)
+{
+    // 展示状态已先写入 MySQL。实时通知只是在线优化，Redis 路由缺失、会话离线或
+    // 跨服 RPC 失败都不能影响已写入的事实；发送端下次 1030 同步仍会得到状态。
+    if (receipt.senderId <= 0 || receipt.readerId <= 0 || receipt.threadId == 0 || receipt.messageIds.empty()) {
+        return;
+    }
+    Json::Value notification;
+    notification["error"] = ErrorCode::Success;
+    notification["thread_id"] = static_cast<Json::UInt64>(receipt.threadId);
+    notification["reader_id"] = receipt.readerId;
+    notification["peer_displayed"] = true;
+    Json::Value ids(Json::arrayValue);
+    for (std::uint64_t id : receipt.messageIds) {
+        ids.append(static_cast<Json::UInt64>(id));
+    }
+    notification["message_ids"] = ids;
+
+    std::string targetServer;
+    if (!RedisMgr::GetInstance()->Get(USERIPPREFIX + std::to_string(receipt.senderId), targetServer)) {
+        return; // 离线发送端下次历史同步时会读取 displayed_at。
+    }
+    if (targetServer == ConfigMgr::Inst()["SelfChatServer"]["name"]) {
+        if (const auto senderSession = UserMgr::GetInstance()->GetSession(receipt.senderId)) {
+            senderSession->Send(notification.toStyledString(), ID_NOTIFY_MESSAGE_DISPLAYED);
+        }
+        return;
+    }
+    MessageDisplayedReq request;
+    request.set_sender_id(receipt.senderId);
+    request.set_reader_id(receipt.readerId);
+    request.set_thread_id(receipt.threadId);
+    for (std::uint64_t id : receipt.messageIds) {
+        request.add_message_ids(id);
+    }
+    ChatGrpcClient::GetInstance()->NotifyMessageDisplayed(targetServer, request);
+}
+
+void LogicSystem::ForwardReadReceipt(const ReadReceipt& receipt)
+{
+    // 与展示确认相同，已读通知允许丢失实时路径：状态以数据库为准，离线发送端通过
+    // 后续历史同步恢复，而不应让读取端为通知失败重复修改消息状态。
+    if (receipt.senderId <= 0 || receipt.readerId <= 0 || receipt.threadId == 0
+        || receipt.readThroughMessageId == 0) {
+        return;
+    }
+    Json::Value notification;
+    notification["error"] = ErrorCode::Success;
+    notification["thread_id"] = static_cast<Json::UInt64>(receipt.threadId);
+    notification["reader_id"] = receipt.readerId;
+    notification["read_through_message_id"] = static_cast<Json::UInt64>(receipt.readThroughMessageId);
+
+    std::string targetServer;
+    if (!RedisMgr::GetInstance()->Get(USERIPPREFIX + std::to_string(receipt.senderId), targetServer)) {
+        return;
+    }
+    if (targetServer == ConfigMgr::Inst()["SelfChatServer"]["name"]) {
+        if (const auto senderSession = UserMgr::GetInstance()->GetSession(receipt.senderId)) {
+            senderSession->Send(notification.toStyledString(), ID_NOTIFY_THREAD_READ);
+        }
+        return;
+    }
+    ThreadReadReq request;
+    request.set_sender_id(receipt.senderId);
+    request.set_reader_id(receipt.readerId);
+    request.set_thread_id(receipt.threadId);
+    request.set_read_through_message_id(receipt.readThroughMessageId);
+    ChatGrpcClient::GetInstance()->NotifyThreadRead(targetServer, request);
 }
 
 void LogicSystem::CreatePrivateChat(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data){

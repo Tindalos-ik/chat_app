@@ -1222,7 +1222,8 @@ bool MysqlMgr::LoadPrivateTextMessages(int uid, std::uint64_t threadId,
             "COALESCE(cm.resource_name, ''), COALESCE(cm.mime_type, ''), "
             "CAST(COALESCE(cm.file_size, 0) AS UNSIGNED), "
             "CAST(COALESCE(cm.width, 0) AS UNSIGNED), "
-            "CAST(COALESCE(cm.height, 0) AS UNSIGNED) "
+            "CAST(COALESCE(cm.height, 0) AS UNSIGNED), "
+            "CASE WHEN cm.displayed_at IS NULL THEN 0 ELSE 1 END "
             "FROM chat_message AS cm "
             "INNER JOIN private_chat AS pc ON pc.thread_id = cm.thread_id "
             "WHERE cm.thread_id = ? AND cm.message_id > ? AND (pc.user1_id = ? OR pc.user2_id = ?) "
@@ -1251,6 +1252,7 @@ bool MysqlMgr::LoadPrivateTextMessages(int uid, std::uint64_t threadId,
             message.fileSize = row[12].get<std::uint64_t>();
             message.width = row[13].get<std::uint32_t>();
             message.height = row[14].get<std::uint32_t>();
+            message.peerDisplayed = row[15].get<int>() != 0;
             messages.push_back(std::move(message));
         }
         return true;
@@ -1288,6 +1290,117 @@ bool MysqlMgr::LoadPrivateChatThreads(int uid, std::uint64_t afterThreadId, int 
         return true;
     } catch (const std::exception& e) {
         std::cout << "load private chat threads exception: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+bool MysqlMgr::MarkMessagesDisplayed(int readerUid, std::uint64_t threadId,
+                                     const std::vector<std::uint64_t>& messageIds,
+                                     std::vector<DisplayReceipt>& receipts)
+{
+    receipts.clear();
+    if (readerUid <= 0 || threadId == 0 || messageIds.empty() || messageIds.size() > 100) {
+        return false;
+    }
+    std::vector<std::uint64_t> ids = messageIds;
+    std::sort(ids.begin(), ids.end());
+    ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+    if (ids.front() == 0) {
+        return false;
+    }
+    auto con = pool_->GetConnection();
+    if (!con) {
+        return false;
+    }
+    Defer defer([&con, this]() { pool_->ReturnConnection(std::move(con)); });
+    try {
+        std::string placeholders;
+        for (std::size_t index = 0; index < ids.size(); ++index) {
+            placeholders += index == 0 ? "?" : ",?";
+        }
+        const std::string selectSql =
+            "SELECT cm.message_id, cm.sender_id FROM chat_message AS cm "
+            "INNER JOIN private_chat AS pc ON pc.thread_id = cm.thread_id "
+            "WHERE cm.thread_id = ? AND cm.recv_id = ? AND cm.displayed_at IS NULL "
+            "AND (pc.user1_id = ? OR pc.user2_id = ?) AND cm.message_id IN (" + placeholders + ")";
+        auto select = con->sql(selectSql).bind(threadId).bind(readerUid).bind(readerUid).bind(readerUid);
+        for (std::uint64_t id : ids) {
+            select.bind(id);
+        }
+        // X DevAPI 的 RowList 不是 STL 容器，不能用 empty()/front()；逐行消费既能
+        // 兼容库接口，也确保后续 UPDATE 前已读完同一连接上的 SELECT 结果集。
+        auto result = select.execute();
+        auto row = result.fetchOne();
+        if (!row) {
+            return true;
+        }
+        DisplayReceipt receipt;
+        receipt.readerId = readerUid;
+        receipt.threadId = threadId;
+        receipt.senderId = row[1].get<int>();
+        do {
+            if (row[1].get<int>() != receipt.senderId) {
+                return false;
+            }
+            receipt.messageIds.push_back(row[0].get<std::uint64_t>());
+            row = result.fetchOne();
+        } while (row);
+        const std::string updateSql =
+            "UPDATE chat_message SET displayed_at = NOW(3) WHERE recv_id = ? AND thread_id = ? "
+            "AND displayed_at IS NULL AND message_id IN (" + placeholders + ")";
+        auto update = con->sql(updateSql).bind(readerUid).bind(threadId);
+        for (std::uint64_t id : receipt.messageIds) {
+            update.bind(id);
+        }
+        update.execute();
+        receipts.push_back(std::move(receipt));
+        return true;
+    } catch (const std::exception& e) {
+        std::cout << "mark messages displayed exception: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+bool MysqlMgr::MarkPrivateThreadRead(int readerUid, std::uint64_t threadId,
+                                     std::uint64_t readThroughMessageId,
+                                     std::vector<ReadReceipt>& receipts)
+{
+    receipts.clear();
+    if (readerUid <= 0 || threadId == 0 || readThroughMessageId == 0) {
+        return false;
+    }
+    auto con = pool_->GetConnection();
+    if (!con) {
+        return false;
+    }
+    Defer defer([&con, this]() { pool_->ReturnConnection(std::move(con)); });
+    try {
+        const std::string selectSql =
+            "SELECT cm.sender_id, MAX(cm.message_id) FROM chat_message AS cm "
+            "INNER JOIN private_chat AS pc ON pc.thread_id = cm.thread_id "
+            "WHERE cm.thread_id = ? AND cm.recv_id = ? AND cm.status = 0 AND cm.message_id <= ? "
+            "AND (pc.user1_id = ? OR pc.user2_id = ?) GROUP BY cm.sender_id";
+        auto result = con->sql(selectSql).bind(threadId).bind(readerUid).bind(readThroughMessageId)
+                          .bind(readerUid).bind(readerUid).execute();
+        // 先完整读取“本次确实由该读者读到”的行，再更新 status。这样回执只包含
+        // 本次状态从未读提升到已读的消息，重复 1038 不会重复通知发送端。
+        for (auto row = result.fetchOne(); row; row = result.fetchOne()) {
+            ReadReceipt receipt;
+            receipt.senderId = row[0].get<int>();
+            receipt.readerId = readerUid;
+            receipt.threadId = threadId;
+            receipt.readThroughMessageId = row[1].get<std::uint64_t>();
+            receipts.push_back(std::move(receipt));
+        }
+        if (receipts.empty()) {
+            return true;
+        }
+        con->sql("UPDATE chat_message SET status = 1, updated_at = NOW(3) "
+                 "WHERE thread_id = ? AND recv_id = ? AND status = 0 AND message_id <= ?")
+            .bind(threadId).bind(readerUid).bind(readThroughMessageId).execute();
+        return true;
+    } catch (const std::exception& e) {
+        std::cout << "mark private thread read exception: " << e.what() << std::endl;
         return false;
     }
 }

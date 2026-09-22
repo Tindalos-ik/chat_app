@@ -38,6 +38,7 @@ struct StoredTextMessage {
     std::string content;
     std::uint64_t createdAtMs = 0;
     int status = 0;
+    bool peerDisplayed = false;
     std::string messageType = "text";
     std::string resourceId;
     std::string name;
@@ -45,6 +46,20 @@ struct StoredTextMessage {
     std::uint64_t fileSize = 0;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+};
+
+struct DisplayReceipt {
+    int senderId = 0;
+    int readerId = 0;
+    std::uint64_t threadId = 0;
+    std::vector<std::uint64_t> messageIds;
+};
+
+struct ReadReceipt {
+    int senderId = 0;
+    int readerId = 0;
+    std::uint64_t threadId = 0;
+    std::uint64_t readThroughMessageId = 0;
 };
 
 // 图片字段只由 ResourceServer gRPC 核验回包构造，不能从 TCP JSON 直接填入。
@@ -234,6 +249,15 @@ public:
     // 返回 thread_id 大于 afterThreadId 的私聊，用于登录时发现本地尚不存在的新会话。
     bool LoadPrivateChatThreads(int uid, std::uint64_t afterThreadId, int limit,
                                 std::vector<PrivateChatThread>& threads);
+
+    // 将“已显示”和“已读”分开保存：显示仅代表消息进入了对方界面，不能把它写成已读。
+    // 输出只含本次首次发生状态变化的消息，调用方据此避免对发送端重复通知。
+    bool MarkMessagesDisplayed(int readerUid, std::uint64_t threadId,
+                               const std::vector<std::uint64_t>& messageIds,
+                               std::vector<DisplayReceipt>& receipts);
+    bool MarkPrivateThreadRead(int readerUid, std::uint64_t threadId,
+                               std::uint64_t readThroughMessageId,
+                               std::vector<ReadReceipt>& receipts);
 
 private:
     MysqlMgr();

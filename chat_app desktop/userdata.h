@@ -156,6 +156,7 @@ struct ImageChatData {
     int height = 0;
     int fromUid = 0;
     int toUid = 0;
+    int deliveryState = 1; // 1034 的已保存/实时投递状态；1037/1039 再提升 UI 状态。
 };
 
 // 好友认证的好友资料与附加消息必须作为一个整体交给界面：先把好友加入 UserMgr，

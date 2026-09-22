@@ -53,6 +53,7 @@ bool ParseImageArray(const QJsonObject &envelope, QList<std::shared_ptr<ImageCha
         image->height = height;
         image->fromUid = fromUid;
         image->toUid = toUid;
+        image->deliveryState = envelope.value("realtime_delivered").toBool() ? 2 : 1;
         images->append(image);
     }
     return true;
@@ -440,7 +441,6 @@ void TcpMgr::initHandlers()
             qWarning() << "create private chat failed, error:" << error;
             return;
         }
-
         // JsonCpp 服务端写入的是 UINT64；QJson 的数值经 QVariant 转换后再取无符号值，
         // 避免先转成 int 造成高位 thread_id 截断。
         bool threadIdOk = false;
@@ -575,6 +575,7 @@ void TcpMgr::initHandlers()
 
         QList<LocalChatMessage> localMessages;
         qint64 maxMessageId = storage->SyncCursors().value(threadId, 0);
+        const qint64 previousSyncCursor = maxMessageId;
         for (const QJsonValue &value : response.value("messages").toArray()) {
             const QJsonObject item = value.toObject();
             bool messageIdOk = false;
@@ -598,6 +599,10 @@ void TcpMgr::initHandlers()
             message.updatedAtMs = message.createdAtMs;
             message.serverStatus = item.value("status").toInt();
             message.sendState = 3;
+            if (message.senderId == currentUser->_uid) {
+                message.deliveryState = message.serverStatus == 1 ? 4
+                    : (item.value("peer_displayed").toBool() ? 3 : 1);
+            }
             message.isRead = message.senderId == currentUser->_uid;
             if (message.senderId <= 0 || (message.contentType == QStringLiteral("text")
                                           && message.content.isEmpty())) {
@@ -622,6 +627,12 @@ void TcpMgr::initHandlers()
             }
             localMessages.append(message);
             maxMessageId = qMax(maxMessageId, message.messageId);
+            // 登录增量同步的每条新入站未读消息都要计入摘要；实时 1019 的路径
+            // 已自行计数。当前会话随后会由 ChatDialog::SetCurrentChatUser 原子清零。
+            if (message.messageId > previousSyncCursor && message.senderId != currentUser->_uid
+                && message.serverStatus == 0) {
+                ++thread.unreadCount;
+            }
             if (message.messageId >= thread.lastMessageId) {
                 thread.lastMessageId = message.messageId;
                 thread.lastMessagePreview = message.contentType == QStringLiteral("image")
@@ -673,6 +684,8 @@ void TcpMgr::initHandlers()
             }
             return;
         }
+        const int deliveryState = jsonObj.value("realtime_delivered").toBool()
+            ? 2 : 1; // 1018 成功必为已持久化；实时投递是独立、可选的第二阶段。
 
         const auto currentUser = UserMgr::GetInstance()->GetUserInfo();
         const auto storage = LocalChatStorageMgr::GetInstance();
@@ -761,6 +774,7 @@ void TcpMgr::initHandlers()
             localMessage.updatedAtMs = createdAtMs;
             localMessage.serverStatus = status;
             localMessage.sendState = 3;
+            localMessage.deliveryState = deliveryState;
             localMessage.isRead = true;
             messagesByThread[threadId].append(localMessage);
             maxMessageIds[threadId] = qMax(maxMessageIds.value(threadId, 0), messageId);
@@ -779,7 +793,7 @@ void TcpMgr::initHandlers()
             }
             // SQLite 事务提交后才确认乐观气泡，并通知 UI 从本地记录刷新当前会话。
             for (const QString &uniqueId : uniqueIdsByThread.value(threadId)) {
-                emit sig_text_chat_send_result(uniqueId, true);
+                emit sig_text_chat_send_result(uniqueId, true, deliveryState);
             }
             emit sig_local_chat_synced(threadId);
         }
@@ -893,6 +907,61 @@ void TcpMgr::initHandlers()
     });
     _handler.insert(ID_NOTIFY_IMAGE_CHAT_MSG_REQ, [handle_image_chat](ReqId id, int len, QByteArray data) {
         handle_image_chat(false, id, len, data);
+    });
+
+    _handler.insert(ID_NOTIFY_MESSAGE_DISPLAYED, [this](ReqId id, int len, QByteArray data) {
+        Q_UNUSED(id);
+        Q_UNUSED(len);
+        const QJsonDocument document = QJsonDocument::fromJson(data);
+        if (!document.isObject()) {
+            return;
+        }
+        const QJsonObject payload = document.object();
+        bool threadOk = false;
+        const qint64 threadId = payload.value("thread_id").toVariant().toLongLong(&threadOk);
+        const auto currentUser = UserMgr::GetInstance()->GetUserInfo();
+        if (payload.value("error").toInt(ErrorCodes::ERR_JSON) != ErrorCodes::SUCCESS || !threadOk
+            || threadId <= 0 || !payload.value("peer_displayed").toBool() || !currentUser) {
+            return;
+        }
+        QList<qint64> messageIds;
+        for (const QJsonValue &value : payload.value("message_ids").toArray()) {
+            bool idOk = false;
+            const qint64 messageId = value.toVariant().toLongLong(&idOk);
+            if (idOk && messageId > 0 && !messageIds.contains(messageId)) {
+                messageIds.append(messageId);
+            }
+        }
+        const auto storage = LocalChatStorageMgr::GetInstance();
+        if (messageIds.isEmpty() || !storage->IsReady()
+            || !storage->UpdateDeliveryState(messageIds, 3)) {
+            return;
+        }
+        emit sig_message_delivery_updated(threadId, messageIds, 3);
+    });
+
+    _handler.insert(ID_NOTIFY_THREAD_READ, [this](ReqId id, int len, QByteArray data) {
+        Q_UNUSED(id);
+        Q_UNUSED(len);
+        const QJsonDocument document = QJsonDocument::fromJson(data);
+        if (!document.isObject()) {
+            return;
+        }
+        const QJsonObject payload = document.object();
+        bool threadOk = false;
+        bool throughOk = false;
+        const qint64 threadId = payload.value("thread_id").toVariant().toLongLong(&threadOk);
+        const qint64 readThrough = payload.value("read_through_message_id").toVariant().toLongLong(&throughOk);
+        const qint64 readerUid = payload.value("reader_id").toVariant().toLongLong();
+        const auto storage = LocalChatStorageMgr::GetInstance();
+        if (payload.value("error").toInt(ErrorCodes::ERR_JSON) != ErrorCodes::SUCCESS || !threadOk
+            || !throughOk || threadId <= 0 || readThrough <= 0 || readerUid <= 0 || !storage->IsReady()) {
+            return;
+        }
+        const QList<qint64> messageIds = storage->MarkOutgoingMessagesRead(threadId, readerUid, readThrough);
+        if (!messageIds.isEmpty()) {
+            emit sig_message_delivery_updated(threadId, messageIds, 4);
+        }
     });
 
     _handler[ID_NOTIFY_OFF_LINE_REQ] = [this](ReqId id, int len, QByteArray data){

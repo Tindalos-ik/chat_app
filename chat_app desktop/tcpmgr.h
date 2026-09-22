@@ -15,6 +15,7 @@
 #include <QMap>
 #include <QElapsedTimer>
 #include <QTimer>
+#include <QList>
 #include "global.h"
 #include "userdata.h"
 
@@ -71,13 +72,15 @@ signals:
     void sig_create_private_chat(int uid, int otherUid, qint64 threadId);
     void sig_text_chat(std::shared_ptr<TextChatData>&); // 收到对方推送的文本消息
     // 文本请求回包按客户端 UUID 通知 UI，用于清除发送中状态或显示发送失败图标。
-    void sig_text_chat_send_result(const QString &messageId, bool success);
+    void sig_text_chat_send_result(const QString &messageId, bool success, int deliveryState = 0);
     // 图片的二进制不经过 ChatServer；这里只把 1034/1035 的资源元数据交给界面，
     // 由 ChatImageTransferTask 再通过 ResourceClient 下载。
     void sig_image_chat_send_result(std::shared_ptr<ImageChatData>& image, bool success);
     void sig_image_chat(std::shared_ptr<ImageChatData>& image);
     // 1030 已成功写入 SQLite；界面按 threadId 刷新摘要或当前聊天页。
     void sig_local_chat_synced(qint64 threadId);
+    void sig_message_delivery_updated(qint64 threadId, const QList<qint64> &messageIds,
+                                      int deliveryState);
     void sig_off_line();
     void sig_connection_lost(); // 已登录连接被服务端关闭，但未完整收到踢人通知
     void sig_heartbeat_timeout(); // 60 秒未收到有效心跳回复，交给主窗口显示专用提示

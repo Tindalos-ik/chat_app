@@ -49,9 +49,11 @@ private slots:
     void slot_text_chat(std::shared_ptr<TextChatData>& message); // 显示当前会话收到的文本
     void slot_local_chat_synced(qint64 threadId); // SQLite 增量同步完成后刷新会话摘要
     void slot_load_older_local_messages(); // 聊天窗口到顶部后读取 SQLite 上一页
-    void slot_text_chat_send_result(const QString &messageId, bool success);
+    void slot_text_chat_send_result(const QString &messageId, bool success, int deliveryState);
     void slot_image_chat_send_result(std::shared_ptr<ImageChatData>& image, bool success);
     void slot_image_chat(std::shared_ptr<ImageChatData>& image);
+    void slot_message_delivery_updated(qint64 threadId, const QList<qint64> &messageIds,
+                                       int deliveryState);
 
 protected:
     // 重写事件过滤器实现根据鼠标位置判断是否隐藏搜索框恢复聊天界面
@@ -88,6 +90,8 @@ private:
     void LoadOlderLocalMessages();
     void SaveFriendAuthMessages(const std::shared_ptr<UserInfo> &friendInfo,
                                 const QList<std::shared_ptr<TextChatData>> &messages);
+    void SendDisplayAcknowledgement(qint64 threadId, const QList<qint64> &messageIds);
+    void SendReadReceipt(qint64 threadId, qint64 readThroughMessageId);
 
     std::shared_ptr<UserInfo> _current_chatuser;
     qint64 _current_thread_id = 0;
@@ -96,9 +100,12 @@ private:
     bool _loading_older_local_history = false;
     // UUID -> 乐观展示的消息行。QPointer 会在切换会话或重绘删除气泡后自动置空。
     QHash<QString, QPointer<ChatItemBase>> _pending_text_items;
+    QHash<qint64, QPointer<ChatItemBase>> _outgoing_text_items;
     // 图片从本地预览开始，到 1034 确认并原子缓存完成前都保留该映射；失败时复用
     // ChatItemBase 的统一失败图标，不影响文本消息的发送状态。
     QHash<QString, QPointer<ChatItemBase>> _pending_image_items;
+    // 图片确认后仍保留按正式 message_id 的弱引用，供 1037/1039 更新状态文字。
+    QHash<qint64, QPointer<ChatItemBase>> _outgoing_image_items;
     // 当前聊天窗口内已经请求或显示的历史图片 message_id。会话重绘时清空；实时
     // 推送和补同步同时到达时，借此避免对同一条消息重复下载、重复显示。
     QSet<qint64> _requested_image_message_ids;

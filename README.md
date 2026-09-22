@@ -22,8 +22,9 @@ ChatServer1 <----- gRPC -------> ChatServer2
   |                               |
   +----------- MySQL / Redis -----+
 
-Qt 桌面客户端 ---- TCP 9090 ----> ResourceServer ----> uploads
+Qt 桌面客户端 ---- TCP 9090（1007 携带 uid/token/thread_id）----> ResourceServer ----> uploads
 ChatServer1/2 -------- gRPC 50057 ----^（图片资源核验）
+ResourceServer -------- gRPC 50052 / MySQL ----> StatusServer / private_chat 鉴权
 ```
 
 | 组件 | 技术 | 端口 | 职责 |
@@ -33,7 +34,7 @@ ChatServer1/2 -------- gRPC 50057 ----^（图片资源核验）
 | StatusServer | C++、gRPC | 50052 | ChatServer 负载选择、token 签发和校验 |
 | ChatServer1 | C++、Boost.Asio、gRPC | TCP 8090 / gRPC 50055 | 长连接、会话和消息路由 |
 | ChatServer2 | C++、Boost.Asio、gRPC | TCP 8091 / gRPC 50056 | 第二个聊天服务实例、跨服转发 |
-| ResourceServer | C++、Boost.Asio、gRPC | TCP 9090 / gRPC 50057 | 图片分片上传、断点续传、下载，以及 ChatServer 的已完成图片核验 |
+| ResourceServer | C++、Boost.Asio、gRPC | TCP 9090 / gRPC 50057 | 图片分片上传、断点续传、下载；1007 校验登录 token、私聊成员关系与资源归属；以及 ChatServer 的已完成图片核验 |
 | MySQL | MySQL 8 | X Protocol 33060 | 用户、好友和好友申请数据 |
 | Redis | Redis | 6379 | 验证码、token、在线路由和服务负载 |
 
@@ -102,7 +103,7 @@ mysql -uroot -p < sql/create_tables.sql
 mysql -uroot -p < sql/chat_message_storage.sql
 ```
 
-脚本创建 `chat_thread`、`private_chat`、群聊相关表和 `chat_message`。ChatServer1 会将文本和已核验图片写入 `chat_message`；桌面端通过 `ID_LOAD_CHAT_THREAD_REQ/RSP` 发现会话、通过 `ID_LOAD_CHAT_MSG_REQ/RSP` 分页增量加载历史。已有数据库还需执行一次 `sql/chat_image_message_migration.sql`，为图片资源元数据补齐字段。
+脚本创建 `chat_thread`、`private_chat`、群聊相关表和 `chat_message`。ChatServer1 会将文本和已核验图片写入 `chat_message`；桌面端通过 `ID_LOAD_CHAT_THREAD_REQ/RSP` 发现会话、通过 `ID_LOAD_CHAT_MSG_REQ/RSP` 分页增量加载历史。已有数据库还需依次执行 `sql/chat_image_message_migration.sql` 与 `sql/chat_message_receipt_migration.sql`：前者补齐图片元数据，后者增加独立的 `displayed_at` 字段以支持显示确认；`status` 仍只表示已读状态。
 
 ### 3. 配置服务端连接信息
 
@@ -117,6 +118,8 @@ mysql -uroot -p < sql/chat_message_storage.sql
 
 资源服务监听 `ResourceServer/config.ini` 中的 9090 端口，桌面客户端
 `chat_app desktop/config.ini` 的 `[ResourceServer]` 必须指向同一个可达地址。
+ResourceServer 的 `[StatusServer]` 与 `[Mysql]` 也必须与 ChatServer 指向同一套登录服务和
+聊天库；图片下载会校验当前 token、私聊成员关系及 `resource_id` 对该 `thread_id` 的归属。
 上传完成后，客户端把 ResourceServer 返回的 `resource_url` 作为头像字段，
 通过当前已登录的 ChatServer 更新用户资料。
 

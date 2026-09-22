@@ -43,6 +43,10 @@ using message::ImageChatData;
 
 using message::KickUserReq;
 using message::KickUserRsp;
+using message::MessageDisplayedReq;
+using message::MessageDisplayedRsp;
+using message::ThreadReadReq;
+using message::ThreadReadRsp;
 
 
 // 连接池
@@ -127,6 +131,8 @@ public:
     AuthFriendRsp NotifyAuthFriend(std::string server_ip, const AuthFriendReq& request);
     TextChatMsgRsp NotifyTextChatMsg(std::string server_ip, const TextChatMsgReq& request);
     ImageChatMsgRsp NotifyImageChatMsg(std::string server_ip, const ImageChatMsgReq& request);
+    MessageDisplayedRsp NotifyMessageDisplayed(std::string server_ip, const MessageDisplayedReq& request);
+    ThreadReadRsp NotifyThreadRead(std::string server_ip, const ThreadReadReq& request);
     KickUserRsp NotifyKickUser(std::string server_ip, const KickUserReq& request);
 
 private:

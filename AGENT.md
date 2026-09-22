@@ -31,6 +31,8 @@
 | 单例 | HttpMgr / TcpMgr / MysqlMgr 等用 Singleton 模板基类：构造私有 + friend，不要破坏 |
 | ChatServer | 修改代码只需要修改ChatServer1，不需要2，
 
+新增功能，头文件要清楚注释，文件功能，函数功能，参数等，源文件也要写好注释和逻辑
+
 ## 文档规范
 
 * 文档风格：中文、叙述式、带"为什么"，表格 + 代码块 + `>` 提示，参考 note/ 现有笔记
@@ -43,6 +45,7 @@
 | --- | --- |
 | [sql/create_tables.sql](sql/create_tables.sql) | 数据库建表脚本（user/user_id/friend/friend_apply，friend_apply 已含 applicant_remark 字段） |
 | [sql/chat_image_message_migration.sql](sql/chat_image_message_migration.sql) | 已部署 chat_message 的图片消息字段迁移脚本 |
+| [sql/chat_message_receipt_migration.sql](sql/chat_message_receipt_migration.sql) | 已部署 chat_message 的显示确认字段迁移脚本 |
 | [疑惑.md](note/疑惑.md) | 常见小知识点解答（uid/token、分布式、Qt 并发安全、MySQL/Redis 边界等） |
 | [全栈聊天室.md](note/全栈聊天室.md) | 架构总览 |
 | [分布式聊天服务设计.md](note/分布式聊天服务设计.md) | 分布式设计总结：服务拆分、双通道登录、负载均衡/在线路由/跨服转发 |
@@ -54,6 +57,7 @@
 | [测试.md](note/测试.md) | 单元/集成测试总结：现有连接容量测试、运行方式、实测结果与后续补测计划 |
 | [数据库设计.md](note/数据库设计.md) | MySQL 用户数据设计（llfc1） |
 | [聊天信息存储方案.md](note/聊天信息存储方案.md) | 服务端会话/消息表、客户端 SQLite 缓存管理器与增量同步设计 |
+| [聊天可靠性与资源安全提升.md](note/聊天可靠性与资源安全提升.md) | 消息 ACK、已读与未读、历史分包、图片下载鉴权和故障恢复边界 |
 | [聊天服务器服务.md](note/聊天服务器服务.md) | proto 中定义的 ChatServer gRPC 服务、消息字段与跨服转发约定 |
 | [服务器踢人.md](note/服务器踢人.md) | 同服/跨服重复登录互踢、1021 投递、会话清理与当前边界 |
 | [心跳检测.md](note/心跳检测.md) | 1023/1024 双端心跳、单调时钟、超时参数、幂等清理与复测步骤 |

@@ -1,4 +1,5 @@
 #include "resourceclient.h"
+#include "usermgr.h"
 #include <QJsonDocument>
 #include <QJsonObject>
 
@@ -116,9 +117,15 @@ void ResourceClient::initHandlers()
         }
 
         const QJsonObject jsonObj = jsonDoc.object();
-        if (jsonObj.value("error").toInt(ErrorCodes::ERR_JSON) != ErrorCodes::SUCCESS) {
-            emit sig_download_error(tr("下载资源失败，错误码：%1")
-                                        .arg(jsonObj.value("error").toInt()));
+        const int error = jsonObj.value("error").toInt(ErrorCodes::ERR_JSON);
+        if (error != ErrorCodes::SUCCESS) {
+            if (error == 1020) {
+                emit sig_download_error(tr("资源服务器拒绝下载：登录已失效、您不属于该私聊，或资源不属于此会话。"));
+            } else if (error == 1021) {
+                emit sig_download_error(tr("暂时无法验证图片下载权限，请稍后重试。"));
+            } else {
+                emit sig_download_error(tr("下载资源失败，错误码：%1").arg(error));
+            }
             return;
         }
 
@@ -257,16 +264,24 @@ void ResourceClient::sendMsg(quint16 id,QByteArray data)
     emit sig_send_msg(id, data);
 }
 
-void ResourceClient::requestDownload(const QString& resourceId, qint64 offset, qint32 chunkSize)
+void ResourceClient::requestDownload(const QString& resourceId, qint64 threadId, qint64 offset,
+                                     qint32 chunkSize)
 {
     // 参数在客户端先做一次约束，服务端仍会重复校验，不能依赖客户端输入可信。
-    if (resourceId.isEmpty() || offset < 0 || chunkSize <= 0 || chunkSize > 2048) {
+    const auto userMgr = UserMgr::GetInstance();
+    const int uid = userMgr->GetUid();
+    const QString token = userMgr->GetToken();
+    if (resourceId.isEmpty() || threadId <= 0 || offset < 0 || chunkSize <= 0 || chunkSize > 2048
+        || uid <= 0 || token.isEmpty()) {
         emit sig_download_error(tr("下载请求参数无效。"));
         return;
     }
 
     QJsonObject request;
     request["resource_id"] = resourceId;
+    request["thread_id"] = static_cast<double>(threadId);
+    request["uid"] = uid;
+    request["token"] = token;
     request["offset"] = static_cast<double>(offset);
     request["chunk_size"] = chunkSize;
     sendMsg(ResourceReqId::ID_DOWNLOAD_FILE_REQ,

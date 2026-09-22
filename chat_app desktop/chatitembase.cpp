@@ -4,6 +4,7 @@
 #include <QFont>
 #include <QPixmap>
 #include <QSpacerItem>
+#include <QStringList>
 
 ChatItemBase::ChatItemBase(ChatRole role, QWidget* parent)
     :QWidget(parent), m_role(role)
@@ -100,5 +101,41 @@ void ChatItemBase::SetSendFailed(bool failed)
     m_pSendStatusLabel->setPixmap(icon.scaled(m_pSendStatusLabel->size(),
                                                Qt::KeepAspectRatio,
                                                Qt::SmoothTransformation));
+    m_pSendStatusLabel->show();
+}
+
+void ChatItemBase::SetDeliveryState(int state)
+{
+    if (m_role != ChatRole::Self || state < 1 || state > 4) {
+        return;
+    }
+    // 这两个资源共用发送失败图标的位置，避免状态改变时让气泡横向跳动。服务端
+    // status=1 或 1039 会传入 state=4；在此之前即使已实时投递或展示，仍显示
+    // 未读图标，因为展示并不能证明对方读完了消息。
+    static const QStringList labels = {
+        QString(), QStringLiteral("已保存"), QStringLiteral("已送达"),
+        QStringLiteral("已显示"), QStringLiteral("已读")
+    };
+    const QString resource = state == 4
+        ? QStringLiteral(":/res/readed.png")
+        : QStringLiteral(":/res/unread.png");
+    const QPixmap icon(resource);
+    if (icon.isNull()) {
+        // 资源打包遗漏时仍展示文本，不让“对方已读”这个业务状态在 UI 中静默丢失。
+        qWarning() << "delivery status icon resource is unavailable:" << resource;
+        m_pSendStatusLabel->setPixmap(QPixmap());
+        m_pSendStatusLabel->setText(labels.at(state));
+        m_pSendStatusLabel->setStyleSheet(
+            QStringLiteral("QLabel { color: #999999; font-size: 10px; }"));
+        m_pSendStatusLabel->setMinimumWidth(36);
+    } else {
+        m_pSendStatusLabel->setText(QString());
+        m_pSendStatusLabel->setPixmap(icon.scaled(m_pSendStatusLabel->size(),
+                                                   Qt::KeepAspectRatio,
+                                                   Qt::SmoothTransformation));
+        m_pSendStatusLabel->setMinimumWidth(18);
+    }
+    m_pSendStatusLabel->setToolTip(labels.at(state));
+    m_pSendStatusLabel->setFixedHeight(18);
     m_pSendStatusLabel->show();
 }

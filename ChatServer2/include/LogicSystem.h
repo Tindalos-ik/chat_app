@@ -16,6 +16,8 @@
 #include <memory>
 
 class CServer;
+struct DisplayReceipt;
+struct ReadReceipt;
 typedef std::function<void(std::shared_ptr<CSession>, const short &msg_id, const std::string &msg_data)> FunCallBack;
 
 /*
@@ -49,6 +51,10 @@ private:
     void LoadChatThreads(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data); // 按会话游标发现新增私聊
     void UpdateUserProfile(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data); // 更新当前登录用户资料
     void CreatePrivateChat(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data); // 创建私聊
+    void HandleMessageDisplayed(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data);
+    void HandleThreadRead(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data);
+    void ForwardDisplayReceipt(const DisplayReceipt& receipt);
+    void ForwardReadReceipt(const ReadReceipt& receipt);
 
     bool GetBaseInfo(std::string base_key, int uid, std::shared_ptr<UserInfo>& userinfo);
 

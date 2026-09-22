@@ -113,7 +113,8 @@ ChatImageTransferTask::ChatImageTransferTask(QObject *parent)
             finishActiveDownload();
             return;
         }
-        ResourceClient::GetInstance()->requestDownload(resourceId, _downloadOffset, kDownloadChunkSize);
+        ResourceClient::GetInstance()->requestDownload(resourceId, _active.metadata.threadId,
+                                                        _downloadOffset, kDownloadChunkSize);
     });
     connect(resourceClient.get(), &ResourceClient::sig_download_error, this,
             [this](const QString &message) {
@@ -140,7 +141,7 @@ void ChatImageTransferTask::enqueueUpload(const QString &sourcePath, const Image
 
 void ChatImageTransferTask::enqueueDownload(const ImageChatData &metadata)
 {
-    if (metadata.resourceId.isEmpty() || metadata.fileSize <= 0 || metadata.fileSize > kMaxImageBytes
+    if (metadata.resourceId.isEmpty() || metadata.threadId <= 0 || metadata.fileSize <= 0 || metadata.fileSize > kMaxImageBytes
         || metadata.width <= 0 || metadata.height <= 0 || !metadata.mimeType.startsWith("image/")) {
         emit imageDownloadFailed(metadata, tr("图片消息元数据无效。"));
         return;
@@ -309,7 +310,9 @@ void ChatImageTransferTask::beginDownload()
     _state = State::Downloading;
     qInfo() << "request first image chunk, resource_id=" << _active.metadata.resourceId
             << "total=" << _downloadTotal;
-    ResourceClient::GetInstance()->requestDownload(_active.metadata.resourceId, 0, kDownloadChunkSize);
+    ResourceClient::GetInstance()->requestDownload(_active.metadata.resourceId,
+                                                    _active.metadata.threadId, 0,
+                                                    kDownloadChunkSize);
 }
 
 void ChatImageTransferTask::finishActiveUpload()

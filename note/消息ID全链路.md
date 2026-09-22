@@ -51,6 +51,10 @@ HTTP 负责注册、登录、验证码和重置密码等短请求。登录拿到
 | `ID_IMAGE_CHAT_MSG_REQ` (`1033`) | TCP `{fromuid,touid,imageArray}` 图片请求 | ChatServer 先调用 ResourceServer gRPC 核验已完成图片，再写 `chat_message` |
 | `ID_IMAGE_CHAT_MSG_RSP` (`1034`) | 图片发送确认 | 成功表示图片已核验且已持久化；`delivered:false` 时接收方走历史增量同步 |
 | `ID_NOTIFY_IMAGE_CHAT_MSG_REQ` (`1035`) | 收到图片通知 | 服务端下发可信 `resource_id/name/mime_type/file_size/width/height` 与正式消息元数据 |
+| `ID_MESSAGE_DISPLAY_ACK_REQ` (`1036`) | 接收端 `{thread_id,message_ids}` | 消息已实际绘制后确认；服务端幂等写入 `displayed_at`，不改已读状态 |
+| `ID_NOTIFY_MESSAGE_DISPLAYED` (`1037`) | 服务端推送发送端 | 对方已显示指定消息，客户端将投递状态提升为“已显示” |
+| `ID_MARK_THREAD_READ_REQ` (`1038`) | 接收端 `{thread_id,read_through_message_id}` | 当前会话已读游标；服务端只更新该用户实际接收的未读消息 |
+| `ID_NOTIFY_THREAD_READ` (`1039`) | 服务端推送发送端 | 对方已读到指定游标，客户端将对应发送消息显示为“已读” |
 
 ResourceServer 的独立协议使用其自身的上传分片、断点同步消息常量。完成回包包含
 `resource_url`；客户端只有拿到该字段后，才向 ChatServer 发送 `ID_UPDATE_USER_PROFILE_REQ`。
@@ -222,7 +226,7 @@ A <- ID_TEXT_CHAT_MSG_RSP {error,textArray:[{msgid,content,message_id,thread_id,
 B <- ID_NOTIFY_TEXT_CHAT_MSG_REQ {error,fromuid,touid,textArray:[{msgid,content,message_id,thread_id,sender_id,recv_id,created_at_ms,status}]}
 ```
 
-服务端用当前 TCP 会话保存的 UID 校验文本请求的 `fromuid`，避免客户端伪造发送者。ChatServer 先写入 MySQL，因而目标离线时 `ID_TEXT_CHAT_MSG_RSP` 返回 `delivered:false`，但不是发送失败；客户端下次登录以 `ID_LOAD_CHAT_THREAD_REQ/RSP`、`ID_LOAD_CHAT_MSG_REQ/RSP` 增量补齐。发送确认和 `ID_NOTIFY_TEXT_CHAT_MSG_REQ` 都必须携带完整服务端元数据：Qt 以 `message_id` 幂等写 SQLite，并更新本地历史、会话摘要和未读数。跨 ChatServer 时，发送方服务根据 Redis 的 `uip_<uid>` 找到目标服务，经 gRPC `NotifyTextChatMsg` 转发；共享 proto 原样传递上述字段，目标端生成同样的 TCP 通知。成功回包只有在 SQLite 事务提交后才清除临时发送气泡；服务端失败、字段缺失或本地事务失败时，客户端按 `msgid` 显示 `send_fail.png`。两台服务和客户端必须同时部署这版协议，不支持旧通知。
+服务端用当前 TCP 会话保存的 UID 校验文本请求的 `fromuid`，避免客户端伪造发送者。ChatServer 先写入 MySQL，因而目标离线时 `ID_TEXT_CHAT_MSG_RSP` 返回 `delivered:false`，但不是发送失败；客户端下次登录以 `ID_LOAD_CHAT_THREAD_REQ/RSP`、`ID_LOAD_CHAT_MSG_REQ/RSP` 增量补齐。1018/1034 明确返回 `persisted` 与 `realtime_delivered`：前者表示事务已提交，后者仅表示通知已排入对端 TCP 发送队列。对端只能在气泡实际进入聊天窗口后发送 1036，服务端才写 `displayed_at` 并用 1037 通知发送端；进入会话时客户端再发送 1038，服务端更新 `status=1` 并用 1039 推送已读游标。客户端 SQLite 的 `delivery_state` 依次保存“已保存、已送达、已显示、已读”，本地 `unread_count` 在增量同步、实时通知和进入会话清零之间保持一致。跨 ChatServer 的显示/已读回执使用新的 `NotifyMessageDisplayed`、`NotifyThreadRead` RPC；发送端离线时状态仍由下次 1030 历史同步读取。两台服务和客户端必须同时部署这版协议，不支持旧通知。
 
 ## 9. TCP 包格式
 
@@ -240,7 +244,7 @@ ChatServer TCP 包固定为：
 | --- | --- | --- |
 | GateServer | 验证码、注册、登录、重置密码 | 登录回包字段可继续补充用户资料 |
 | StatusServer | ChatServer 负载选择、token 签发/校验 | 更完整的在线状态管理 |
-| ChatServer1 | TCP 登录、搜索、好友申请/认证、私聊创建/查询、文本持久化、会话/历史消息加载 | 已读回执、撤回、发送幂等重试 |
+| ChatServer1 | TCP 登录、搜索、好友申请/认证、私聊创建/查询、文本持久化、会话/历史消息加载、显示确认与已读回执 | 撤回、发送幂等重试 |
 | ChatServer 间 gRPC | 好友申请、认证结果、在线文本转发，以及文本完整元数据同步 | 离线补偿和重试 |
 | Qt 客户端 | HTTP 流程、TCP 登录/搜索/好友、SQLite 历史与增量同步、在线文本收发、发送失败状态和上拉本地历史 | 文本发送重试 |
 | VarifyServer | Redis 验证码、邮件发送 | 邮件失败后的补偿和监控 |

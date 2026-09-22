@@ -24,6 +24,9 @@ enum ErrorCode{
     SearchUserNoExist = 1013, //搜索的用户不存在
     ServerBusy = 1014, //服务器繁忙
     Create_Chat_Failed = 1015, //创建聊天失败
+    // 单条历史消息连同 1030 响应字段也无法放入一个 TCP JSON 包时返回；
+    // 不推进游标，避免客户端静默跳过这条消息或陷入重复分页。
+    MessageTooLarge = 1016,
 };
 
 //手动定义一个Defer类，里面有一个函数，用于在函数结束时自动执行，比如释放资源，实现类似RAII的功能   这个是go语言中的defer关键字
@@ -86,6 +89,13 @@ enum MSG_IDS {
     ID_IMAGE_CHAT_MSG_REQ = 1033, // 图片聊天请求；仅传资源标识和候选元数据
     ID_IMAGE_CHAT_MSG_RSP = 1034, // 图片已核验、已持久化后的发送确认
     ID_NOTIFY_IMAGE_CHAT_MSG_REQ = 1035, // 通知接收方下载已核验的图片资源
+    // 接收端只在消息确实绘制到当前聊天窗口后发送 1036；1037 是服务端回推给发送端的
+    // “对方已显示”状态，不能与“已落库”或“已排入实时 socket”混为一谈。
+    ID_MESSAGE_DISPLAY_ACK_REQ = 1036,
+    ID_NOTIFY_MESSAGE_DISPLAYED = 1037,
+    // 1038 表示用户已进入会话并读到指定游标，1039 将已读游标通知消息发送端。
+    ID_MARK_THREAD_READ_REQ = 1038,
+    ID_NOTIFY_THREAD_READ = 1039,
 };
 
 #define LOGIN_COUNT "login_count"

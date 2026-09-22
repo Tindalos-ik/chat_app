@@ -35,6 +35,10 @@ using message::ImageChatData;
 
 using message::KickUserReq;
 using message::KickUserRsp;
+using message::MessageDisplayedReq;
+using message::MessageDisplayedRsp;
+using message::ThreadReadReq;
+using message::ThreadReadRsp;
 
 
 class ChatServiceImpl final : public ChatService::Service
@@ -48,6 +52,10 @@ public:
     Status NotifyAuthFriend(ServerContext* context, const AuthFriendReq* request, AuthFriendRsp* response) override;
     Status NotifyTextChatMsg(ServerContext* context, const TextChatMsgReq* request, TextChatMsgRsp* response) override;
     Status NotifyImageChatMsg(ServerContext* context, const ImageChatMsgReq* request, ImageChatMsgRsp* response) override;
+    Status NotifyMessageDisplayed(ServerContext* context, const MessageDisplayedReq* request,
+                                  MessageDisplayedRsp* response) override;
+    Status NotifyThreadRead(ServerContext* context, const ThreadReadReq* request,
+                            ThreadReadRsp* response) override;
     //bool GetBaseInfo(std::string base_key, int uid, std::shared_ptr<UserInfo>& userinfo);
     Status NotifyKickUser(ServerContext* context, const KickUserReq* request, KickUserRsp* response) override;
 

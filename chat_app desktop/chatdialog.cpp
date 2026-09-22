@@ -112,6 +112,22 @@ ChatDialog::ChatDialog(QWidget *parent)
         if (item) {
             item->SetSendFailed(true);
         }
+
+        // 收到图片尚未有气泡可标记为失败；只要它属于正在查看的会话，就立即给出
+        // 原因和重试入口。后台会话不弹窗打断用户，稍后进入该会话仍会重新排队下载。
+        if (image.threadId != _current_thread_id || image.threadId <= 0) {
+            return;
+        }
+        const auto answer = QMessageBox::question(
+            this, tr("图片下载失败"),
+            tr("%1\n\n请检查登录状态或网络后重试。").arg(message),
+            QMessageBox::Retry | QMessageBox::Cancel, QMessageBox::Retry);
+        if (answer == QMessageBox::Retry) {
+            if (image.messageId > 0) {
+                _requested_image_message_ids.insert(image.messageId);
+            }
+            _image_transfer->enqueueDownload(image);
+        }
     });
 
     // 聊天区与输入区之间的分隔条：消息区占满剩余空间，输入区高度可拖拽调节（80~300）
@@ -238,6 +254,8 @@ ChatDialog::ChatDialog(QWidget *parent)
             this, &ChatDialog::slot_image_chat);
     connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_local_chat_synced,
             this, &ChatDialog::slot_local_chat_synced);
+    connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_message_delivery_updated,
+            this, &ChatDialog::slot_message_delivery_updated);
     connect(ui->chat_data, &ChatView::sig_reach_top,
             this, &ChatDialog::slot_load_older_local_messages);
 
@@ -589,7 +607,7 @@ void ChatDialog::slot_auth_friend(std::shared_ptr<FriendAuthResult> &authResult)
     SaveFriendAuthMessages(userinfo, authResult->textMessages);
 }
 
-void ChatDialog::slot_text_chat_send_result(const QString &messageId, bool success)
+void ChatDialog::slot_text_chat_send_result(const QString &messageId, bool success, int deliveryState)
 {
     auto iter = _pending_text_items.find(messageId);
     if (iter == _pending_text_items.end()) {
@@ -599,6 +617,9 @@ void ChatDialog::slot_text_chat_send_result(const QString &messageId, bool succe
 
     const QPointer<ChatItemBase> chatItem = iter.value();
     if (success) {
+        if (chatItem) {
+            chatItem->SetDeliveryState(deliveryState > 0 ? deliveryState : 1);
+        }
         _pending_text_items.erase(iter);
         return;
     }
@@ -624,6 +645,12 @@ void ChatDialog::slot_image_chat_send_result(std::shared_ptr<ImageChatData> &ima
             _pending_image_items.erase(iter);
         }
         return;
+    }
+    if (iter != _pending_image_items.end() && iter.value()) {
+        iter.value()->SetDeliveryState(image->deliveryState);
+        if (image->messageId > 0) {
+            _outgoing_image_items.insert(image->messageId, iter.value());
+        }
     }
     // 1034 成功后仍走下载缓存：发送端也能验证 resource_id 可读取，并把之后历史/重绘
     // 可用的稳定本地文件保存下来。appendDownloadedImage 会识别 pending 项，不重复插入气泡。
@@ -693,6 +720,9 @@ void ChatDialog::appendDownloadedImage(const ImageChatData &image, const QString
     ui->chat_data->appendChatItem(chatItem);
     if (image.messageId > 0) {
         _displayed_image_message_ids.insert(image.messageId);
+        if (!sentBySelf) {
+            SendDisplayAcknowledgement(image.threadId, {image.messageId});
+        }
     }
     qInfo() << "received image appended to chat view, resource_id=" << image.resourceId;
 }
@@ -990,6 +1020,56 @@ void ChatDialog::slot_local_chat_synced(qint64 threadId)
     }
 }
 
+void ChatDialog::slot_message_delivery_updated(qint64 threadId, const QList<qint64> &messageIds,
+                                               int deliveryState)
+{
+    for (qint64 messageId : messageIds) {
+        const auto textItem = _outgoing_text_items.find(messageId);
+        if (textItem != _outgoing_text_items.end() && textItem.value()) {
+            textItem.value()->SetDeliveryState(deliveryState);
+        }
+        const auto imageItem = _outgoing_image_items.find(messageId);
+        if (imageItem != _outgoing_image_items.end() && imageItem.value()) {
+            imageItem.value()->SetDeliveryState(deliveryState);
+        }
+    }
+    Q_UNUSED(threadId);
+}
+
+void ChatDialog::SendDisplayAcknowledgement(qint64 threadId, const QList<qint64> &messageIds)
+{
+    if (threadId <= 0 || messageIds.isEmpty() || !TcpMgr::GetInstance()->IsConnected()) {
+        return;
+    }
+    QJsonArray ids;
+    for (qint64 messageId : messageIds) {
+        if (messageId > 0) {
+            // 64 位 ID 用字符串，避免 Qt JSON double 造成精度丢失。
+            ids.append(QString::number(messageId));
+        }
+    }
+    if (ids.isEmpty()) {
+        return;
+    }
+    QJsonObject request;
+    request["thread_id"] = QString::number(threadId);
+    request["message_ids"] = ids;
+    emit TcpMgr::GetInstance()->sig_send_data(ID_MESSAGE_DISPLAY_ACK_REQ,
+                                              QJsonDocument(request).toJson(QJsonDocument::Compact));
+}
+
+void ChatDialog::SendReadReceipt(qint64 threadId, qint64 readThroughMessageId)
+{
+    if (threadId <= 0 || readThroughMessageId <= 0 || !TcpMgr::GetInstance()->IsConnected()) {
+        return;
+    }
+    QJsonObject request;
+    request["thread_id"] = QString::number(threadId);
+    request["read_through_message_id"] = QString::number(readThroughMessageId);
+    emit TcpMgr::GetInstance()->sig_send_data(ID_MARK_THREAD_READ_REQ,
+                                              QJsonDocument(request).toJson(QJsonDocument::Compact));
+}
+
 void ChatDialog::AppendStoredTextMessage(const LocalChatMessage &message,
                                          const std::shared_ptr<UserInfo> &friendInfo)
 {
@@ -1015,6 +1095,12 @@ ChatItemBase *ChatDialog::CreateStoredTextChatItem(const LocalChatMessage &messa
     chatItem->setUserAvatar(displayUser->_uid, displayUser->_icon);
     chatItem->setWidget(new TextBubble(sentBySelf ? ChatRole::Self : ChatRole::Other,
                                        message.content));
+    if (sentBySelf) {
+        chatItem->SetDeliveryState(message.serverStatus == 1 ? 4 : message.deliveryState);
+        if (message.messageId > 0) {
+            _outgoing_text_items.insert(message.messageId, chatItem);
+        }
+    }
     return chatItem;
 }
 
@@ -1104,10 +1190,15 @@ void ChatDialog::LoadOlderLocalMessages()
     }
 
     QList<QWidget *> historyItems;
+    const auto self = UserMgr::GetInstance()->GetUserInfo();
+    QList<qint64> displayedMessageIds;
     for (const LocalChatMessage &message : olderMessages) {
         if (message.contentType == QStringLiteral("text")) {
             if (auto *chatItem = CreateStoredTextChatItem(message, _current_chatuser)) {
                 historyItems.append(chatItem);
+                if (self && message.senderId != self->_uid && message.recvId == self->_uid) {
+                    displayedMessageIds.append(message.messageId);
+                }
             }
         } else if (message.contentType == QStringLiteral("image")) {
             QueueStoredImageMessage(message);
@@ -1115,6 +1206,7 @@ void ChatDialog::LoadOlderLocalMessages()
     }
     if (!historyItems.isEmpty()) {
         ui->chat_data->prependChatItems(historyItems);
+        SendDisplayAcknowledgement(loadingThreadId, displayedMessageIds);
     }
     // LoadMessagesBefore 的结果按 message_id 正序返回，首项就是下一次分页边界。
     _oldest_local_message_id = olderMessages.first().messageId;
@@ -1153,9 +1245,14 @@ void ChatDialog::SetCurrentChatUser(const std::shared_ptr<UserInfo> &chatUser, q
     if (threadId > 0 && storage->IsReady()) {
         const QList<LocalChatMessage> recentMessages = storage->LoadRecentMessages(
             threadId, kLocalHistoryPageSize);
+        const auto self = UserMgr::GetInstance()->GetUserInfo();
+        QList<qint64> displayedMessageIds;
         for (const LocalChatMessage &message : recentMessages) {
             if (message.contentType == QStringLiteral("text")) {
                 AppendStoredTextMessage(message, _current_chatuser);
+                if (self && message.senderId != self->_uid && message.recvId == self->_uid) {
+                    displayedMessageIds.append(message.messageId);
+                }
             } else if (message.contentType == QStringLiteral("image")) {
                 QueueStoredImageMessage(message);
             }
@@ -1168,6 +1265,15 @@ void ChatDialog::SetCurrentChatUser(const std::shared_ptr<UserInfo> &chatUser, q
         // 此时用户已经进入该会话，SQLite 中此前未读的历史消息应被标记已读。
         if (!storage->MarkThreadRead(threadId)) {
             qWarning() << "mark local chat thread read failed:" << storage->LastError();
+        }
+        // 文本已在上面的 appendChatItem 后实际可见，才允许 1036。图片由下载回调在
+        // PictureBubble 插入后单独确认，不能把“已排队下载”误报为已显示。
+        SendDisplayAcknowledgement(threadId, displayedMessageIds);
+        for (const LocalChatThread &thread : storage->CachedThreads()) {
+            if (thread.threadId == threadId) {
+                SendReadReceipt(threadId, thread.lastMessageId);
+                break;
+            }
         }
     }
 

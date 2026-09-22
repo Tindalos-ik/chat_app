@@ -35,6 +35,8 @@ struct LocalChatMessage {
     qint64 updatedAtMs = 0;
     int serverStatus = 0;  // 0=未读，1=已读，2=撤回
     int sendState = 1;     // 0=发送中，1=已发送，2=发送失败，3=已确认
+    // 发送端展示状态：1=已持久化，2=已进入实时投递，3=对方已显示，4=对方已读。
+    int deliveryState = 1;
     bool isRead = true;
 };
 
@@ -91,6 +93,11 @@ public:
 
     // 用户进入会话后清除未读状态和会话未读数。
     bool MarkThreadRead(qint64 threadId);
+
+    // 1037/1039 到达后持久化发送端状态；返回/更新的数据会在 UI 重绘后保持一致。
+    bool UpdateDeliveryState(const QList<qint64> &messageIds, int deliveryState);
+    QList<qint64> MarkOutgoingMessagesRead(qint64 threadId, qint64 readerUid,
+                                           qint64 readThroughMessageId);
 
 private:
     LocalChatStorageMgr();

@@ -210,6 +210,31 @@ message KickUserRsp{
     int32 uid = 2;
 }
 
+// 接收端完成实际界面绘制后，由其所在 ChatServer 转发给发送端所在 ChatServer。
+// message_ids 是已持久化的 chat_message 主键；重复 ACK 按幂等成功处理。
+message MessageDisplayedReq {
+    int32 sender_id = 1;
+    int32 reader_id = 2;
+    uint64 thread_id = 3;
+    repeated uint64 message_ids = 4;
+}
+
+message MessageDisplayedRsp {
+    int32 error = 1;
+}
+
+// 已读使用会话内单调 message_id 游标，服务端只更新 reader_id 实际收到的消息。
+message ThreadReadReq {
+    int32 sender_id = 1;
+    int32 reader_id = 2;
+    uint64 thread_id = 3;
+    uint64 read_through_message_id = 4;
+}
+
+message ThreadReadRsp {
+    int32 error = 1;
+}
+
 // 聊天服务器之间的 gRPC 服务定义。
 service ChatService {
     // 转发好友申请，由接收方所在服务器通知目标用户。
@@ -222,6 +247,10 @@ service ChatService {
     rpc NotifyTextChatMsg (TextChatMsgReq) returns (TextChatMsgRsp) {}
     // 批量转发已核验、已落库的图片消息，由接收方所在服务器推送给目标用户。
     rpc NotifyImageChatMsg (ImageChatMsgReq) returns (ImageChatMsgRsp) {}
+    // 通知消息已显示，由接收方所在服务器通知目标用户。
+    rpc NotifyMessageDisplayed (MessageDisplayedReq) returns (MessageDisplayedRsp) {}
+    // 通知消息已读，由接收方所在服务器通知目标用户。
+    rpc NotifyThreadRead (ThreadReadReq) returns (ThreadReadRsp) {}
     // 踢出用户，由接收方所在服务器通知目标用户。
     rpc NotifyKickUser (KickUserReq) returns (KickUserRsp) {}
 }

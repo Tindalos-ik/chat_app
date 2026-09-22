@@ -50,6 +50,8 @@ CREATE TABLE IF NOT EXISTS local_chat_message (
                 CHECK (server_status IN (0, 1, 2)),
   send_state    INTEGER NOT NULL DEFAULT 1
                 CHECK (send_state IN (0, 1, 2, 3)),
+  delivery_state INTEGER NOT NULL DEFAULT 1
+                CHECK (delivery_state IN (1, 2, 3, 4)),
   is_read       INTEGER NOT NULL DEFAULT 1 CHECK (is_read IN (0, 1)),
   FOREIGN KEY (thread_id) REFERENCES local_chat_thread (thread_id)
     ON DELETE CASCADE

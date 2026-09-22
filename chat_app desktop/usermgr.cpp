@@ -42,6 +42,11 @@ int UserMgr::GetUid()
     return _userinfo->_uid;
 }
 
+QString UserMgr::GetToken() const
+{
+    return _token;
+}
+
 void UserMgr::UpdateProfile(const QString &nick, const QString &desc, const QString &icon)
 {
     if (!_userinfo) {

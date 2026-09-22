@@ -58,7 +58,11 @@ enum ReqId{
     // JSON 元数据，避免 2+2 字节聊天包承载图片二进制。
     ID_IMAGE_CHAT_MSG_REQ = 1033,       // 图片消息请求：fromuid/touid/imageArray
     ID_IMAGE_CHAT_MSG_RSP = 1034,       // 图片消息发送确认
-    ID_NOTIFY_IMAGE_CHAT_MSG_REQ = 1035 // 对端图片消息通知
+    ID_NOTIFY_IMAGE_CHAT_MSG_REQ = 1035, // 对端图片消息通知
+    ID_MESSAGE_DISPLAY_ACK_REQ = 1036,  // 接收端已将消息实际绘制到当前会话
+    ID_NOTIFY_MESSAGE_DISPLAYED = 1037, // 服务端通知发送端：对端已显示
+    ID_MARK_THREAD_READ_REQ = 1038,     // 当前会话已读到 message_id 游标
+    ID_NOTIFY_THREAD_READ = 1039        // 服务端通知发送端：对端已读游标
 };
 
 // ResourceServer 使用独立 TCP 连接和 2+4 字节包头；这里的 ID 属于另一套协议，

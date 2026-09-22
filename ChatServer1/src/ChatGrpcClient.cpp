@@ -177,6 +177,51 @@ ImageChatMsgRsp ChatGrpcClient::NotifyImageChatMsg(std::string server_ip, const 
     return rsp;
 }
 
+MessageDisplayedRsp ChatGrpcClient::NotifyMessageDisplayed(std::string server_ip,
+                                                           const MessageDisplayedReq& request) {
+    MessageDisplayedRsp rsp;
+    rsp.set_error(ErrorCode::RPCFaild);
+    const auto it = _pools.find(server_ip);
+    if (it == _pools.end()) {
+        return rsp;
+    }
+    auto& pool = it->second;
+    const auto deadline = std::chrono::system_clock::now() + std::chrono::seconds(3);
+    ClientContext context;
+    context.set_deadline(deadline);
+    auto stub = pool->getConnectionUntil(deadline);
+    if (!stub) {
+        return rsp;
+    }
+    Defer defer([&pool, &stub]() { pool->returnConnection(std::move(stub)); });
+    if (!stub->NotifyMessageDisplayed(&context, request, &rsp).ok()) {
+        rsp.set_error(ErrorCode::RPCFaild);
+    }
+    return rsp;
+}
+
+ThreadReadRsp ChatGrpcClient::NotifyThreadRead(std::string server_ip, const ThreadReadReq& request) {
+    ThreadReadRsp rsp;
+    rsp.set_error(ErrorCode::RPCFaild);
+    const auto it = _pools.find(server_ip);
+    if (it == _pools.end()) {
+        return rsp;
+    }
+    auto& pool = it->second;
+    const auto deadline = std::chrono::system_clock::now() + std::chrono::seconds(3);
+    ClientContext context;
+    context.set_deadline(deadline);
+    auto stub = pool->getConnectionUntil(deadline);
+    if (!stub) {
+        return rsp;
+    }
+    Defer defer([&pool, &stub]() { pool->returnConnection(std::move(stub)); });
+    if (!stub->NotifyThreadRead(&context, request, &rsp).ok()) {
+        rsp.set_error(ErrorCode::RPCFaild);
+    }
+    return rsp;
+}
+
 KickUserRsp ChatGrpcClient::NotifyKickUser(std::string server_ip, const KickUserReq& request){
     KickUserRsp rsp;
     rsp.set_error(ErrorCode::RPCFaild);

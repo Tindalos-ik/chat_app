@@ -20,9 +20,10 @@ public:
     ~ResourceClient();
     bool IsConnected() const;
     void sendMsg(quint16 id,QByteArray data);
-    // 请求资源的一个下载分片。调用方收到 sig_download_chunk 后，根据 offset + data.size()
-    // 决定是否继续请求下一片；这样可把图片缓存、进度 UI 和断点恢复策略留在业务层。
-    void requestDownload(const QString& resourceId, qint64 offset, qint32 chunkSize = 2048);
+    // 请求资源的一个下载分片。每个 1007 都携带当前 uid/token 和正式私聊 thread_id，
+    // ResourceServer 据此校验身份、私聊成员关系及资源归属。
+    void requestDownload(const QString& resourceId, qint64 threadId, qint64 offset,
+                         qint32 chunkSize = 2048);
 private:
     ResourceClient();
 
