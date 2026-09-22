@@ -64,7 +64,10 @@ enum ResourceReqId : quint16 {
     ID_UPLOAD_FILE_REQ = 1003,
     ID_UPLOAD_FILE_RSP = 1004,
     ID_SYNC_FILE_REQ = 1005,
-    ID_SYNC_FILE_RSP = 1006
+    ID_SYNC_FILE_RSP = 1006,
+    // 资源下载以 resource_id（上传任务 ID）定位资源；绝不能把服务端本机路径发回去下载。
+    ID_DOWNLOAD_FILE_REQ = 1007,
+    ID_DOWNLOAD_FILE_RSP = 1008
 };
 
 enum Modules{

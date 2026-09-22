@@ -17,6 +17,10 @@ namespace {
 // 追加写入和完成重命名不会相互穿插，避免同一临时文件被并发写坏。
 std::mutex g_upload_file_mutex;
 
+// ResourceServer 的单帧包体上限为 4 KB。下载数据还要经过 Base64 和 JSON 包装，
+// 因此原始字节不能贴近 4 KB；2 KB 可稳定给资源 ID、文件名和协议字段预留空间。
+constexpr Json::UInt64 kMaxDownloadChunkSize = 2 * 1024;
+
 bool IsSafeUploadId(const std::string& upload_id) {
     if (upload_id.empty() || upload_id.size() > 160) {
         return false;
@@ -68,6 +72,56 @@ void FillUploadResponse(Json::Value& response, ErrorCodes error,
     response["total_size"] = total_size;
     response["confirmed_offset"] = confirmed_offset;
     response["completed"] = completed;
+}
+
+void FillDownloadResponse(Json::Value& response, ErrorCodes error,
+                          const std::string& resource_id, Json::UInt64 total_size,
+                          Json::UInt64 offset, bool is_last) {
+    response["error"] = error;
+    response["resource_id"] = resource_id;
+    response["total_size"] = total_size;
+    response["offset"] = offset;
+    response["is_last"] = is_last;
+}
+
+// 只从 ResourceServer 自己创建的任务目录中解析资源。resource_id 在协议层等同
+// upload_id，先经过字符白名单检查，再以 meta.json 中记录的原始文件名定位文件，
+// 不接受客户端提交的文件路径，避免路径穿越读取任意本机文件。
+ErrorCodes ResolveCompletedResource(const std::string& resource_id,
+                                    std::filesystem::path& final_path,
+                                    std::string& file_name,
+                                    Json::UInt64& total_size) {
+    if (!IsSafeUploadId(resource_id)) {
+        return ErrorCodes::Error_Json;
+    }
+
+    const std::filesystem::path task_dir = ConfigMgr::Inst().GetFilePath() / resource_id;
+    const std::filesystem::path meta_path = task_dir / "meta.json";
+    Json::Value meta;
+    if (!ReadJsonFile(meta_path, meta)) {
+        return ErrorCodes::ResourceNotFound;
+    }
+    if (!meta["completed"].asBool()) {
+        return ErrorCodes::ResourceNotCompleted;
+    }
+
+    const auto stored_name = std::filesystem::u8path(meta["name"].asString()).filename();
+    if (stored_name.empty() || !IsNonNegativeInteger(meta["total_size"])) {
+        return ErrorCodes::ResourceNotFound;
+    }
+
+    total_size = meta["total_size"].asUInt64();
+    final_path = task_dir / stored_name;
+    std::error_code ec;
+    if (!std::filesystem::exists(final_path, ec) || ec) {
+        return ErrorCodes::ResourceNotFound;
+    }
+    const auto actual_size = std::filesystem::file_size(final_path, ec);
+    if (ec || actual_size != total_size) {
+        return ErrorCodes::ResourceNotFound;
+    }
+    file_name = stored_name.u8string();
+    return ErrorCodes::Success;
 }
 
 // 当前 ResourceServer 只负责自定义 TCP 上传，还没有单独的 HTTP 静态文件服务。
@@ -161,6 +215,9 @@ void LogicWorker::RegisterCallBacks() {
    };
    _fun_callbacks[ID_SYNC_FILE_REQ] = [this](std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data) {
         HandleSyncFile(session, msg_id, msg_data);
+   };
+   _fun_callbacks[ID_DOWNLOAD_FILE_REQ] = [this](std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data) {
+        HandleDownloadFile(session, msg_id, msg_data);
    };
 }
 
@@ -377,4 +434,85 @@ void LogicWorker::HandleUploadFile(std::shared_ptr<CSession> session, const shor
     if (is_last) {
         rtvalue["resource_url"] = BuildResourceUrl(final_path);
     }
+}
+
+// 下载请求：
+// {"resource_id":"<upload_id>", "offset":0, "chunk_size":2048}
+// 下载响应：
+// {"error":0, "resource_id":"...", "total_size":..., "offset":...,
+//  "data":"<base64>", "is_last":false, "name":"image.png"}
+//
+// offset 是服务端文件的字节偏移，而不是 Base64 字符串偏移。客户端仅在成功处理
+// 本响应后，才以 offset + 解码后 data.size() 请求下一片；断线后可从本地已落盘
+// 的字节数继续请求。每次只读一片，既不会阻塞逻辑线程过久，也不会突破帧大小限制。
+void LogicWorker::HandleDownloadFile(std::shared_ptr<CSession> session, const short &msg_id,
+                                     const std::string &msg_data)
+{
+    Json::Value request;
+    Json::CharReaderBuilder reader;
+    std::istringstream input(msg_data);
+    std::string errors;
+    Json::Value response;
+    Defer defer([session, &response]() {
+        session->Send(response.toStyledString(), ID_DOWNLOAD_FILE_RSP);
+    });
+
+    if (!Json::parseFromStream(reader, input, &request, &errors)) {
+        response["error"] = ErrorCodes::Error_Json;
+        return;
+    }
+
+    const std::string resource_id = request["resource_id"].asString();
+    if (!IsNonNegativeInteger(request["offset"]) || !IsNonNegativeInteger(request["chunk_size"]) ||
+        !IsSafeUploadId(resource_id)) {
+        response["error"] = ErrorCodes::Error_Json;
+        return;
+    }
+    const Json::UInt64 offset = request["offset"].asUInt64();
+    const Json::UInt64 requested_chunk_size = request["chunk_size"].asUInt64();
+    if (requested_chunk_size == 0 || requested_chunk_size > kMaxDownloadChunkSize) {
+        response["error"] = ErrorCodes::Error_Json;
+        return;
+    }
+
+    // 与上传、续传、完成重命名共用同一把锁，防止读到刚好被替换的文件。
+    std::lock_guard<std::mutex> lock(g_upload_file_mutex);
+    std::filesystem::path final_path;
+    std::string file_name;
+    Json::UInt64 total_size = 0;
+    const ErrorCodes resolve_result = ResolveCompletedResource(resource_id, final_path, file_name, total_size);
+    if (resolve_result != ErrorCodes::Success) {
+        FillDownloadResponse(response, resolve_result, resource_id, 0, 0, false);
+        return;
+    }
+    if (offset > total_size) {
+        FillDownloadResponse(response, ErrorCodes::UploadOffsetMismatch,
+                             resource_id, total_size, total_size, false);
+        return;
+    }
+
+    const Json::UInt64 remaining = total_size - offset;
+    const Json::UInt64 read_size = std::min(requested_chunk_size, remaining);
+    std::string binary_data;
+    binary_data.resize(static_cast<std::size_t>(read_size));
+    if (read_size > 0) {
+        std::ifstream input_file(final_path, std::ios::binary);
+        if (!input_file) {
+            FillDownloadResponse(response, ErrorCodes::DownloadFileError,
+                                 resource_id, total_size, offset, false);
+            return;
+        }
+        input_file.seekg(static_cast<std::streamoff>(offset));
+        input_file.read(binary_data.data(), static_cast<std::streamsize>(read_size));
+        if (input_file.gcount() != static_cast<std::streamsize>(read_size)) {
+            FillDownloadResponse(response, ErrorCodes::DownloadFileError,
+                                 resource_id, total_size, offset, false);
+            return;
+        }
+    }
+
+    const bool is_last = offset + read_size == total_size;
+    FillDownloadResponse(response, ErrorCodes::Success, resource_id, total_size, offset, is_last);
+    response["name"] = file_name;
+    response["data"] = Base64Encode(binary_data);
 }

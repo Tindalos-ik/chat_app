@@ -32,7 +32,7 @@ Qt 桌面客户端 ---- TCP 9090 ----> ResourceServer ----> uploads
 | StatusServer | C++、gRPC | 50052 | ChatServer 负载选择、token 签发和校验 |
 | ChatServer1 | C++、Boost.Asio、gRPC | TCP 8090 / gRPC 50055 | 长连接、会话和消息路由 |
 | ChatServer2 | C++、Boost.Asio、gRPC | TCP 8091 / gRPC 50056 | 第二个聊天服务实例、跨服转发 |
-| ResourceServer | C++、Boost.Asio | TCP 9090 | 图片分片上传、断点续传和资源地址发布 |
+| ResourceServer | C++、Boost.Asio | TCP 9090 | 图片分片上传、断点续传和已完成资源的分片下载 |
 | MySQL | MySQL 8 | X Protocol 33060 | 用户、好友和好友申请数据 |
 | Redis | Redis | 6379 | 验证码、token、在线路由和服务负载 |
 
@@ -257,3 +257,4 @@ curl http://127.0.0.1:8080/get_test
 - [服务部署](note/服务部署.md)：Windows/Linux 部署笔记。
 - [数据库设计](note/数据库设计.md)：MySQL 表结构说明。
 - [聊天信息存储方案](note/聊天信息存储方案.md)：服务端会话/消息模型、客户端 SQLite 缓存和增量同步边界。
+- [资源服务](note/资源服务.md)：资源上传、资源 ID 与 TCP 分片下载协议。

@@ -64,3 +64,4 @@
 | [Qt网络编程.md](note/Qt网络编程.md) | HTTP/TCP 编程、粘包 |
 | [Qt头像统一显示.md](note/Qt头像统一显示.md) | Qt 客户端头像路径、稳定兜底和圆形裁切约定 |
 | [json.md](note/json.md) | JSON 在客户端、C++ 服务端和 Node.js 配置中的使用 |
+| [资源服务.md](note/资源服务.md) | ResourceServer 上传任务、资源 ID 与分片下载协议 |

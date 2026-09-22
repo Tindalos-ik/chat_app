@@ -20,6 +20,9 @@ public:
     ~ResourceClient();
     bool IsConnected() const;
     void sendMsg(quint16 id,QByteArray data);
+    // 请求资源的一个下载分片。调用方收到 sig_download_chunk 后，根据 offset + data.size()
+    // 决定是否继续请求下一片；这样可把图片缓存、进度 UI 和断点恢复策略留在业务层。
+    void requestDownload(const QString& resourceId, qint64 offset, qint32 chunkSize = 2048);
 private:
     ResourceClient();
 
@@ -52,6 +55,11 @@ signals:
     void sig_file_sync(qint64 confirmed_offset, qint64 total_size, bool completed,
                        const QString& upload_id, const QString& resource_url);
     void sig_upload_error(const QString& message);
+    // 一个下载回包对应一个请求分片。data 已从 Base64 还原为原始二进制；offset 是
+    // 该分片在服务端文件中的起始字节位置，is_last 为 true 时文件传输完成。
+    void sig_download_chunk(const QString& resource_id, qint64 total_size, qint64 offset,
+                            const QByteArray& data, bool is_last, const QString& file_name);
+    void sig_download_error(const QString& message);
 };
 
 #endif // RESOURCECLIENT_H

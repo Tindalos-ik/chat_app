@@ -104,6 +104,45 @@ ResourceClient::ResourceClient(): _b_recy_pending(false), _message_id(0), _messa
 void ResourceClient::initHandlers()
 {
 
+    // 下载响应严格校验分片范围和 Base64 数据。ResourceServer 的资源协议不能把损坏
+    // 数据直接交给后续的图片解码或本地文件写入逻辑。
+    _handler.insert(ResourceReqId::ID_DOWNLOAD_FILE_RSP, [this](quint16 id, int len, QByteArray data) {
+        Q_UNUSED(id);
+        Q_UNUSED(len);
+        const QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
+        if (!jsonDoc.isObject()) {
+            emit sig_download_error(tr("资源服务器返回了无效的下载结果。"));
+            return;
+        }
+
+        const QJsonObject jsonObj = jsonDoc.object();
+        if (jsonObj.value("error").toInt(ErrorCodes::ERR_JSON) != ErrorCodes::SUCCESS) {
+            emit sig_download_error(tr("下载资源失败，错误码：%1")
+                                        .arg(jsonObj.value("error").toInt()));
+            return;
+        }
+
+        bool totalOk = false;
+        bool offsetOk = false;
+        const qint64 totalSize = jsonObj.value("total_size").toVariant().toLongLong(&totalOk);
+        const qint64 offset = jsonObj.value("offset").toVariant().toLongLong(&offsetOk);
+        const QString resourceId = jsonObj.value("resource_id").toString();
+        const QByteArray encodedData = jsonObj.value("data").toString().toLatin1();
+        const QByteArray decodedData = QByteArray::fromBase64(
+            encodedData, QByteArray::AbortOnBase64DecodingErrors);
+        const bool isLast = jsonObj.value("is_last").toBool();
+        if (!totalOk || !offsetOk || totalSize < 0 || offset < 0 || offset > totalSize
+            || resourceId.isEmpty() || (decodedData.isEmpty() && !encodedData.isEmpty())
+            || decodedData.size() > totalSize - offset
+            || isLast != (offset + decodedData.size() == totalSize)) {
+            emit sig_download_error(tr("资源服务器返回了不一致的下载分片。"));
+            return;
+        }
+
+        emit sig_download_chunk(resourceId, totalSize, offset, decodedData, isLast,
+                                jsonObj.value("name").toString());
+    });
+
     // 上传任务同步回包：客户端据此 seek 到服务端已经确认的字节位置。
     _handler.insert(ResourceReqId::ID_SYNC_FILE_RSP, [this](quint16 id, int len, QByteArray data) {
         Q_UNUSED(id);
@@ -213,5 +252,21 @@ void ResourceClient::sendMsg(quint16 id,QByteArray data)
 {
     //发送信号，统一交给槽函数处理，这么做的好处是多线程安全
     emit sig_send_msg(id, data);
+}
+
+void ResourceClient::requestDownload(const QString& resourceId, qint64 offset, qint32 chunkSize)
+{
+    // 参数在客户端先做一次约束，服务端仍会重复校验，不能依赖客户端输入可信。
+    if (resourceId.isEmpty() || offset < 0 || chunkSize <= 0 || chunkSize > 2048) {
+        emit sig_download_error(tr("下载请求参数无效。"));
+        return;
+    }
+
+    QJsonObject request;
+    request["resource_id"] = resourceId;
+    request["offset"] = static_cast<double>(offset);
+    request["chunk_size"] = chunkSize;
+    sendMsg(ResourceReqId::ID_DOWNLOAD_FILE_REQ,
+            QJsonDocument(request).toJson(QJsonDocument::Compact));
 }
 

@@ -27,6 +27,7 @@ private:
     void HandleTestMsg(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data); // 处理测试消息
     void HandleSyncFile(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data); // 查询/创建上传任务
     void HandleUploadFile(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data); // 处理上传文件
+    void HandleDownloadFile(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data); // 读取已完成资源的一个分片
 
     std::thread _worker_thread;                    // 消费队列的工作线程
     std::queue<std::shared_ptr<LogicNode>> _msg_que; // 消息队列

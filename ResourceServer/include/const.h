@@ -11,7 +11,10 @@ enum ErrorCodes {
     FileNotExists = 1012,
     UploadTaskConflict = 1013, // upload_id 对应的任务元数据不匹配
     UploadOffsetMismatch = 1014, // 分片偏移量和服务端已确认进度不一致
-    UploadFileError = 1015 // 创建、写入或发布上传文件失败
+    UploadFileError = 1015, // 创建、写入或发布上传文件失败
+    ResourceNotFound = 1016, // resource_id 不存在，或其文件已丢失
+    ResourceNotCompleted = 1017, // 资源仍在上传，不能读取半成品
+    DownloadFileError = 1018 // 打开、定位或读取已发布资源失败
 };
 
 
@@ -49,7 +52,11 @@ enum ReqId {
     ID_UPLOAD_FILE_REQ = 1003,    //发送文件请求
     ID_UPLOAD_FILE_RSP = 1004,    //发送文件回复
     ID_SYNC_FILE_REQ = 1005,      //同步文件信息请求
-    ID_SYNC_FILE_RSP = 1006,      //同步文件回复回复
+    ID_SYNC_FILE_RSP = 1006,      //同步文件回复
+    // 下载采用“客户端请求一个分片，服务端回复一个分片”的拉取式协议。
+    // 资源标识必须是已完成上传任务的 upload_id，而不是服务器本机文件路径。
+    ID_DOWNLOAD_FILE_REQ = 1007,
+    ID_DOWNLOAD_FILE_RSP = 1008,
 };
 
 
