@@ -2,7 +2,7 @@
 
 基于 C++ 的分布式即时聊天项目，包含 Qt 6 桌面客户端、HTTP 网关、状态服务、两个 TCP 聊天服务实例、资源服务和 Node.js 邮箱验证码服务。
 
-项目提供注册、邮箱验证码、登录、找回密码、好友申请/认证、好友列表加载、同账号重复登录互踢、客户端与 ChatServer 的应用层心跳检测，以及在线文本消息的同服/跨服转发。好友认证和普通文本消息都会创建或复用私聊并持久化到 MySQL；桌面端以 SQLite 缓存会话、实时通知和登录后的增量历史。跨 ChatServer 的文本转发会保留服务端消息与会话元数据，详见 `note/聊天信息存储方案.md`。
+项目提供注册、邮箱验证码、登录、找回密码、好友申请/认证、好友列表加载、同账号重复登录互踢、客户端与 ChatServer 的应用层心跳检测，以及文本和图片消息的同服/跨服转发。图片二进制始终留在 ResourceServer：ChatServer 在写入 MySQL 前通过 gRPC 核验资源已完成，并保存由资源服务返回的可信元数据；桌面端通过现有 1007/1008 分片协议下载。桌面端以 SQLite 缓存会话、实时通知和登录后的增量历史，详见 `note/聊天信息存储方案.md`。
 
 ## 架构
 
@@ -23,6 +23,7 @@ ChatServer1 <----- gRPC -------> ChatServer2
   +----------- MySQL / Redis -----+
 
 Qt 桌面客户端 ---- TCP 9090 ----> ResourceServer ----> uploads
+ChatServer1/2 -------- gRPC 50057 ----^（图片资源核验）
 ```
 
 | 组件 | 技术 | 端口 | 职责 |
@@ -32,7 +33,7 @@ Qt 桌面客户端 ---- TCP 9090 ----> ResourceServer ----> uploads
 | StatusServer | C++、gRPC | 50052 | ChatServer 负载选择、token 签发和校验 |
 | ChatServer1 | C++、Boost.Asio、gRPC | TCP 8090 / gRPC 50055 | 长连接、会话和消息路由 |
 | ChatServer2 | C++、Boost.Asio、gRPC | TCP 8091 / gRPC 50056 | 第二个聊天服务实例、跨服转发 |
-| ResourceServer | C++、Boost.Asio | TCP 9090 | 图片分片上传、断点续传和已完成资源的分片下载 |
+| ResourceServer | C++、Boost.Asio、gRPC | TCP 9090 / gRPC 50057 | 图片分片上传、断点续传、下载，以及 ChatServer 的已完成图片核验 |
 | MySQL | MySQL 8 | X Protocol 33060 | 用户、好友和好友申请数据 |
 | Redis | Redis | 6379 | 验证码、token、在线路由和服务负载 |
 
@@ -101,7 +102,7 @@ mysql -uroot -p < sql/create_tables.sql
 mysql -uroot -p < sql/chat_message_storage.sql
 ```
 
-脚本创建 `chat_thread`、`private_chat`、群聊相关表和 `chat_message`。ChatServer1 已使用私聊表创建或复用会话，并将好友认证和普通文本消息写入 `chat_message`；桌面端通过 `ID_LOAD_CHAT_THREAD_REQ/RSP` 发现会话、通过 `ID_LOAD_CHAT_MSG_REQ/RSP` 分页增量加载历史。
+脚本创建 `chat_thread`、`private_chat`、群聊相关表和 `chat_message`。ChatServer1 会将文本和已核验图片写入 `chat_message`；桌面端通过 `ID_LOAD_CHAT_THREAD_REQ/RSP` 发现会话、通过 `ID_LOAD_CHAT_MSG_REQ/RSP` 分页增量加载历史。已有数据库还需执行一次 `sql/chat_image_message_migration.sql`，为图片资源元数据补齐字段。
 
 ### 3. 配置服务端连接信息
 
@@ -257,4 +258,4 @@ curl http://127.0.0.1:8080/get_test
 - [服务部署](note/服务部署.md)：Windows/Linux 部署笔记。
 - [数据库设计](note/数据库设计.md)：MySQL 表结构说明。
 - [聊天信息存储方案](note/聊天信息存储方案.md)：服务端会话/消息模型、客户端 SQLite 缓存和增量同步边界。
-- [资源服务](note/资源服务.md)：资源上传、资源 ID 与 TCP 分片下载协议。
+- [资源服务](note/资源服务.md)：资源上传、资源 ID、gRPC 图片核验与 TCP 分片下载协议。

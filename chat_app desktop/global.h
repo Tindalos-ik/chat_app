@@ -53,7 +53,12 @@ enum ReqId{
     ID_LOAD_CHAT_MSG_RSP = 1030,      //加载聊天消息
     // 资料更新走已登录的 ChatServer；服务端以 session UID 鉴权，不能信任请求中的 uid。
     ID_UPDATE_USER_PROFILE_REQ = 1031, //更新当前用户资料请求：uid/nick/desc/icon
-    ID_UPDATE_USER_PROFILE_RSP = 1032  //更新当前用户资料回包：error
+    ID_UPDATE_USER_PROFILE_RSP = 1032, //更新当前用户资料回包：error
+    // 图片正文只在 ResourceServer 的独立 TCP 连接中传输；ChatServer 仅路由以下
+    // JSON 元数据，避免 2+2 字节聊天包承载图片二进制。
+    ID_IMAGE_CHAT_MSG_REQ = 1033,       // 图片消息请求：fromuid/touid/imageArray
+    ID_IMAGE_CHAT_MSG_RSP = 1034,       // 图片消息发送确认
+    ID_NOTIFY_IMAGE_CHAT_MSG_REQ = 1035 // 对端图片消息通知
 };
 
 // ResourceServer 使用独立 TCP 连接和 2+4 字节包头；这里的 ID 属于另一套协议，

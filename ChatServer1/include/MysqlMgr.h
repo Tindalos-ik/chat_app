@@ -28,6 +28,7 @@ struct FriendAuthMessage {
 
 // chat_message 与 TCP JSON 之间的服务端确认消息。messageId/threadId 是客户端
 // SQLite 去重和增量同步使用的游标，uniqueId 用于对应客户端本次发送的 UUID。
+// 文本和图片共用这一结构，保证 ID_LOAD_CHAT_MSG 的同一个游标可以混合读取两类消息。
 struct StoredTextMessage {
     std::uint64_t messageId = 0;
     std::uint64_t threadId = 0;
@@ -37,6 +38,24 @@ struct StoredTextMessage {
     std::string content;
     std::uint64_t createdAtMs = 0;
     int status = 0;
+    std::string messageType = "text";
+    std::string resourceId;
+    std::string name;
+    std::string mimeType;
+    std::uint64_t fileSize = 0;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+};
+
+// 图片字段只由 ResourceServer gRPC 核验回包构造，不能从 TCP JSON 直接填入。
+struct VerifiedImageMessage {
+    std::string uniqueId;
+    std::string resourceId;
+    std::string name;
+    std::string mimeType;
+    std::uint64_t fileSize = 0;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
 };
 
 struct PrivateChatThread {
@@ -199,6 +218,13 @@ public:
                                  const std::vector<std::pair<std::string, std::string>>& clientMessages,
                                  std::uint64_t& threadId,
                                  std::vector<StoredTextMessage>& storedMessages);
+
+    // 写入已由 ResourceServer 证明完成且为图片的资源。整个批次只有全部成功才提交，
+    // 因此发送确认不会出现“部分图片有 message_id”的不可恢复状态。
+    bool SavePrivateImageMessages(int senderUid, int recvUid,
+                                  const std::vector<VerifiedImageMessage>& imageMessages,
+                                  std::uint64_t& threadId,
+                                  std::vector<StoredTextMessage>& storedMessages);
 
     // 按 (thread_id, message_id) 游标正序读取。调用方传入 limit + 1 即可判断是否还有下一页。
     // 同时校验 uid 必须属于该私聊，避免客户端借 thread_id 读取他人聊天记录。

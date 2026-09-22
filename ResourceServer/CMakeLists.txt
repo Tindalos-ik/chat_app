@@ -19,6 +19,8 @@ set(SOURCE_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/AsioIOServicePool.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/CSession.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/LogicWorker.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/ResourceVerifier.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/ResourceServiceImpl.cpp
 )
 
 link_directories("D:/cppsoft/vcpkg/installed/x64-windows/lib") # 添加 vcpkg 的 lib 路径，库文件搜索路径
@@ -38,9 +40,18 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     "D:/cppsoft/vcpkg/installed/x64-windows/include"   # 添加 vcpkg 的 include 路径
 )
 
+# ResourceServer 也链接根工程唯一生成的 proto 库。这样 ChatServer 和资源服务
+# 始终使用同一版 ResourceService.VerifyImages 定义，避免核验字段漂移。
+target_link_libraries(${PROJECT_NAME} PRIVATE
+    chat_proto
+    gRPC::grpc++
+    protobuf::libprotobuf
+)
+
 
 if(WIN32)
-    target_link_libraries(${PROJECT_NAME} 
+    # 上方已经使用关键字签名（PRIVATE）；同一 target 不能再混用旧式签名。
+    target_link_libraries(${PROJECT_NAME} PRIVATE
         ws2_32
         mswsock
     )

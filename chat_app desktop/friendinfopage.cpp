@@ -50,8 +50,8 @@ void FriendInfoPage::on_msg_chat_clicked()
         return;
     }
 
-    // 协议 ID=1027。uid 保留在请求体中以兼容现有协议；服务端必须使用登录 session
-    // 中的 uid 鉴权，不能信任这里的 uid。other_id 才是用户选择的聊天对象。
+    // 协议 ID=1027。uid 保留在请求体中以兼容现有协议；
+    // 服务端必须使用登录 session中的 uid 鉴权，不能信任这里的 uid。other_id 才是用户选择的聊天对象。
     QJsonObject request;
     request["uid"] = currentUser->_uid;
     request["other_id"] = _uid;

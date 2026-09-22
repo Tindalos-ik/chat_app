@@ -49,12 +49,14 @@ signals:
     void sig_con_success(bool);
     // 服务端确认写入后的真实进度；qint64 避免 2GB 以上文件溢出。
     // resource_url 是完成上传后供业务服务保存的资源地址，未完成时允许为空。
-    void sig_upload_progress(qint64 confirmed_offset, qint64 total_size, bool completed,
-                             const QString& resource_url);
+    // upload_id 用于把确认回包精确归属到单个上传任务，避免头像上传与聊天图片
+    // 队列并发时误把别人的进度当成本任务进度。
+    void sig_upload_progress(const QString& upload_id, qint64 confirmed_offset,
+                             qint64 total_size, bool completed, const QString& resource_url);
     // 同步上传任务后返回的续传位置；已完成的任务也必须带回 resource_url。
     void sig_file_sync(qint64 confirmed_offset, qint64 total_size, bool completed,
                        const QString& upload_id, const QString& resource_url);
-    void sig_upload_error(const QString& message);
+    void sig_upload_error(const QString& message, const QString& upload_id);
     // 一个下载回包对应一个请求分片。data 已从 Base64 还原为原始二进制；offset 是
     // 该分片在服务端文件中的起始字节位置，is_last 为 true 时文件传输完成。
     void sig_download_chunk(const QString& resource_id, qint64 total_size, qint64 offset,

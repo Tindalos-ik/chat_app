@@ -8,6 +8,7 @@
 #include <QStringLiteral>
 #include <QTimer>
 #include <QDateTime>
+#include <QDebug>
 #include "chatuserwid.h"
 #include "conuserwid.h"
 #include "loadingdlg.h"
@@ -23,6 +24,7 @@
 #include "usermgr.h"
 #include "localchatstoragemgr.h"
 #include "settingdialog.h"
+#include "chatimagetransfer.h"
 #include <algorithm>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -57,6 +59,55 @@ ChatDialog::ChatDialog(QWidget *parent)
     ui->chat_stack->addWidget(_setting_page);
     connect(_setting_page, &SettingDialog::sig_setting_cancel,
             this, &ChatDialog::slot_hide_setting);
+
+    // 聊天图片任务集中复用 ResourceClient。任务内部会串行分片，UI 只关心上传完成、
+    // 发送确认和最终原子落盘后的图片路径。
+    _image_transfer = new ChatImageTransferTask(this);
+    connect(_image_transfer, &ChatImageTransferTask::uploadFinished, this,
+            [this](const ImageChatData &image) {
+        if (!TcpMgr::GetInstance()->IsConnected()) {
+            const auto item = _pending_image_items.take(image.msgId);
+            if (item) {
+                item->SetSendFailed(true);
+            }
+            return;
+        }
+        QJsonObject imageObject;
+        imageObject["msgid"] = image.msgId;
+        imageObject["resource_id"] = image.resourceId;
+        imageObject["name"] = image.name;
+        imageObject["mime_type"] = image.mimeType;
+        imageObject["file_size"] = static_cast<double>(image.fileSize);
+        imageObject["width"] = image.width;
+        imageObject["height"] = image.height;
+        QJsonObject envelope;
+        envelope["fromuid"] = image.fromUid;
+        envelope["touid"] = image.toUid;
+        envelope["imageArray"] = QJsonArray{imageObject};
+        // 这里只发小型 JSON 引用；图片的原始二进制已经由 ResourceClient 上传完成。
+        emit TcpMgr::GetInstance()->sig_send_data(ReqId::ID_IMAGE_CHAT_MSG_REQ,
+            QJsonDocument(envelope).toJson(QJsonDocument::Compact));
+    });
+    connect(_image_transfer, &ChatImageTransferTask::uploadFailed, this,
+            [this](const QString &msgId, const QString &message) {
+        qWarning() << "chat image upload failed:" << message;
+        const auto item = _pending_image_items.take(msgId);
+        if (item) {
+            item->SetSendFailed(true);
+        }
+    });
+    connect(_image_transfer, &ChatImageTransferTask::imageReady, this,
+            [this](const ImageChatData &image, const QString &localPath) {
+        appendDownloadedImage(image, localPath);
+    });
+    connect(_image_transfer, &ChatImageTransferTask::imageDownloadFailed, this,
+            [this](const ImageChatData &image, const QString &message) {
+        qWarning() << "chat image download failed:" << message;
+        const auto item = _pending_image_items.take(image.msgId);
+        if (item) {
+            item->SetSendFailed(true);
+        }
+    });
 
     // 聊天区与输入区之间的分隔条：消息区占满剩余空间，输入区高度可拖拽调节（80~300）
     ui->chat_splitter->setStretchFactor(0, 1); // 消息区可拉伸
@@ -176,6 +227,10 @@ ChatDialog::ChatDialog(QWidget *parent)
     connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_text_chat, this, &ChatDialog::slot_text_chat);
     connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_text_chat_send_result,
             this, &ChatDialog::slot_text_chat_send_result);
+    connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_image_chat_send_result,
+            this, &ChatDialog::slot_image_chat_send_result);
+    connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_image_chat,
+            this, &ChatDialog::slot_image_chat);
     connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_local_chat_synced,
             this, &ChatDialog::slot_local_chat_synced);
     connect(ui->chat_data, &ChatView::sig_reach_top,
@@ -368,6 +423,8 @@ void ChatDialog::slot_send_message()
         pChatItem->setUserName(userName);
         pChatItem->setUserAvatar(uid, userIcon);
         QWidget *pBubble = nullptr;
+        ImageChatData imageToUpload;
+        bool needsImageUpload = false;
 
         if(type == "text")
         {
@@ -401,6 +458,11 @@ void ChatDialog::slot_send_message()
                 pix = msgList[i].pixmap;     // 源文件读不到时用输入框里的缩略图兜底
             }
             pBubble = new PictureBubble(role, pix);
+            imageToUpload.msgId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            imageToUpload.fromUid = userinfo->_uid;
+            imageToUpload.toUid = _current_chatuser->_uid;
+            _pending_image_items.insert(imageToUpload.msgId, pChatItem);
+            needsImageUpload = true;
         }
         else if(type == "file")
         {
@@ -411,6 +473,11 @@ void ChatDialog::slot_send_message()
         {
             pChatItem->setWidget(pBubble);
             ui->chat_data->appendChatItem(pChatItem);
+        }
+        if (needsImageUpload) {
+            // 先展示本地预览，再排队上传；任务失败会把同一行标红，绝不把本地路径
+            // 或图片字节拼入 1033 的聊天 TCP 包。
+            _image_transfer->enqueueUpload(msgList[i].content, imageToUpload);
         }
 
     }
@@ -536,6 +603,77 @@ void ChatDialog::slot_text_chat_send_result(const QString &messageId, bool succe
     }
     // 失败图标已经展示，不需要长期保留 UUID -> 控件映射；重试会生成新的请求状态。
     _pending_text_items.erase(iter);
+}
+
+void ChatDialog::slot_image_chat_send_result(std::shared_ptr<ImageChatData> &image, bool success)
+{
+    if (!image) {
+        return;
+    }
+    auto iter = _pending_image_items.find(image->msgId);
+    if (!success) {
+        if (iter != _pending_image_items.end()) {
+            if (iter.value()) {
+                iter.value()->SetSendFailed(true);
+            }
+            _pending_image_items.erase(iter);
+        }
+        return;
+    }
+    // 1034 成功后仍走下载缓存：发送端也能验证 resource_id 可读取，并把之后历史/重绘
+    // 可用的稳定本地文件保存下来。appendDownloadedImage 会识别 pending 项，不重复插入气泡。
+    _image_transfer->enqueueDownload(*image);
+}
+
+void ChatDialog::slot_image_chat(std::shared_ptr<ImageChatData> &image)
+{
+    if (!image) {
+        return;
+    }
+    qInfo() << "ChatDialog received image notification, from=" << image->fromUid
+            << "to=" << image->toUid << "resource_id=" << image->resourceId;
+    _image_transfer->enqueueDownload(*image);
+}
+
+void ChatDialog::appendDownloadedImage(const ImageChatData &image, const QString &localPath)
+{
+    // 自己发送的预览已经在 1033 前插入；资源缓存完成只解除 pending 状态，不能再追加一行。
+    auto pending = _pending_image_items.find(image.msgId);
+    if (pending != _pending_image_items.end()) {
+        _pending_image_items.erase(pending);
+        return;
+    }
+
+    const auto self = UserMgr::GetInstance()->GetUserInfo();
+    if (!self || !_current_chatuser || image.toUid != self->_uid
+        || image.fromUid != _current_chatuser->_uid) {
+        // 当前没有打开该会话时不应把图片插入其他聊天窗口；日志给出丢弃原因，后续可
+        // 通过聊天历史同步补齐该消息。
+        qInfo() << "downloaded image is not for current chat view, self="
+                << (self ? self->_uid : 0) << "current_peer="
+                << (_current_chatuser ? _current_chatuser->_uid : 0)
+                << "from=" << image.fromUid << "to=" << image.toUid;
+        return;
+    }
+    const auto friends = UserMgr::GetInstance()->GetFriendList();
+    const auto friendIter = std::find_if(friends.cbegin(), friends.cend(), [&image](const auto &friendInfo) {
+        return friendInfo && friendInfo->_uid == image.fromUid;
+    });
+    if (friendIter == friends.cend()) {
+        qWarning() << "ignore image from a non-friend:" << image.fromUid;
+        return;
+    }
+    const QPixmap pixmap(localPath);
+    if (pixmap.isNull()) {
+        qWarning() << "downloaded image cannot be loaded:" << localPath;
+        return;
+    }
+    auto *chatItem = new ChatItemBase(ChatRole::Other);
+    chatItem->setUserName((*friendIter)->_name);
+    chatItem->setUserAvatar((*friendIter)->_uid, (*friendIter)->_icon);
+    chatItem->setWidget(new PictureBubble(ChatRole::Other, pixmap));
+    ui->chat_data->appendChatItem(chatItem);
+    qInfo() << "received image appended to chat view, resource_id=" << image.resourceId;
 }
 
 void ChatDialog::SaveFriendAuthMessages(const std::shared_ptr<UserInfo> &friendInfo,

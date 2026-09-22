@@ -45,6 +45,34 @@ service StatusService {
     rpc Login (LoginReq) returns (LoginRsp) {}
 }
 
+// ==================== 资源服务与聊天服务之间的 RPC 通信 ====================
+// ResourceServer 是上传文件是否已经发布的唯一可信来源。ChatServer 不读取资源服务的
+// 文件系统，也不相信客户端带来的文件名、MIME、尺寸和大小。
+message ResourceVerifyReq {
+    // 按聊天图片请求中的原始顺序传入 resource_id；服务端按同一顺序回传可信元数据。
+    repeated string resource_ids = 1;
+}
+
+message VerifiedImageResource {
+    string resource_id = 1;
+    string name = 2;
+    string mime_type = 3;
+    uint64 file_size = 4;
+    uint32 width = 5;
+    uint32 height = 6;
+}
+
+message ResourceVerifyRsp {
+    // 0 表示所有资源均已完成且是可识别图片；非 0 时 resources 为空，避免部分成功落库。
+    int32 error = 1;
+    repeated VerifiedImageResource resources = 2;
+}
+
+service ResourceService {
+    // 原子核验一批聊天图片：任意一项未完成、缺失或不是图片，整批失败。
+    rpc VerifyImages (ResourceVerifyReq) returns (ResourceVerifyRsp) {}
+}
+
 // ==================== 聊天服务器之间的 RPC 通信 ====================
 // ChatServer 通过这些 gRPC 接口把业务转发给另一台 ChatServer。
 
@@ -141,6 +169,37 @@ message TextChatData {
     int32 status = 8; // 0=未读，1=已读，2=撤回
 }
 
+// 批量转发已持久化的图片聊天消息。图片二进制不经过 ChatServer；客户端根据
+// resource_id 继续使用 ResourceServer 的 1007/1008 分片下载协议拉取。
+message ImageChatData {
+    string msgid = 1; // 客户端 UUID，用于发送确认和失败气泡关联
+    string resource_id = 2;
+    string name = 3;
+    string mime_type = 4;
+    uint64 file_size = 5;
+    uint32 width = 6;
+    uint32 height = 7;
+    uint64 message_id = 8;
+    uint64 thread_id = 9;
+    int32 sender_id = 10;
+    int32 recv_id = 11;
+    uint64 created_at_ms = 12;
+    int32 status = 13;
+}
+
+message ImageChatMsgReq {
+    int32 fromuid = 1;
+    int32 touid = 2;
+    repeated ImageChatData imagemsgs = 3;
+}
+
+message ImageChatMsgRsp {
+    int32 error = 1;
+    int32 fromuid = 2;
+    int32 touid = 3;
+    repeated ImageChatData imagemsgs = 4;
+}
+
 message KickUserReq{
     int32 uid = 1; // 被踢用户的 uid
     string session_id = 2; // 发起方在 Redis 中读到的旧会话 id，用于防止陈旧 RPC 误踢新会话
@@ -161,6 +220,8 @@ service ChatService {
     rpc NotifyAuthFriend (AuthFriendReq) returns (AuthFriendRsp) {}
     // 批量转发文本聊天消息，由接收方所在服务器推送给目标用户。
     rpc NotifyTextChatMsg (TextChatMsgReq) returns (TextChatMsgRsp) {}
+    // 批量转发已核验、已落库的图片消息，由接收方所在服务器推送给目标用户。
+    rpc NotifyImageChatMsg (ImageChatMsgReq) returns (ImageChatMsgRsp) {}
     // 踢出用户，由接收方所在服务器通知目标用户。
     rpc NotifyKickUser (KickUserReq) returns (KickUserRsp) {}
 }

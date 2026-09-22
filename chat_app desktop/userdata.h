@@ -140,6 +140,20 @@ public:
     int _to_uid = 0;
 };
 
+// 图片聊天协议的单项元数据。resourceId 是 ResourceServer 的 upload_id，而不是
+// resource_url 或服务端文件路径；图片字节只能经 ResourceClient 上传、下载。
+struct ImageChatData {
+    QString msgId;
+    QString resourceId;
+    QString name;
+    QString mimeType;
+    qint64 fileSize = 0;
+    int width = 0;
+    int height = 0;
+    int fromUid = 0;
+    int toUid = 0;
+};
+
 // 好友认证的好友资料与附加消息必须作为一个整体交给界面：先把好友加入 UserMgr，
 // 再用 textmsgs 中的 thread_id 创建本地正式会话，避免消息先到而找不到对端资料。
 struct FriendAuthResult {

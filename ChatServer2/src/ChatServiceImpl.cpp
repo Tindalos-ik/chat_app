@@ -138,6 +138,54 @@ Status ChatServiceImpl::NotifyTextChatMsg(ServerContext* context, const TextChat
     return Status::OK;
 }
 
+Status ChatServiceImpl::NotifyImageChatMsg(ServerContext* context, const ImageChatMsgReq* request,
+                                           ImageChatMsgRsp* response) {
+    (void)context;
+    response->set_error(ErrorCode::Success);
+    response->set_fromuid(request->fromuid());
+    response->set_touid(request->touid());
+    const auto session = UserMgr::GetInstance()->GetSession(request->touid());
+    if (!session) {
+        // 发送方已经落库；会话在 RPC 到达前断开时返回失败，使其仅标记 delivered=false，
+        // 接收者下次仍会从历史增量读取同一条消息。
+        response->set_error(ErrorCode::UidInvalid);
+        std::cout << "image chat gRPC target session missing, from=" << request->fromuid()
+                  << ", to=" << request->touid() << std::endl;
+        return Status::OK;
+    }
+
+    Json::Value notification;
+    notification["error"] = ErrorCode::Success;
+    notification["fromuid"] = request->fromuid();
+    notification["touid"] = request->touid();
+    notification["delivered"] = true;
+    Json::Value imageArray(Json::arrayValue);
+    for (const auto& image : request->imagemsgs()) {
+        // gRPC 只转发源 ChatServer 已经核验并持久化的数据；这里不重新接受客户端输入。
+        Json::Value item;
+        item["msgid"] = image.msgid();
+        item["resource_id"] = image.resource_id();
+        item["name"] = image.name();
+        item["mime_type"] = image.mime_type();
+        item["file_size"] = static_cast<Json::UInt64>(image.file_size());
+        item["width"] = image.width();
+        item["height"] = image.height();
+        item["message_id"] = static_cast<Json::UInt64>(image.message_id());
+        item["thread_id"] = static_cast<Json::UInt64>(image.thread_id());
+        item["sender_id"] = image.sender_id();
+        item["recv_id"] = image.recv_id();
+        item["created_at_ms"] = static_cast<Json::UInt64>(image.created_at_ms());
+        item["status"] = image.status();
+        imageArray.append(std::move(item));
+    }
+    notification["imageArray"] = imageArray;
+    session->Send(notification.toStyledString(), ID_NOTIFY_IMAGE_CHAT_MSG_REQ);
+    std::cout << "image chat gRPC push queued, from=" << request->fromuid()
+              << ", to=" << request->touid()
+              << ", image_count=" << request->imagemsgs_size() << std::endl;
+    return Status::OK;
+}
+
 
 Status ChatServiceImpl::NotifyKickUser(ServerContext* context, const KickUserReq* request, KickUserRsp* response){
     // 查询用户是否在本服务器

@@ -1067,8 +1067,8 @@ bool MysqlMgr::SavePrivateTextMessages(
         saved.reserve(clientMessages.size());
         const std::string insertSql =
             "INSERT INTO chat_message "
-            "(thread_id, sender_id, recv_id, content, created_at, updated_at, status) "
-            "VALUES (?, ?, ?, ?, NOW(), NOW(), 0)";
+            "(thread_id, sender_id, recv_id, client_msg_id, message_type, content, created_at, updated_at, status) "
+            "VALUES (?, ?, ?, NULL, 'text', ?, NOW(), NOW(), 0)";
 
         for (const auto& clientMessage : clientMessages) {
             // UUID 和正文都属于客户端输入，空值会破坏回包关联或制造无意义记录。
@@ -1095,6 +1095,7 @@ bool MysqlMgr::SavePrivateTextMessages(
             savedMessage.recvId = recvUid;
             savedMessage.uniqueId = clientMessage.first;
             savedMessage.content = clientMessage.second;
+            savedMessage.messageType = "text";
             // 当前表的 TIMESTAMP 精度为秒；本地以写入完成时刻提供毫秒展示值，
             // 后续表升级为 DATETIME(3) 后可改为直接读取数据库时间。
             savedMessage.createdAtMs = static_cast<std::uint64_t>(
@@ -1109,6 +1110,88 @@ bool MysqlMgr::SavePrivateTextMessages(
     } catch (const std::exception& e) {
         try { con->rollback(); } catch (...) {}
         std::cout << "save private text messages exception: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+bool MysqlMgr::SavePrivateImageMessages(
+    int senderUid, int recvUid,
+    const std::vector<VerifiedImageMessage>& imageMessages,
+    std::uint64_t& threadId,
+    std::vector<StoredTextMessage>& storedMessages)
+{
+    threadId = 0;
+    storedMessages.clear();
+    if (senderUid <= 0 || recvUid <= 0 || senderUid == recvUid || imageMessages.empty()) {
+        return false;
+    }
+    if (!CreatePrivateChat(senderUid, recvUid, threadId) || threadId == 0) {
+        return false;
+    }
+    auto con = pool_->GetConnection();
+    if (con == nullptr) {
+        return false;
+    }
+    Defer defer([&con, this]() { pool_->ReturnConnection(std::move(con)); });
+
+    try {
+        con->startTransaction();
+        std::vector<StoredTextMessage> saved;
+        saved.reserve(imageMessages.size());
+        const std::string insertSql =
+            "INSERT INTO chat_message "
+            "(thread_id, sender_id, recv_id, client_msg_id, message_type, content, resource_id, resource_name, "
+            "mime_type, file_size, width, height, created_at, updated_at, status) "
+            "VALUES (?, ?, ?, ?, 'image', '', ?, ?, ?, ?, ?, ?, NOW(), NOW(), 0)";
+
+        for (const VerifiedImageMessage& image : imageMessages) {
+            // 此处是第二道边界校验：即使上层实现后来变更，也绝不向数据库写不完整图片描述。
+            if (image.uniqueId.empty() || image.resourceId.empty() || image.name.empty() ||
+                image.mimeType.empty() || image.fileSize == 0 || image.width == 0 || image.height == 0) {
+                con->rollback();
+                return false;
+            }
+            auto result = con->sql(insertSql)
+                              .bind(threadId)
+                              .bind(senderUid)
+                              .bind(recvUid)
+                              .bind(image.uniqueId)
+                              .bind(image.resourceId)
+                              .bind(image.name)
+                              .bind(image.mimeType)
+                              .bind(image.fileSize)
+                              .bind(image.width)
+                              .bind(image.height)
+                              .execute();
+            const std::uint64_t messageId = result.getAutoIncrementValue();
+            if (messageId == 0) {
+                con->rollback();
+                return false;
+            }
+            StoredTextMessage message;
+            message.messageId = messageId;
+            message.threadId = threadId;
+            message.senderId = senderUid;
+            message.recvId = recvUid;
+            message.uniqueId = image.uniqueId;
+            message.messageType = "image";
+            message.resourceId = image.resourceId;
+            message.name = image.name;
+            message.mimeType = image.mimeType;
+            message.fileSize = image.fileSize;
+            message.width = image.width;
+            message.height = image.height;
+            message.createdAtMs = static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count());
+            saved.push_back(std::move(message));
+        }
+        con->commit();
+        storedMessages = std::move(saved);
+        return true;
+    } catch (const std::exception& e) {
+        try { con->rollback(); } catch (...) {}
+        std::cout << "save private image messages exception: " << e.what() << std::endl;
         return false;
     }
 }
@@ -1130,8 +1213,16 @@ bool MysqlMgr::LoadPrivateTextMessages(int uid, std::uint64_t threadId,
     try {
         // 先在 SQL 中限制私聊成员身份，再读取游标之后的记录，不能只信任客户端 thread_id。
         const std::string querySql =
+            // mysqlcppconnx 对 MySQL ENUM/表达式列不会总是按 C++ 期待的类型映射。
+            // 显式 CAST 后，历史文本和图片记录都稳定对应下面 row[0..14] 的 get<T>()。
             "SELECT cm.message_id, cm.thread_id, cm.sender_id, cm.recv_id, cm.content, "
-            "UNIX_TIMESTAMP(cm.created_at) * 1000, cm.status "
+            "CAST(UNIX_TIMESTAMP(cm.created_at) * 1000 AS UNSIGNED), "
+            "CAST(cm.status AS UNSIGNED), COALESCE(cm.client_msg_id, ''), "
+            "CAST(cm.message_type AS CHAR), COALESCE(cm.resource_id, ''), "
+            "COALESCE(cm.resource_name, ''), COALESCE(cm.mime_type, ''), "
+            "CAST(COALESCE(cm.file_size, 0) AS UNSIGNED), "
+            "CAST(COALESCE(cm.width, 0) AS UNSIGNED), "
+            "CAST(COALESCE(cm.height, 0) AS UNSIGNED) "
             "FROM chat_message AS cm "
             "INNER JOIN private_chat AS pc ON pc.thread_id = cm.thread_id "
             "WHERE cm.thread_id = ? AND cm.message_id > ? AND (pc.user1_id = ? OR pc.user2_id = ?) "
@@ -1152,6 +1243,14 @@ bool MysqlMgr::LoadPrivateTextMessages(int uid, std::uint64_t threadId,
             message.content = row[4].get<std::string>();
             message.createdAtMs = row[5].get<std::uint64_t>();
             message.status = row[6].get<int>();
+            message.uniqueId = row[7].get<std::string>();
+            message.messageType = row[8].get<std::string>();
+            message.resourceId = row[9].get<std::string>();
+            message.name = row[10].get<std::string>();
+            message.mimeType = row[11].get<std::string>();
+            message.fileSize = row[12].get<std::uint64_t>();
+            message.width = row[13].get<std::uint32_t>();
+            message.height = row[14].get<std::uint32_t>();
             messages.push_back(std::move(message));
         }
         return true;

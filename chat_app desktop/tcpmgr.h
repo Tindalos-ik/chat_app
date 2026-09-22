@@ -72,6 +72,10 @@ signals:
     void sig_text_chat(std::shared_ptr<TextChatData>&); // 收到对方推送的文本消息
     // 文本请求回包按客户端 UUID 通知 UI，用于清除发送中状态或显示发送失败图标。
     void sig_text_chat_send_result(const QString &messageId, bool success);
+    // 图片的二进制不经过 ChatServer；这里只把 1034/1035 的资源元数据交给界面，
+    // 由 ChatImageTransferTask 再通过 ResourceClient 下载。
+    void sig_image_chat_send_result(std::shared_ptr<ImageChatData>& image, bool success);
+    void sig_image_chat(std::shared_ptr<ImageChatData>& image);
     // 1030 已成功写入 SQLite；界面按 threadId 刷新摘要或当前聊天页。
     void sig_local_chat_synced(qint64 threadId);
     void sig_off_line();

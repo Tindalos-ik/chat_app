@@ -83,6 +83,9 @@ enum MSG_IDS {
     ID_LOAD_CHAT_MSG_RSP = 1030,    // 加载聊天消息回复
     ID_UPDATE_USER_PROFILE_REQ = 1031, // 更新当前登录用户资料
     ID_UPDATE_USER_PROFILE_RSP = 1032, // 更新用户资料回包
+    ID_IMAGE_CHAT_MSG_REQ = 1033, // 图片聊天请求；仅传资源标识和候选元数据
+    ID_IMAGE_CHAT_MSG_RSP = 1034, // 图片已核验、已持久化后的发送确认
+    ID_NOTIFY_IMAGE_CHAT_MSG_REQ = 1035, // 通知接收方下载已核验的图片资源
 };
 
 #define LOGIN_COUNT "login_count"

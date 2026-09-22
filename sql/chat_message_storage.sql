@@ -66,7 +66,18 @@ CREATE TABLE IF NOT EXISTS `chat_message` (
   `sender_id`  BIGINT UNSIGNED NOT NULL,
   `recv_id`    BIGINT UNSIGNED NOT NULL DEFAULT 0
                COMMENT '私聊接收者 uid；群聊消息固定为 0',
+  `client_msg_id` VARCHAR(128) NULL
+               COMMENT '客户端消息 UUID；图片历史回放时保留原始 msgid',
+  `message_type` ENUM('text', 'image', 'system') NOT NULL DEFAULT 'text'
+               COMMENT 'text=文本，image=ResourceServer 已核验图片，system=系统消息',
   `content`    TEXT NOT NULL,
+  `resource_id` VARCHAR(160) NULL
+               COMMENT 'image 消息对应的 ResourceServer upload_id，绝不保存本机路径',
+  `resource_name` VARCHAR(255) NULL COMMENT '由 ResourceServer 返回的可信文件名',
+  `mime_type` VARCHAR(64) NULL COMMENT '由文件魔数识别出的可信图片 MIME',
+  `file_size` BIGINT UNSIGNED NULL COMMENT '已发布文件实际字节数',
+  `width` INT UNSIGNED NULL COMMENT '已发布图片的像素宽度',
+  `height` INT UNSIGNED NULL COMMENT '已发布图片的像素高度',
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                ON UPDATE CURRENT_TIMESTAMP,
@@ -76,6 +87,7 @@ CREATE TABLE IF NOT EXISTS `chat_message` (
   KEY `idx_thread_created` (`thread_id`, `created_at`),
   KEY `idx_thread_message` (`thread_id`, `message_id`),
   KEY `idx_recv_status_message` (`recv_id`, `status`, `message_id`),
+  KEY `idx_message_type_id` (`message_type`, `message_id`),
   CONSTRAINT `fk_message_thread`
     FOREIGN KEY (`thread_id`) REFERENCES `chat_thread` (`id`)
     ON DELETE RESTRICT

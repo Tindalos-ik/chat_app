@@ -56,6 +56,8 @@ qt_add_executable(chat_app
     settingdialog.h settingdialog.cpp settingdialog.ui
     resourceclient.cpp
     resourceclient.h
+    chatimagetransfer.h
+    chatimagetransfer.cpp
     localchatstoragemgr.h
     localchatstoragemgr.cpp
     #ini、ui、qrc直接加入可执行文件

@@ -10,6 +10,7 @@
 #include "RedisMgr.h"
 #include "UserMgr.h"
 #include "ChatGrpcClient.h"
+#include "ResourceGrpcClient.h"
 #include "CServer.h"
 
 using namespace std;
@@ -34,6 +35,34 @@ bool ParseUint64StringField(const Json::Value& object, const char* fieldName,
     const char* end = begin + text.size();
     const auto result = std::from_chars(begin, end, value, 10);
     return result.ec == std::errc() && result.ptr == end;
+}
+
+// 图片发送确认、同服通知和跨服通知都使用这一个序列化入口，避免其中某条链路遗漏
+// ResourceServer 已核验的字段。客户端提交的同名字段永远不会进入这里。
+Json::Value BuildVerifiedImageJson(const StoredTextMessage& message) {
+    Json::Value item;
+    item["msgid"] = message.uniqueId;
+    item["resource_id"] = message.resourceId;
+    item["name"] = message.name;
+    item["mime_type"] = message.mimeType;
+    item["file_size"] = static_cast<Json::UInt64>(message.fileSize);
+    item["width"] = message.width;
+    item["height"] = message.height;
+    item["message_id"] = static_cast<Json::UInt64>(message.messageId);
+    item["thread_id"] = static_cast<Json::UInt64>(message.threadId);
+    item["sender_id"] = message.senderId;
+    item["recv_id"] = message.recvId;
+    item["created_at_ms"] = static_cast<Json::UInt64>(message.createdAtMs);
+    item["status"] = message.status;
+    return item;
+}
+
+// 图片请求的候选大小和尺寸不会被信任，但固定协议仍要求它们是非负整数，避免不同版本
+// 的客户端把不完整对象误当作图片发送请求。JsonCpp 会将负数 asUInt64 转成大数，故需先判型。
+bool IsNonNegativeJsonInteger(const Json::Value& value) {
+    return value.isUInt() || value.isUInt64() ||
+        (value.isInt() && value.asInt() >= 0) ||
+        (value.isInt64() && value.asInt64() >= 0);
 }
 
 } // namespace
@@ -144,6 +173,11 @@ void LogicSystem::RegisterCallBacks() {
                                             const short &msg_id,
                                             const std::string &msg_data) {
         HandleTextMsg(session, msg_id, msg_data);
+    };
+    _fun_callbacks[ID_IMAGE_CHAT_MSG_REQ] = [this](std::shared_ptr<CSession> session,
+                                             const short &msg_id,
+                                             const std::string &msg_data) {
+        HandleImageMsg(session, msg_id, msg_data);
     };
     _fun_callbacks[ID_LOAD_CHAT_MSG_REQ] = [this](std::shared_ptr<CSession> session,
                                             const short &msg_id,
@@ -839,6 +873,174 @@ void LogicSystem::HandleTextMsg(std::shared_ptr<CSession> session, const short &
     rtvalue["delivered"] = rpcRsp.error() == ErrorCode::Success;
 }
 
+void LogicSystem::HandleImageMsg(std::shared_ptr<CSession> session, const short &msg_id,
+                                 const std::string &msg_data) {
+    (void)msg_id;
+    Json::Value response;
+    response["error"] = ErrorCode::Success;
+    Defer defer([&response, session] {
+        session->Send(response.toStyledString(), ID_IMAGE_CHAT_MSG_RSP);
+    });
+
+    Json::CharReaderBuilder reader;
+    Json::Value request;
+    std::istringstream stream(msg_data);
+    std::string errors;
+    if (!session || !Json::parseFromStream(reader, stream, &request, &errors) || !request.isObject()) {
+        response["error"] = ErrorCode::Error_Json;
+        return;
+    }
+    const int fromuid = request["fromuid"].asInt();
+    const int touid = request["touid"].asInt();
+    const Json::Value& imageArray = request["imageArray"];
+    response["fromuid"] = fromuid;
+    response["touid"] = touid;
+    // 即使后续资源核验或落库失败，也必须回传客户端原始 msgid。桌面端依靠
+    // imageArray 中的 UUID 标记对应的乐观图片气泡为失败，不能只收到一个 error。
+    if (imageArray.isArray()) {
+        response["imageArray"] = imageArray;
+    }
+
+    // 发送者身份只能取已登录 TCP 会话；名称/MIME/尺寸/大小即使存在也仅作兼容读取，
+    // 完全不参与信任决策。小批次上限也避免长期占用单工作线程和资源文件锁。
+    if (session->GetUserId() != fromuid || touid <= 0 || fromuid == touid ||
+        !imageArray.isArray() || imageArray.empty() || imageArray.size() > 50) {
+        response["error"] = ErrorCode::Error_Json;
+        return;
+    }
+
+    message::ResourceVerifyReq verifyRequest;
+    std::vector<std::string> messageIds;
+    messageIds.reserve(imageArray.size());
+    for (const Json::Value& image : imageArray) {
+        if (!image.isObject() || !image["msgid"].isString() || !image["resource_id"].isString() ||
+            !image["name"].isString() || !image["mime_type"].isString() ||
+            !IsNonNegativeJsonInteger(image["file_size"]) ||
+            !IsNonNegativeJsonInteger(image["width"]) || !IsNonNegativeJsonInteger(image["height"])) {
+            response["error"] = ErrorCode::Error_Json;
+            return;
+        }
+        const std::string msgid = image["msgid"].asString();
+        const std::string resourceId = image["resource_id"].asString();
+        if (msgid.empty() || msgid.size() > 128 || resourceId.empty()) {
+            response["error"] = ErrorCode::Error_Json;
+            return;
+        }
+        messageIds.push_back(msgid);
+        verifyRequest.add_resource_ids(resourceId);
+    }
+
+    // 先向资源服务核验整批资源；RPC 失败、未完成资源和伪装图片都不会触碰 chat_message。
+    const message::ResourceVerifyRsp verifyResponse = ResourceGrpcClient::GetInstance()->VerifyImages(verifyRequest);
+    if (verifyResponse.error() != ErrorCode::Success ||
+        verifyResponse.resources_size() != verifyRequest.resource_ids_size()) {
+        response["error"] = verifyResponse.error() == ErrorCode::Success
+            ? ErrorCode::RPCFaild : verifyResponse.error();
+        std::cout << "image resource verification failed, from=" << fromuid
+                  << ", to=" << touid << ", error=" << response["error"].asInt()
+                  << ", resource_count=" << verifyRequest.resource_ids_size() << std::endl;
+        return;
+    }
+    std::vector<VerifiedImageMessage> verifiedImages;
+    verifiedImages.reserve(messageIds.size());
+    for (int index = 0; index < verifyResponse.resources_size(); ++index) {
+        const auto& resource = verifyResponse.resources(index);
+        // 防御错误部署或协议错配：回包必须严格保持输入顺序和 ID。
+        if (resource.resource_id() != verifyRequest.resource_ids(index) || resource.name().empty() ||
+            resource.mime_type().empty() || resource.file_size() == 0 || resource.width() == 0 || resource.height() == 0) {
+            response["error"] = ErrorCode::RPCFaild;
+            return;
+        }
+        VerifiedImageMessage image;
+        image.uniqueId = messageIds[static_cast<std::size_t>(index)];
+        image.resourceId = resource.resource_id();
+        image.name = resource.name();
+        image.mimeType = resource.mime_type();
+        image.fileSize = resource.file_size();
+        image.width = resource.width();
+        image.height = resource.height();
+        verifiedImages.push_back(std::move(image));
+    }
+
+    std::uint64_t threadId = 0;
+    std::vector<StoredTextMessage> storedImages;
+    if (!MysqlMgr::GetInstance()->SavePrivateImageMessages(
+            fromuid, touid, verifiedImages, threadId, storedImages)) {
+        response["error"] = ErrorCode::RPCFaild;
+        return;
+    }
+
+    Json::Value canonicalImages(Json::arrayValue);
+    for (const StoredTextMessage& image : storedImages) {
+        canonicalImages.append(BuildVerifiedImageJson(image));
+    }
+    response["thread_id"] = static_cast<Json::UInt64>(threadId);
+    response["imageArray"] = canonicalImages;
+
+    // 落库成功即为 1034 成功。实时推送只是加速路径；对端离线、路由失效或跨服 RPC
+    // 失败时仍可经 1029/1030 增量取回，不能诱导发送方重复上传或重复落库。
+    response["delivered"] = false;
+    std::string targetServer;
+    if (!RedisMgr::GetInstance()->Get(USERIPPREFIX + std::to_string(touid), targetServer)) {
+        // Redis 没有目标用户路由时，消息已经安全落库；仅跳过实时推送，客户端可通过
+        // 历史增量同步取到该图片。该日志用于区分“用户离线”和 RPC 投递故障。
+        std::cout << "image chat target offline, from=" << fromuid
+                  << ", to=" << touid << std::endl;
+        return;
+    }
+    const std::string selfServer = ConfigMgr::Inst()["SelfChatServer"]["name"];
+    std::cout << "image chat route resolved, from=" << fromuid
+              << ", to=" << touid << ", source_server=" << selfServer
+              << ", target_server=" << targetServer << std::endl;
+    if (targetServer == selfServer) {
+        auto targetSession = UserMgr::GetInstance()->GetSession(touid);
+        if (targetSession) {
+            Json::Value notification = response;
+            notification["delivered"] = true;
+            targetSession->Send(notification.toStyledString(), ID_NOTIFY_IMAGE_CHAT_MSG_REQ);
+            response["delivered"] = true;
+            std::cout << "image chat local push succeeded, from=" << fromuid
+                      << ", to=" << touid << std::endl;
+        } else {
+            // Redis 路由仍指向本机但内存会话已断开，不能伪装成实时投递成功。
+            std::cout << "image chat local session missing, from=" << fromuid
+                      << ", to=" << touid << ", server=" << selfServer << std::endl;
+        }
+        return;
+    }
+
+    message::ImageChatMsgReq pushRequest;
+    pushRequest.set_fromuid(fromuid);
+    pushRequest.set_touid(touid);
+    for (const StoredTextMessage& image : storedImages) {
+        auto* item = pushRequest.add_imagemsgs();
+        item->set_msgid(image.uniqueId);
+        item->set_resource_id(image.resourceId);
+        item->set_name(image.name);
+        item->set_mime_type(image.mimeType);
+        item->set_file_size(image.fileSize);
+        item->set_width(image.width);
+        item->set_height(image.height);
+        item->set_message_id(image.messageId);
+        item->set_thread_id(image.threadId);
+        item->set_sender_id(image.senderId);
+        item->set_recv_id(image.recvId);
+        item->set_created_at_ms(image.createdAtMs);
+        item->set_status(image.status);
+    }
+    const auto pushResponse = ChatGrpcClient::GetInstance()->NotifyImageChatMsg(targetServer, pushRequest);
+    response["delivered"] = pushResponse.error() == ErrorCode::Success;
+    if (pushResponse.error() != ErrorCode::Success) {
+        response["delivery_error"] = pushResponse.error();
+        std::cout << "image chat cross-server push failed, from=" << fromuid
+                  << ", to=" << touid << ", target_server=" << targetServer
+                  << ", business_error=" << pushResponse.error() << std::endl;
+    } else {
+        std::cout << "image chat cross-server push succeeded, from=" << fromuid
+                  << ", to=" << touid << ", target_server=" << targetServer << std::endl;
+    }
+}
+
 void LogicSystem::LoadChatThreads(std::shared_ptr<CSession> session, const short &msg_id,
                                   const std::string &msg_data)
 {
@@ -946,6 +1148,17 @@ void LogicSystem::LoadChatMessages(std::shared_ptr<CSession> session, const shor
         item["sender_id"] = message.senderId;
         item["recv_id"] = message.recvId;
         item["content"] = message.content;
+        item["message_type"] = message.messageType;
+        if (message.messageType == "image") {
+            // 历史/增量读取必须同样携带下载所需的可信图片元数据；否则离线消息只能看到空气泡。
+            item["msgid"] = message.uniqueId;
+            item["resource_id"] = message.resourceId;
+            item["name"] = message.name;
+            item["mime_type"] = message.mimeType;
+            item["file_size"] = static_cast<Json::UInt64>(message.fileSize);
+            item["width"] = message.width;
+            item["height"] = message.height;
+        }
         item["created_at_ms"] = static_cast<Json::UInt64>(message.createdAtMs);
         item["status"] = message.status;
         messageArray.append(std::move(item));

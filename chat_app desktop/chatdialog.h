@@ -15,6 +15,7 @@ class ChatDialog;
 
 class SettingDialog;
 class ChatItemBase;
+class ChatImageTransferTask;
 struct LocalChatMessage;
 
 class ChatDialog : public QDialog
@@ -48,6 +49,8 @@ private slots:
     void slot_local_chat_synced(qint64 threadId); // SQLite 增量同步完成后刷新会话摘要
     void slot_load_older_local_messages(); // 聊天窗口到顶部后读取 SQLite 上一页
     void slot_text_chat_send_result(const QString &messageId, bool success);
+    void slot_image_chat_send_result(std::shared_ptr<ImageChatData>& image, bool success);
+    void slot_image_chat(std::shared_ptr<ImageChatData>& image);
 
 protected:
     // 重写事件过滤器实现根据鼠标位置判断是否隐藏搜索框恢复聊天界面
@@ -76,6 +79,7 @@ private:
                                  const std::shared_ptr<UserInfo> &friendInfo);
     ChatItemBase *CreateStoredTextChatItem(const LocalChatMessage &message,
                                            const std::shared_ptr<UserInfo> &friendInfo);
+    void appendDownloadedImage(const ImageChatData &image, const QString &localPath);
     void LoadOlderLocalMessages();
     void SaveFriendAuthMessages(const std::shared_ptr<UserInfo> &friendInfo,
                                 const QList<std::shared_ptr<TextChatData>> &messages);
@@ -87,6 +91,10 @@ private:
     bool _loading_older_local_history = false;
     // UUID -> 乐观展示的消息行。QPointer 会在切换会话或重绘删除气泡后自动置空。
     QHash<QString, QPointer<ChatItemBase>> _pending_text_items;
+    // 图片从本地预览开始，到 1034 确认并原子缓存完成前都保留该映射；失败时复用
+    // ChatItemBase 的统一失败图标，不影响文本消息的发送状态。
+    QHash<QString, QPointer<ChatItemBase>> _pending_image_items;
+    ChatImageTransferTask *_image_transfer = nullptr;
 
 signals:
     void sig_append_send_chat_msg(std::shared_ptr<TextChatData>&);

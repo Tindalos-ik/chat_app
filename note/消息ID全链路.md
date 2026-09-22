@@ -48,6 +48,9 @@ HTTP 负责注册、登录、验证码和重置密码等短请求。登录拿到
 | `ID_CREATE_PRIVATE_CHAT_REQ` / `ID_CREATE_PRIVATE_CHAT_RSP` | 创建私聊会话 | 客户端好友资料页请求唯一私聊；回包写入本地 SQLite 会话缓存 |
 | `ID_LOAD_CHAT_MSG_REQ` / `ID_LOAD_CHAT_MSG_RSP` | 加载会话历史消息 | 客户端按会话游标正序分页同步到 SQLite |
 | `ID_UPDATE_USER_PROFILE_REQ` / `ID_UPDATE_USER_PROFILE_RSP` | TCP `{uid,nick,desc,icon}` 更新当前用户资料 | ChatServer 以登录会话 UID 鉴权，更新 MySQL 并失效 Redis 用户缓存 |
+| `ID_IMAGE_CHAT_MSG_REQ` (`1033`) | TCP `{fromuid,touid,imageArray}` 图片请求 | ChatServer 先调用 ResourceServer gRPC 核验已完成图片，再写 `chat_message` |
+| `ID_IMAGE_CHAT_MSG_RSP` (`1034`) | 图片发送确认 | 成功表示图片已核验且已持久化；`delivered:false` 时接收方走历史增量同步 |
+| `ID_NOTIFY_IMAGE_CHAT_MSG_REQ` (`1035`) | 收到图片通知 | 服务端下发可信 `resource_id/name/mime_type/file_size/width/height` 与正式消息元数据 |
 
 ResourceServer 的独立协议使用其自身的上传分片、断点同步消息常量。完成回包包含
 `resource_url`；客户端只有拿到该字段后，才向 ChatServer 发送 `ID_UPDATE_USER_PROFILE_REQ`。

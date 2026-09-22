@@ -37,6 +37,10 @@ using message::TextChatMsgReq;
 using message::TextChatMsgRsp;
 using message::TextChatData;
 
+using message::ImageChatMsgReq;
+using message::ImageChatMsgRsp;
+using message::ImageChatData;
+
 using message::KickUserReq;
 using message::KickUserRsp;
 
@@ -122,6 +126,7 @@ public:
     AddFriendRsp NotifyAddFriend(std::string server_ip, const AddFriendReq& request);
     AuthFriendRsp NotifyAuthFriend(std::string server_ip, const AuthFriendReq& request);
     TextChatMsgRsp NotifyTextChatMsg(std::string server_ip, const TextChatMsgReq& request);
+    ImageChatMsgRsp NotifyImageChatMsg(std::string server_ip, const ImageChatMsgReq& request);
     KickUserRsp NotifyKickUser(std::string server_ip, const KickUserReq& request);
 
 private:

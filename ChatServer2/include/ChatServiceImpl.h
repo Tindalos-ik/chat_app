@@ -29,6 +29,10 @@ using message::TextChatMsgReq;
 using message::TextChatMsgRsp;
 using message::TextChatData;
 
+using message::ImageChatMsgReq;
+using message::ImageChatMsgRsp;
+using message::ImageChatData;
+
 using message::KickUserReq;
 using message::KickUserRsp;
 
@@ -43,6 +47,7 @@ public:
     Status NotifyAddFriend(ServerContext* context, const AddFriendReq* request, AddFriendRsp* response) override;
     Status NotifyAuthFriend(ServerContext* context, const AuthFriendReq* request, AuthFriendRsp* response) override;
     Status NotifyTextChatMsg(ServerContext* context, const TextChatMsgReq* request, TextChatMsgRsp* response) override;
+    Status NotifyImageChatMsg(ServerContext* context, const ImageChatMsgReq* request, ImageChatMsgRsp* response) override;
     //bool GetBaseInfo(std::string base_key, int uid, std::shared_ptr<UserInfo>& userinfo);
     Status NotifyKickUser(ServerContext* context, const KickUserReq* request, KickUserRsp* response) override;
 

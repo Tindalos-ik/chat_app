@@ -134,6 +134,49 @@ TextChatMsgRsp ChatGrpcClient::NotifyTextChatMsg(std::string server_ip, const Te
     return rsp;
 }
 
+ImageChatMsgRsp ChatGrpcClient::NotifyImageChatMsg(std::string server_ip, const ImageChatMsgReq& request){
+    ImageChatMsgRsp rsp;
+    rsp.set_error(ErrorCode::RPCFaild);
+    rsp.set_fromuid(request.fromuid());
+    rsp.set_touid(request.touid());
+    auto find_iter = _pools.find(server_ip);
+    if(find_iter == _pools.end()){
+        // Redis 中的服务名必须和 PeerServer 配置项的 name 完全一致，否则没有可用连接池。
+        std::cout << "NotifyImageChatMsg pool not found, target_server=" << server_ip
+                  << ", from=" << request.fromuid() << ", to=" << request.touid() << std::endl;
+        return rsp;
+    }
+    auto& pool = find_iter->second;
+    ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(3));
+    auto stub = pool->getConnectionUntil(std::chrono::system_clock::now() + std::chrono::seconds(3));
+    if (!stub) {
+        // 连接池耗尽或停止时不调用 RPC；这里能与网络超时日志明确区分。
+        std::cout << "NotifyImageChatMsg cannot obtain RPC connection, target_server=" << server_ip
+                  << ", from=" << request.fromuid() << ", to=" << request.touid() << std::endl;
+        return rsp;
+    }
+    Defer defercon([&pool, &stub](){ pool->returnConnection(std::move(stub)); });
+    const Status status = stub->NotifyImageChatMsg(&context, request, &rsp);
+    if(!status.ok()){
+        // UNIMPLEMENTED 通常表示目标 ChatServer 未更新 proto/二进制；UNAVAILABLE 或
+        // DEADLINE_EXCEEDED 则表示 rpcport、进程状态或网络不可达。
+        std::cout << "NotifyImageChatMsg RPC failed, target_server=" << server_ip
+                  << ", code=" << status.error_code()
+                  << ", message=" << status.error_message() << std::endl;
+        rsp.set_error(ErrorCode::RPCFaild);
+    } else if (rsp.error() != ErrorCode::Success) {
+        // RPC 成功但业务失败只可能是目标服务找不到接收者本地会话等可恢复情况。
+        std::cout << "NotifyImageChatMsg remote business rejected, target_server=" << server_ip
+                  << ", from=" << request.fromuid() << ", to=" << request.touid()
+                  << ", error=" << rsp.error() << std::endl;
+    } else {
+        std::cout << "NotifyImageChatMsg RPC succeeded, target_server=" << server_ip
+                  << ", from=" << request.fromuid() << ", to=" << request.touid() << std::endl;
+    }
+    return rsp;
+}
+
 KickUserRsp ChatGrpcClient::NotifyKickUser(std::string server_ip, const KickUserReq& request){
     KickUserRsp rsp;
     rsp.set_error(ErrorCode::RPCFaild);

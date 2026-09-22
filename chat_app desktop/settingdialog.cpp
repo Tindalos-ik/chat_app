@@ -47,8 +47,9 @@ SettingDialog::SettingDialog(QWidget *parent)
         }
     });
     connect(resourceClient.get(), &ResourceClient::sig_upload_error, this,
-            [this](const QString &message) {
-        if (_submitting) {
+            [this](const QString &message, const QString &uploadId) {
+        // ResourceClient 由头像和聊天图片复用；带任务 ID 的错误只能终止自己的表单。
+        if (_submitting && (uploadId.isEmpty() || uploadId == _upload_id)) {
             failSubmission(message);
         }
     });
@@ -74,8 +75,9 @@ SettingDialog::SettingDialog(QWidget *parent)
         sendNextChunk(offset);
     });
     connect(resourceClient.get(), &ResourceClient::sig_upload_progress, this,
-            [this](qint64 offset, qint64 total, bool completed, const QString &resourceUrl) {
-        if (!_submitting) {
+            [this](const QString &uploadId, qint64 offset, qint64 total, bool completed,
+                   const QString &resourceUrl) {
+        if (!_submitting || uploadId != _upload_id) {
             return;
         }
         if (total != _file_size || offset < 0 || offset > total) {

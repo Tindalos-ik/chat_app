@@ -5,6 +5,7 @@
 #include <cctype>
 #include "ConfigMgr.h"
 #include "Base64.h"
+#include "ResourceVerifier.h"
 #include <algorithm>
 #include <cstdint>
 #include <filesystem>
@@ -12,10 +13,6 @@
 #include <mutex>
 
 namespace {
-
-// 同一个 upload_id 可能在断线重连后被另一条会话继续上传。该锁保证查询进度、
-// 追加写入和完成重命名不会相互穿插，避免同一临时文件被并发写坏。
-std::mutex g_upload_file_mutex;
 
 // ResourceServer 的单帧包体上限为 4 KB。下载数据还要经过 Base64 和 JSON 包装，
 // 因此原始字节不能贴近 4 KB；2 KB 可稳定给资源 ID、文件名和协议字段预留空间。
@@ -262,7 +259,7 @@ void LogicWorker::HandleSyncFile(std::shared_ptr<CSession> session, const short 
         return;
     }
 
-    std::lock_guard<std::mutex> lock(g_upload_file_mutex);
+    std::lock_guard<std::mutex> lock(GetResourceFileMutex());
     const std::filesystem::path task_dir = ConfigMgr::Inst().GetFilePath() / upload_id;
     const std::filesystem::path meta_path = task_dir / "meta.json";
     const std::filesystem::path part_path = task_dir / "data.part";
@@ -360,7 +357,7 @@ void LogicWorker::HandleUploadFile(std::shared_ptr<CSession> session, const shor
         return;
     }
 
-    std::lock_guard<std::mutex> lock(g_upload_file_mutex);
+    std::lock_guard<std::mutex> lock(GetResourceFileMutex());
     const std::filesystem::path task_dir = ConfigMgr::Inst().GetFilePath() / upload_id;
     const std::filesystem::path meta_path = task_dir / "meta.json";
     const std::filesystem::path part_path = task_dir / "data.part";
@@ -475,8 +472,13 @@ void LogicWorker::HandleDownloadFile(std::shared_ptr<CSession> session, const sh
         return;
     }
 
+    // 仅记录资源 ID、偏移和请求大小，方便确认接收客户端是否真的发起下载；不记录
+    // Base64 正文，以免服务器日志膨胀或泄露图片内容。
+    std::cout << "image download request, resource_id=" << resource_id
+              << ", offset=" << offset << ", chunk_size=" << requested_chunk_size << std::endl;
+
     // 与上传、续传、完成重命名共用同一把锁，防止读到刚好被替换的文件。
-    std::lock_guard<std::mutex> lock(g_upload_file_mutex);
+    std::lock_guard<std::mutex> lock(GetResourceFileMutex());
     std::filesystem::path final_path;
     std::string file_name;
     Json::UInt64 total_size = 0;
@@ -515,4 +517,7 @@ void LogicWorker::HandleDownloadFile(std::shared_ptr<CSession> session, const sh
     FillDownloadResponse(response, ErrorCodes::Success, resource_id, total_size, offset, is_last);
     response["name"] = file_name;
     response["data"] = Base64Encode(binary_data);
+    std::cout << "image download response, resource_id=" << resource_id
+              << ", offset=" << offset << ", bytes=" << read_size
+              << ", is_last=" << is_last << std::endl;
 }

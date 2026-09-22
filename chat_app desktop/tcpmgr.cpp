@@ -14,6 +14,47 @@
 namespace {
 constexpr int kHeartbeatIntervalMs = 20 * 1000;
 constexpr int kHeartbeatResponseTimeoutMs = 60 * 1000;
+constexpr qint64 kMaxChatImageBytes = 100LL * 1024 * 1024;
+
+// 1033/1034/1035 只共享图片元数据。这里集中做边界校验，后续 ResourceClient 不会收到
+// 空 resource_id、超大尺寸或伪造 MIME 的下载任务。
+bool ParseImageArray(const QJsonObject &envelope, QList<std::shared_ptr<ImageChatData>> *images)
+{
+    const int fromUid = envelope.value("fromuid").toInt();
+    const int toUid = envelope.value("touid").toInt();
+    const QJsonArray imageArray = envelope.value("imageArray").toArray();
+    if (fromUid <= 0 || toUid <= 0 || imageArray.isEmpty()) {
+        return false;
+    }
+    for (const QJsonValue &value : imageArray) {
+        const QJsonObject object = value.toObject();
+        bool sizeOk = false;
+        const qint64 fileSize = object.value("file_size").toVariant().toLongLong(&sizeOk);
+        const QString msgId = object.value("msgid").toString();
+        const QString resourceId = object.value("resource_id").toString();
+        const QString name = object.value("name").toString();
+        const QString mimeType = object.value("mime_type").toString();
+        const int width = object.value("width").toInt();
+        const int height = object.value("height").toInt();
+        if (msgId.isEmpty() || resourceId.isEmpty() || name.isEmpty() || !sizeOk || fileSize <= 0
+            || fileSize > kMaxChatImageBytes || width <= 0 || height <= 0
+            || !mimeType.startsWith(QStringLiteral("image/"))) {
+            return false;
+        }
+        auto image = std::make_shared<ImageChatData>();
+        image->msgId = msgId;
+        image->resourceId = resourceId;
+        image->name = name;
+        image->mimeType = mimeType;
+        image->fileSize = fileSize;
+        image->width = width;
+        image->height = height;
+        image->fromUid = fromUid;
+        image->toUid = toUid;
+        images->append(image);
+    }
+    return true;
+}
 }
 
 TcpMgr::~TcpMgr()
@@ -764,6 +805,60 @@ void TcpMgr::initHandlers()
                                                            status, createdAtMs);
             emit sig_text_chat(message);
         }
+    });
+
+    // 1034 是发送方的确认，1035 是接收方的通知。二者遵循同一个图片信封；确认
+    // 失败时仍解析 msgid，以便界面把对应的乐观图片气泡标记为发送失败。
+    auto handle_image_chat = [this](bool isSendResult, ReqId id, int len, QByteArray data) {
+        Q_UNUSED(id);
+        Q_UNUSED(len);
+        const QJsonDocument document = QJsonDocument::fromJson(data);
+        if (!document.isObject()) {
+            qWarning() << "image chat message is not a JSON object";
+            return;
+        }
+        const QJsonObject envelope = document.object();
+        QList<std::shared_ptr<ImageChatData>> images;
+        if (!ParseImageArray(envelope, &images)) {
+            // 1035 到达但字段不完整时明确打印完整信封，避免误把客户端解析失败当成
+            // ChatServer 跨服路由失败。图片二进制不会输出到日志。
+            qWarning() << "image chat message has invalid envelope:" << document.toJson(QJsonDocument::Compact);
+            return;
+        }
+        const auto currentUser = UserMgr::GetInstance()->GetUserInfo();
+        if (!currentUser) {
+            return;
+        }
+        const int error = envelope.value("error").toInt(ErrorCodes::SUCCESS);
+        qInfo() << (isSendResult ? "received image chat confirmation (1034)"
+                                 : "received image chat notification (1035)")
+                << "from=" << envelope.value("fromuid").toInt()
+                << "to=" << envelope.value("touid").toInt()
+                << "count=" << images.size() << "error=" << error;
+        if (isSendResult && error != ErrorCodes::SUCCESS) {
+            qWarning() << "image chat request rejected by ChatServer, error:" << error;
+        }
+        // 信号沿用现有 TextChatData 的 shared_ptr& 约定；这里不能用 const auto&，
+        // 否则无法把列表内的智能指针交给 Qt 信号的可变引用参数。
+        for (auto &image : images) {
+            if ((isSendResult && (image->fromUid != currentUser->_uid || image->toUid == currentUser->_uid))
+                || (!isSendResult && (image->toUid != currentUser->_uid || image->fromUid == currentUser->_uid))) {
+                qWarning() << "ignore image chat message whose envelope does not belong to current user";
+                continue;
+            }
+            if (isSendResult) {
+                emit sig_image_chat_send_result(image, error == ErrorCodes::SUCCESS);
+            } else if (error == ErrorCodes::SUCCESS) {
+                qInfo() << "start receiving image download task, resource_id=" << image->resourceId;
+                emit sig_image_chat(image);
+            }
+        }
+    };
+    _handler.insert(ID_IMAGE_CHAT_MSG_RSP, [handle_image_chat](ReqId id, int len, QByteArray data) {
+        handle_image_chat(true, id, len, data);
+    });
+    _handler.insert(ID_NOTIFY_IMAGE_CHAT_MSG_REQ, [handle_image_chat](ReqId id, int len, QByteArray data) {
+        handle_image_chat(false, id, len, data);
     });
 
     _handler[ID_NOTIFY_OFF_LINE_REQ] = [this](ReqId id, int len, QByteArray data){

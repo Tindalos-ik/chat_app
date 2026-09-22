@@ -149,14 +149,15 @@ void ResourceClient::initHandlers()
         Q_UNUSED(len);
         const QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
         if (jsonDoc.isNull() || !jsonDoc.isObject()) {
-            emit sig_upload_error(tr("服务端返回了无效的续传进度。"));
+            emit sig_upload_error(tr("服务端返回了无效的续传进度。"), QString());
             return;
         }
 
         const QJsonObject jsonObj = jsonDoc.object();
         if (jsonObj["error"].toInt(ErrorCodes::ERR_JSON) != ErrorCodes::SUCCESS) {
             emit sig_upload_error(tr("同步上传任务失败，错误码：%1")
-                                      .arg(jsonObj["error"].toInt()));
+                                      .arg(jsonObj["error"].toInt()),
+                                  jsonObj["upload_id"].toString());
             return;
         }
 
@@ -177,7 +178,7 @@ void ResourceClient::initHandlers()
 
         //检查转换是否成功
         if(jsonDoc.isNull() || !jsonDoc.isObject()){
-            emit sig_upload_error(tr("服务端返回了无效的上传结果。"));
+            emit sig_upload_error(tr("服务端返回了无效的上传结果。"), QString());
             return;
         }
 
@@ -186,7 +187,8 @@ void ResourceClient::initHandlers()
 
         //正常回包必须有error字段，用来判断服务端是否成功写入该分片
         if(!json_obj.contains("error")){
-            emit sig_upload_error(tr("上传失败：服务端回包缺少错误码。"));
+            emit sig_upload_error(tr("上传失败：服务端回包缺少错误码。"),
+                                  json_obj["upload_id"].toString());
             return;
         }
 
@@ -194,15 +196,16 @@ void ResourceClient::initHandlers()
         if(err != ErrorCodes::SUCCESS){
             const qint64 expectedOffset = json_obj["confirmed_offset"].toVariant().toLongLong();
             emit sig_upload_error(tr("上传失败，错误码：%1；服务端确认到 %2 字节。")
-                                      .arg(err).arg(expectedOffset));
+                                      .arg(err).arg(expectedOffset),
+                                  json_obj["upload_id"].toString());
             return;
         }
 
         // confirmed_offset 是服务端实际落盘后的字节数，不能用客户端发送量代替。
         const qint64 confirmedOffset = json_obj["confirmed_offset"].toVariant().toLongLong();
         const qint64 totalSize = json_obj["total_size"].toVariant().toLongLong();
-        emit sig_upload_progress(confirmedOffset, totalSize, json_obj["completed"].toBool(),
-                                 json_obj["resource_url"].toString());
+        emit sig_upload_progress(json_obj["upload_id"].toString(), confirmedOffset, totalSize,
+                                 json_obj["completed"].toBool(), json_obj["resource_url"].toString());
     });
 
 }
