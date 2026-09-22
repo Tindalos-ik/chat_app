@@ -42,6 +42,8 @@ bool ParseImageArray(const QJsonObject &envelope, QList<std::shared_ptr<ImageCha
             return false;
         }
         auto image = std::make_shared<ImageChatData>();
+        image->messageId = object.value("message_id").toVariant().toLongLong();
+        image->threadId = object.value("thread_id").toVariant().toLongLong();
         image->msgId = msgId;
         image->resourceId = resourceId;
         image->name = name;
@@ -54,6 +56,13 @@ bool ParseImageArray(const QJsonObject &envelope, QList<std::shared_ptr<ImageCha
         images->append(image);
     }
     return true;
+}
+
+// 1030 离线同步把图片元数据保存到 local_chat_message.content 的紧凑 JSON 中。图片
+// 文件本身永远不进入 SQLite；登录后由 ChatImageTransferTask 根据 resource_id 下载。
+QString SerializeStoredImage(const QJsonObject &item)
+{
+    return QString::fromUtf8(QJsonDocument(item).toJson(QJsonDocument::Compact));
 }
 }
 
@@ -578,20 +587,45 @@ void TcpMgr::initHandlers()
             message.threadId = threadId;
             message.senderId = item.value("sender_id").toInt();
             message.recvId = item.value("recv_id").toInt();
+            message.contentType = item.value("message_type").toString(QStringLiteral("text"));
+            if (message.contentType != QStringLiteral("text")
+                && message.contentType != QStringLiteral("image")) {
+                qWarning() << "ignore unsupported synced message type:" << message.contentType;
+                continue;
+            }
             message.content = item.value("content").toString();
             message.createdAtMs = item.value("created_at_ms").toVariant().toLongLong();
             message.updatedAtMs = message.createdAtMs;
             message.serverStatus = item.value("status").toInt();
             message.sendState = 3;
             message.isRead = message.senderId == currentUser->_uid;
-            if (message.senderId <= 0 || message.content.isEmpty()) {
+            if (message.senderId <= 0 || (message.contentType == QStringLiteral("text")
+                                          && message.content.isEmpty())) {
                 continue;
+            }
+            if (message.contentType == QStringLiteral("image")) {
+                // 复用 1034/1035 的严格字段校验。将单项包装为统一图片信封，可避免
+                // 离线同步因字段缺失而在之后的下载阶段才暴露错误。
+                QJsonObject envelope;
+                envelope["fromuid"] = message.senderId;
+                envelope["touid"] = message.recvId;
+                envelope["imageArray"] = QJsonArray{item};
+                QList<std::shared_ptr<ImageChatData>> images;
+                if (!ParseImageArray(envelope, &images) || images.size() != 1) {
+                    qWarning() << "ignore invalid offline image metadata, message_id=" << message.messageId;
+                    continue;
+                }
+                images.front()->messageId = message.messageId;
+                images.front()->threadId = threadId;
+                // 存服务端回包的完整可信元数据；content 对 image 不展示给用户。
+                message.content = SerializeStoredImage(item);
             }
             localMessages.append(message);
             maxMessageId = qMax(maxMessageId, message.messageId);
             if (message.messageId >= thread.lastMessageId) {
                 thread.lastMessageId = message.messageId;
-                thread.lastMessagePreview = message.content;
+                thread.lastMessagePreview = message.contentType == QStringLiteral("image")
+                    ? QStringLiteral("[图片]") : message.content;
                 thread.lastMessageAtMs = message.createdAtMs;
             }
         }

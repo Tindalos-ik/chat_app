@@ -103,6 +103,11 @@ ChatDialog::ChatDialog(QWidget *parent)
     connect(_image_transfer, &ChatImageTransferTask::imageDownloadFailed, this,
             [this](const ImageChatData &image, const QString &message) {
         qWarning() << "chat image download failed:" << message;
+        // 历史图片下载失败后撤销“已请求”标记；用户重新进入会话时可以再次尝试，
+        // 不会因为一次网络波动永久卡在空白消息状态。
+        if (image.messageId > 0) {
+            _requested_image_message_ids.remove(image.messageId);
+        }
         const auto item = _pending_image_items.take(image.msgId);
         if (item) {
             item->SetSendFailed(true);
@@ -645,8 +650,12 @@ void ChatDialog::appendDownloadedImage(const ImageChatData &image, const QString
     }
 
     const auto self = UserMgr::GetInstance()->GetUserInfo();
-    if (!self || !_current_chatuser || image.toUid != self->_uid
-        || image.fromUid != _current_chatuser->_uid) {
+    const bool sentBySelf = self && image.fromUid == self->_uid;
+    const bool belongsToCurrentChat = self && _current_chatuser
+        && ((sentBySelf && image.toUid == _current_chatuser->_uid)
+            || (!sentBySelf && image.toUid == self->_uid
+                && image.fromUid == _current_chatuser->_uid));
+    if (!belongsToCurrentChat) {
         // 当前没有打开该会话时不应把图片插入其他聊天窗口；日志给出丢弃原因，后续可
         // 通过聊天历史同步补齐该消息。
         qInfo() << "downloaded image is not for current chat view, self="
@@ -655,11 +664,18 @@ void ChatDialog::appendDownloadedImage(const ImageChatData &image, const QString
                 << "from=" << image.fromUid << "to=" << image.toUid;
         return;
     }
+    if (image.threadId > 0 && image.threadId != _current_thread_id) {
+        // 用户在下载期间切到其他会话时，不把 A 会话的图片错误追加到 B 会话。
+        return;
+    }
+    if (image.messageId > 0 && _displayed_image_message_ids.contains(image.messageId)) {
+        return;
+    }
     const auto friends = UserMgr::GetInstance()->GetFriendList();
     const auto friendIter = std::find_if(friends.cbegin(), friends.cend(), [&image](const auto &friendInfo) {
         return friendInfo && friendInfo->_uid == image.fromUid;
     });
-    if (friendIter == friends.cend()) {
+    if (!sentBySelf && friendIter == friends.cend()) {
         qWarning() << "ignore image from a non-friend:" << image.fromUid;
         return;
     }
@@ -668,11 +684,16 @@ void ChatDialog::appendDownloadedImage(const ImageChatData &image, const QString
         qWarning() << "downloaded image cannot be loaded:" << localPath;
         return;
     }
-    auto *chatItem = new ChatItemBase(ChatRole::Other);
-    chatItem->setUserName((*friendIter)->_name);
-    chatItem->setUserAvatar((*friendIter)->_uid, (*friendIter)->_icon);
-    chatItem->setWidget(new PictureBubble(ChatRole::Other, pixmap));
+    const ChatRole role = sentBySelf ? ChatRole::Self : ChatRole::Other;
+    const auto &displayUser = sentBySelf ? self : *friendIter;
+    auto *chatItem = new ChatItemBase(role);
+    chatItem->setUserName(displayUser->_name);
+    chatItem->setUserAvatar(displayUser->_uid, displayUser->_icon);
+    chatItem->setWidget(new PictureBubble(role, pixmap));
     ui->chat_data->appendChatItem(chatItem);
+    if (image.messageId > 0) {
+        _displayed_image_message_ids.insert(image.messageId);
+    }
     qInfo() << "received image appended to chat view, resource_id=" << image.resourceId;
 }
 
@@ -997,6 +1018,62 @@ ChatItemBase *ChatDialog::CreateStoredTextChatItem(const LocalChatMessage &messa
     return chatItem;
 }
 
+bool ChatDialog::ParseStoredImageMessage(const LocalChatMessage &message, ImageChatData *image) const
+{
+    if (!image || message.contentType != QStringLiteral("image") || message.messageId <= 0
+        || message.threadId <= 0) {
+        return false;
+    }
+    const QJsonDocument document = QJsonDocument::fromJson(message.content.toUtf8());
+    if (!document.isObject()) {
+        return false;
+    }
+    const QJsonObject item = document.object();
+    bool sizeOk = false;
+    const qint64 fileSize = item.value("file_size").toVariant().toLongLong(&sizeOk);
+    const QString msgId = item.value("msgid").toString();
+    const QString resourceId = item.value("resource_id").toString();
+    const QString name = item.value("name").toString();
+    const QString mimeType = item.value("mime_type").toString();
+    const int width = item.value("width").toInt();
+    const int height = item.value("height").toInt();
+    if (msgId.isEmpty() || resourceId.isEmpty() || name.isEmpty() || !sizeOk || fileSize <= 0
+        || width <= 0 || height <= 0 || !mimeType.startsWith(QStringLiteral("image/"))) {
+        return false;
+    }
+
+    image->messageId = message.messageId;
+    image->threadId = message.threadId;
+    image->msgId = msgId;
+    image->resourceId = resourceId;
+    image->name = name;
+    image->mimeType = mimeType;
+    image->fileSize = fileSize;
+    image->width = width;
+    image->height = height;
+    image->fromUid = static_cast<int>(message.senderId);
+    image->toUid = static_cast<int>(message.recvId);
+    return image->fromUid > 0 && image->toUid > 0;
+}
+
+void ChatDialog::QueueStoredImageMessage(const LocalChatMessage &message)
+{
+    if (message.threadId != _current_thread_id || message.messageId <= 0
+        || _requested_image_message_ids.contains(message.messageId)
+        || _displayed_image_message_ids.contains(message.messageId)) {
+        return;
+    }
+    ImageChatData image;
+    if (!ParseStoredImageMessage(message, &image)) {
+        qWarning() << "ignore invalid cached image message:" << message.messageId;
+        return;
+    }
+    _requested_image_message_ids.insert(message.messageId);
+    qInfo() << "queue offline image message, message_id=" << image.messageId
+            << "resource_id=" << image.resourceId;
+    _image_transfer->enqueueDownload(image);
+}
+
 void ChatDialog::slot_load_older_local_messages()
 {
     LoadOlderLocalMessages();
@@ -1032,6 +1109,8 @@ void ChatDialog::LoadOlderLocalMessages()
             if (auto *chatItem = CreateStoredTextChatItem(message, _current_chatuser)) {
                 historyItems.append(chatItem);
             }
+        } else if (message.contentType == QStringLiteral("image")) {
+            QueueStoredImageMessage(message);
         }
     }
     if (!historyItems.isEmpty()) {
@@ -1063,6 +1142,8 @@ void ChatDialog::SetCurrentChatUser(const std::shared_ptr<UserInfo> &chatUser, q
     _oldest_local_message_id = 0;
     _has_more_local_history = false;
     _loading_older_local_history = false;
+    _requested_image_message_ids.clear();
+    _displayed_image_message_ids.clear();
     ui->chat_title_label->setText(_current_chatuser->_name);
     ui->chat_stack->setCurrentWidget(ui->chat_page);
 
@@ -1075,6 +1156,8 @@ void ChatDialog::SetCurrentChatUser(const std::shared_ptr<UserInfo> &chatUser, q
         for (const LocalChatMessage &message : recentMessages) {
             if (message.contentType == QStringLiteral("text")) {
                 AppendStoredTextMessage(message, _current_chatuser);
+            } else if (message.contentType == QStringLiteral("image")) {
+                QueueStoredImageMessage(message);
             }
         }
         if (!recentMessages.isEmpty()) {

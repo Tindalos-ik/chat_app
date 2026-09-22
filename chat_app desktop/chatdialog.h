@@ -5,6 +5,7 @@
 #include <QHash>
 #include <QListWidget>
 #include <QPointer>
+#include <QSet>
 #include <QVector>
 #include "statewidget.h"
 #include "userdata.h"
@@ -79,6 +80,10 @@ private:
                                  const std::shared_ptr<UserInfo> &friendInfo);
     ChatItemBase *CreateStoredTextChatItem(const LocalChatMessage &message,
                                            const std::shared_ptr<UserInfo> &friendInfo);
+    // 离线图片的元数据先随 1030 写入 SQLite；用户进入会话后再排队下载，不能把
+    // resource_id 当作普通文本渲染，也不能依赖用户离线期间不可能收到的 1035。
+    bool ParseStoredImageMessage(const LocalChatMessage &message, ImageChatData *image) const;
+    void QueueStoredImageMessage(const LocalChatMessage &message);
     void appendDownloadedImage(const ImageChatData &image, const QString &localPath);
     void LoadOlderLocalMessages();
     void SaveFriendAuthMessages(const std::shared_ptr<UserInfo> &friendInfo,
@@ -94,6 +99,10 @@ private:
     // 图片从本地预览开始，到 1034 确认并原子缓存完成前都保留该映射；失败时复用
     // ChatItemBase 的统一失败图标，不影响文本消息的发送状态。
     QHash<QString, QPointer<ChatItemBase>> _pending_image_items;
+    // 当前聊天窗口内已经请求或显示的历史图片 message_id。会话重绘时清空；实时
+    // 推送和补同步同时到达时，借此避免对同一条消息重复下载、重复显示。
+    QSet<qint64> _requested_image_message_ids;
+    QSet<qint64> _displayed_image_message_ids;
     ChatImageTransferTask *_image_transfer = nullptr;
 
 signals:

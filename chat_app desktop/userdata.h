@@ -143,6 +143,10 @@ public:
 // 图片聊天协议的单项元数据。resourceId 是 ResourceServer 的 upload_id，而不是
 // resource_url 或服务端文件路径；图片字节只能经 ResourceClient 上传、下载。
 struct ImageChatData {
+    // 服务端持久化后的 ID。实时 1034/1035 和离线 1030 都会携带它们，用于避免
+    // 同一张图片在“实时通知 + 登录补同步”交错时被界面重复追加。
+    qint64 messageId = 0;
+    qint64 threadId = 0;
     QString msgId;
     QString resourceId;
     QString name;
