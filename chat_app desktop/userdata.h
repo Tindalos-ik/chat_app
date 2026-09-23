@@ -171,6 +171,9 @@ struct FileChatData {
     qint64 fileSize = 0;    // 服务端确认的文件字节数
     int fromUid = 0;
     int toUid = 0;
+    qint64 createdAtMs = 0;  // 服务端确认的创建时间；历史/1041 回包使用
+    int serverStatus = 0;    // 服务端 status：0=未读，1=已读，2=撤回
+    bool peerDisplayed = false; // 历史回包中的展示确认；不等同于已读
     int deliveryState = 1;  // 1041/1042 的投递阶段
 };
 

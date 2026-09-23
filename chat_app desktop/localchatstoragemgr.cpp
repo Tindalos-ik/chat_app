@@ -457,7 +457,8 @@ QList<qint64> LocalChatStorageMgr::MarkOutgoingMessagesRead(qint64 threadId, qin
     QSqlQuery select(_database);
     select.prepare(QStringLiteral(
         "SELECT message_id FROM local_chat_message "
-        "WHERE thread_id = ? AND sender_id != ? AND message_id <= ? AND server_status = 0"));
+        "WHERE thread_id = ? AND sender_id != ? AND message_id <= ? "
+        "AND server_status IN (0, 1) AND (server_status = 0 OR delivery_state < 4)"));
     select.addBindValue(threadId);
     select.addBindValue(readerUid);
     select.addBindValue(readThroughMessageId);

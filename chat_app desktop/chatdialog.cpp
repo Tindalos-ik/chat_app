@@ -311,6 +311,8 @@ ChatDialog::ChatDialog(QWidget *parent)
             this, &ChatDialog::slot_local_chat_synced);
     connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_message_delivery_updated,
             this, &ChatDialog::slot_message_delivery_updated);
+    connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_thread_read_cursor,
+            this, &ChatDialog::slot_thread_read_cursor);
     connect(ui->chat_data, &ChatView::sig_reach_top,
             this, &ChatDialog::slot_load_older_local_messages);
 
@@ -549,6 +551,7 @@ void ChatDialog::slot_send_message()
             fileToUpload.msgId = QUuid::createUuid().toString(QUuid::WithoutBraces);
             fileToUpload.fromUid = userinfo->_uid;
             fileToUpload.toUid = _current_chatuser->_uid;
+            fileToUpload.threadId = _current_thread_id;
             fileToUpload.name = QFileInfo(msgList[i].content).fileName();
             fileToUpload.fileSize = QFileInfo(msgList[i].content).size();
             _pending_file_items.insert(fileToUpload.msgId, pChatItem);
@@ -847,13 +850,104 @@ void ChatDialog::slot_file_chat_send_result(std::shared_ptr<FileChatData> &file,
         _failed_file_msg_ids.insert(file->msgId);
         return;
     }
+
+    const auto currentUser = UserMgr::GetInstance()->GetUserInfo();
+    const auto storage = LocalChatStorageMgr::GetInstance();
+    if (file->fromUid <= 0 || file->toUid <= 0 || file->threadId <= 0 || file->messageId <= 0
+        || file->resourceId.isEmpty() || file->name.isEmpty() || file->fileSize <= 0) {
+        qWarning() << "ignore successful file confirmation missing local persistence metadata"
+                   << "thread_id=" << file->threadId << "message_id=" << file->messageId;
+        if (item) item->SetSendFailed(true);
+        _failed_file_msg_ids.insert(file->msgId);
+        return;
+    }
+    if (currentUser && file->fromUid != currentUser->_uid) {
+        qWarning() << "ignore file confirmation for another sender" << file->fromUid;
+        return;
+    }
+
+    // 如果对端的 1039 先于本次 1041 到达，本地尚无正式 message_id 可供更新；
+    // 用线程读游标补上确认中的状态，避免已读回执因包顺序而丢失。
+    if (_peer_readers_by_thread.value(file->threadId) == file->toUid
+        && file->messageId <= _peer_read_through_by_thread.value(file->threadId)) {
+        file->serverStatus = 1;
+        file->deliveryState = 4;
+    }
     if (item) item->SetDeliveryState(file->deliveryState > 0 ? file->deliveryState : 1);
+
+    bool stored = false;
+    if (currentUser && storage->IsReady()) {
+        LocalChatThread thread;
+        thread.threadId = file->threadId;
+        thread.threadType = QStringLiteral("private");
+        thread.peerUid = file->toUid;
+        thread.title = QString::number(file->toUid);
+        for (const auto &friendInfo : UserMgr::GetInstance()->GetFriendList()) {
+            if (friendInfo && friendInfo->_uid == file->toUid) {
+                thread.title = friendInfo->_name;
+                break;
+            }
+        }
+        for (const LocalChatThread &cached : storage->CachedThreads()) {
+            if (cached.threadId == file->threadId) {
+                thread = cached;
+                thread.threadType = QStringLiteral("private");
+                thread.peerUid = file->toUid;
+                if (thread.title.isEmpty()) thread.title = QString::number(file->toUid);
+                break;
+            }
+        }
+        const qint64 createdAtMs = file->createdAtMs > 0
+            ? file->createdAtMs : QDateTime::currentMSecsSinceEpoch();
+        if (file->messageId >= thread.lastMessageId) {
+            thread.lastMessageId = file->messageId;
+            thread.lastMessagePreview = QStringLiteral("[文件]");
+            thread.lastMessageAtMs = createdAtMs;
+        }
+        thread.updatedAtMs = createdAtMs;
+
+        QJsonObject metadata;
+        metadata["msgid"] = file->msgId;
+        metadata["resource_id"] = file->resourceId;
+        metadata["name"] = file->name;
+        metadata["mime_type"] = file->mimeType;
+        metadata["file_size"] = static_cast<double>(file->fileSize);
+        metadata["message_id"] = QString::number(file->messageId);
+        metadata["thread_id"] = QString::number(file->threadId);
+        LocalChatMessage localMessage;
+        localMessage.messageId = file->messageId;
+        localMessage.threadId = file->threadId;
+        localMessage.senderId = file->fromUid;
+        localMessage.recvId = file->toUid;
+        localMessage.contentType = QStringLiteral("file");
+        localMessage.content = QString::fromUtf8(QJsonDocument(metadata).toJson(QJsonDocument::Compact));
+        localMessage.createdAtMs = createdAtMs;
+        localMessage.updatedAtMs = createdAtMs;
+        localMessage.serverStatus = file->serverStatus;
+        localMessage.sendState = 3;
+        localMessage.deliveryState = file->deliveryState > 0 ? file->deliveryState : 1;
+        localMessage.isRead = true;
+        const qint64 syncCursor = storage->SyncCursors().value(file->threadId, 0);
+        stored = storage->SaveReceivedMessages(thread, {localMessage}, syncCursor);
+    } else {
+        qWarning() << "file confirmation succeeded while local chat cache is unavailable";
+    }
+    if (!stored) {
+        // 服务端已经持久化成功，不能把网络发送伪报为失败；保留乐观卡片映射，
+        // 使后续同会话 1039 仍能更新它，并在下次历史同步时恢复 SQLite 记录。
+        if (currentUser && storage->IsReady())
+            qWarning() << "save confirmed file message locally failed:" << storage->LastError();
+        if (item) _outgoing_file_items.insert(file->messageId, item);
+    }
+
     // 1041 中的正式 threadId/messageId 原样保留；缺失时不从当前窗口猜测会话归属。
     _pending_file_metadata.insert(file->msgId, *file);
     _failed_file_msg_ids.remove(file->msgId);
     _pending_file_source_paths.remove(file->msgId);
     _pending_file_items.remove(file->msgId);
-    if (item && file->messageId > 0) _outgoing_file_items.insert(file->messageId, item);
+    // 本地事务成功后刷新当前消息页。若重绘销毁了乐观卡片，由 CreateFileChatItem
+    // 登记新卡片；不能在这个信号之后把旧 QPointer 重新放进映射。
+    if (stored) emit TcpMgr::GetInstance()->sig_local_chat_synced(file->threadId);
 }
 
 void ChatDialog::slot_file_chat(std::shared_ptr<FileChatData> &file)
@@ -955,7 +1049,10 @@ ChatItemBase *ChatDialog::CreateFileChatItem(const FileChatData &file)
         if (!path.isEmpty()) _image_transfer->enqueueFileDownload(file, path);
     });
     row->setWidget(card);
-    if (sentBySelf) row->SetDeliveryState(file.deliveryState > 0 ? file.deliveryState : 1);
+    if (sentBySelf) {
+        row->SetDeliveryState(file.deliveryState > 0 ? file.deliveryState : 1);
+        if (file.messageId > 0) _outgoing_file_items.insert(file.messageId, row);
+    }
     return row;
 }
 
@@ -977,6 +1074,8 @@ bool ChatDialog::ParseStoredFileMessage(const LocalChatMessage &message, FileCha
     file->mimeType = item.value("mime_type").toString();
     file->fileSize = size; file->fromUid = static_cast<int>(message.senderId);
     file->toUid = static_cast<int>(message.recvId);
+    file->serverStatus = message.serverStatus;
+    file->deliveryState = message.serverStatus == 1 ? 4 : message.deliveryState;
     return sizeOk && size > 0 && size <= 100LL * 1024 * 1024
         && !file->msgId.isEmpty() && !file->resourceId.isEmpty() && !file->name.isEmpty()
         && file->fromUid > 0 && file->toUid > 0;
@@ -1385,6 +1484,32 @@ void ChatDialog::slot_message_delivery_updated(qint64 threadId, const QList<qint
         }
     }
     Q_UNUSED(threadId);
+}
+
+void ChatDialog::slot_thread_read_cursor(qint64 threadId, qint64 readerUid,
+                                        qint64 readThroughMessageId)
+{
+    const auto currentUser = UserMgr::GetInstance()->GetUserInfo();
+    if (!currentUser || threadId <= 0 || readerUid <= 0 || readerUid == currentUser->_uid
+        || readThroughMessageId <= 0) {
+        return;
+    }
+    if (_peer_readers_by_thread.value(threadId) != readerUid
+        || readThroughMessageId > _peer_read_through_by_thread.value(threadId)) {
+        _peer_readers_by_thread.insert(threadId, readerUid);
+        _peer_read_through_by_thread.insert(threadId, readThroughMessageId);
+    }
+
+    // 本地存储事务失败时，仍用服务器确认的读游标更新当前仍在内存中的发送卡片。
+    for (auto iter = _pending_file_metadata.cbegin(); iter != _pending_file_metadata.cend(); ++iter) {
+        const FileChatData &file = iter.value();
+        if (file.threadId != threadId || file.toUid != readerUid || file.messageId <= 0
+            || file.messageId > readThroughMessageId) {
+            continue;
+        }
+        const auto item = _outgoing_file_items.value(file.messageId);
+        if (item) item->SetDeliveryState(4);
+    }
 }
 
 void ChatDialog::SendDisplayAcknowledgement(qint64 threadId, const QList<qint64> &messageIds)

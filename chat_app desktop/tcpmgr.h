@@ -84,6 +84,7 @@ signals:
     void sig_local_chat_synced(qint64 threadId);
     void sig_message_delivery_updated(qint64 threadId, const QList<qint64> &messageIds,
                                       int deliveryState);
+    void sig_thread_read_cursor(qint64 threadId, qint64 readerUid, qint64 readThroughMessageId);
     void sig_off_line();
     void sig_connection_lost(); // 已登录连接被服务端关闭，但未完整收到踢人通知
     void sig_heartbeat_timeout(); // 60 秒未收到有效心跳回复，交给主窗口显示专用提示

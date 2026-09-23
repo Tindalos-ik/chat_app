@@ -248,6 +248,7 @@ curl http://127.0.0.1:8080/get_test
 | 收不到验证码 | 检查 `VarifyServer/config.json` 的邮箱授权码、SMTP 配置和 Redis 连通性 |
 | 登录后无法连接聊天服务 | 检查 StatusServer 与两个 ChatServer 的主机/端口/服务名配置是否一致；跨机器部署时不要把返回给客户端的地址设为 `127.0.0.1` |
 | 跨服消息未送达 | 检查 50055、50056 是否可互通，以及每台 ChatServer 的 `[PeerServer]` 配置 |
+| 离线图片不显示、文件已读状态不刷新 | 检查旧库 `chat_message` 是否有 `displayed_at` 列；缺列时历史消息查询会失败。执行一次 `sql/chat_message_receipt_migration.sql` 后重新登录以触发增量同步 |
 | 异地登录未踢掉旧端 | 检查 Redis 的 `uip_<uid>` 是否指向真实旧服、对端 `rpcport` 是否可达，以及登录回包是否为 `RPCFaild` |
 
 ## 相关文档

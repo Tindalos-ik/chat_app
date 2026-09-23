@@ -56,6 +56,8 @@ private slots:
     void slot_file_chat(std::shared_ptr<FileChatData>& file);
     void slot_message_delivery_updated(qint64 threadId, const QList<qint64> &messageIds,
                                        int deliveryState);
+    void slot_thread_read_cursor(qint64 threadId, qint64 readerUid,
+                                 qint64 readThroughMessageId);
 
 protected:
     // 重写事件过滤器实现根据鼠标位置判断是否隐藏搜索框恢复聊天界面
@@ -119,6 +121,10 @@ private:
     QHash<QString, FileChatData> _pending_file_metadata;
     QHash<QString, QString> _pending_file_source_paths;
     QSet<QString> _failed_file_msg_ids;
+    // 1039 可能先于 1041 到达；私聊只有一个对端，按 thread 暂存其已读游标，
+    // 让稍后到达的文件确认直接以已读状态写入本地缓存。
+    QHash<qint64, qint64> _peer_readers_by_thread;
+    QHash<qint64, qint64> _peer_read_through_by_thread;
     // 图片确认后仍保留按正式 message_id 的弱引用，供 1037/1039 更新状态文字。
     QHash<qint64, QPointer<ChatItemBase>> _outgoing_image_items;
     QHash<qint64, QPointer<ChatItemBase>> _outgoing_file_items;

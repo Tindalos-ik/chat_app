@@ -85,8 +85,13 @@ bool ParseFileArray(const QJsonObject &envelope, QList<std::shared_ptr<FileChatD
         file->fileSize = size;
         file->messageId = item.value("message_id").toVariant().toLongLong();
         file->threadId = item.value("thread_id").toVariant().toLongLong();
+        file->createdAtMs = item.value("created_at_ms").toVariant().toLongLong();
+        file->serverStatus = item.value("status").toInt();
+        file->peerDisplayed = item.value("peer_displayed").toBool();
         file->fromUid = from; file->toUid = to;
-        file->deliveryState = envelope.value("realtime_delivered").toBool() ? 2 : 1;
+        file->deliveryState = file->serverStatus == 1 ? 4
+            : (file->peerDisplayed ? 3
+               : (envelope.value("realtime_delivered").toBool() ? 2 : 1));
         if (!ok || file->msgId.isEmpty() || file->resourceId.isEmpty() || file->name.isEmpty()
             || size <= 0 || size > kMaxChatResourceBytes) return false;
         files->append(file);
@@ -1052,13 +1057,19 @@ void TcpMgr::initHandlers()
         const qint64 readerUid = payload.value("reader_id").toVariant().toLongLong();
         const auto storage = LocalChatStorageMgr::GetInstance();
         if (payload.value("error").toInt(ErrorCodes::ERR_JSON) != ErrorCodes::SUCCESS || !threadOk
-            || !throughOk || threadId <= 0 || readThrough <= 0 || readerUid <= 0 || !storage->IsReady()) {
+            || !throughOk || threadId <= 0 || readThrough <= 0 || readerUid <= 0) {
             return;
         }
-        const QList<qint64> messageIds = storage->MarkOutgoingMessagesRead(threadId, readerUid, readThrough);
-        if (!messageIds.isEmpty()) {
-            emit sig_message_delivery_updated(threadId, messageIds, 4);
+        if (storage->IsReady()) {
+            const QList<qint64> messageIds = storage->MarkOutgoingMessagesRead(
+                threadId, readerUid, readThrough);
+            if (!messageIds.isEmpty()) {
+                emit sig_message_delivery_updated(threadId, messageIds, 4);
+            }
         }
+        // 1039 可能先于 1041 的发送确认到达，届时正式 message_id 还未写入本地消息表。
+        // 把已验证的会话读游标交给界面暂存，1041 落库时再与该游标合并。
+        emit sig_thread_read_cursor(threadId, readerUid, readThrough);
     });
 
     _handler[ID_NOTIFY_OFF_LINE_REQ] = [this](ReqId id, int len, QByteArray data){
