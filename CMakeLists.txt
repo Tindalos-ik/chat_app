@@ -17,6 +17,11 @@ endif()
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# CI 可以只配置测试目标，避免为不需要的服务构建整套 gRPC 依赖。
+option(CHAT_APP_TESTS_ONLY "Configure test targets without server executables" OFF)
+
+if(NOT CHAT_APP_TESTS_ONLY)
+
 # ==================== 公共 protobuf/gRPC 代码生成 ====================
 # 所有 C++ 服务共用根目录下这一份协议，避免每个子项目重复调用 protoc。
 find_package(gRPC CONFIG REQUIRED)
@@ -76,8 +81,11 @@ add_subdirectory(ChatServer2)
 add_subdirectory(ResourceServer)
 add_subdirectory(GateServer)
 add_subdirectory(StatusServer)
+endif()
 
 if(BUILD_TESTING)
+    # include(CTest) 默认打开 BUILD_TESTING。测试可执行文件作为普通目标加入，
+    # 因此根目录的 `cmake --build` 默认构建也会编译已注册的测试。
     add_subdirectory(tests)
 endif()
 

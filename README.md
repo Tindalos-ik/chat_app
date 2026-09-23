@@ -35,7 +35,7 @@ ResourceServer -------- gRPC 50052 / MySQL ----> StatusServer / private_chat 鉴
 | ChatServer1 | C++、Boost.Asio、gRPC | TCP 8090 / gRPC 50055 | 长连接、会话和消息路由 |
 | ChatServer2 | C++、Boost.Asio、gRPC | TCP 8091 / gRPC 50056 | 第二个聊天服务实例、跨服转发 |
 | ResourceServer | C++、Boost.Asio、gRPC | TCP 9090 / gRPC 50057 | 通用资源分片上传、断点续传和下载；1007 校验登录 token、私聊成员关系与资源归属；以及 ChatServer 的图片/文件资源核验 |
-| MySQL | MySQL 8 | X Protocol 33060 | 用户、好友和好友申请数据 |
+| MySQL | MySQL 8 | X Protocol 33060 | 用户、好友、会话和消息数据 |
 | Redis | Redis | 6379 | 验证码、token、在线路由和服务负载 |
 
 ## 目录
@@ -85,27 +85,19 @@ Set-Location D:/cppsoft/vcpkg
 
 ### 1. 初始化数据库
 
-启动 MySQL，并执行仓库内的建表脚本：
+启动 MySQL，并通过 MySQL 传统协议端口（默认 `3306`）执行全量建库脚本：
 
 ```powershell
-mysql -uroot -p < sql/create_tables.sql
+mysql --protocol=tcp -h 127.0.0.1 -P 3306 -uroot -p < sql/create_tables.sql
 ```
 
-脚本会创建 `chat_app_db`，以及 `user`、`user_id`、`friend`、`friend_apply` 四张表。
+`sql/create_tables.sql` 是全新环境唯一需要执行的 MySQL 建表入口。它会创建 `chat_app_db` 和当前使用的九张表：`user`、`user_id`、`friend`、`friend_apply`、`chat_thread`、`private_chat`、`group_chat`、`group_chat_member`、`chat_message`。其中 `chat_message` 已包含图片/文件元数据及 `displayed_at`；脚本只会在 `user_id` 为空时初始化分配器。
 
-> 重复执行脚本前请留意 `user_id` 的初始插入语句。已有数据时不应重复插入该分配器记录。
+项目服务通过 MySQL X DevAPI 使用 `33060` 端口；上面的 `mysql` 命令行客户端使用传统协议端口 `3306`。`sql/chat_message_storage.sql` 保留给旧版分步初始化流程，只创建缺失的聊天表，不会升级已有表结构；新库不需要再执行它。
 
-### 2. 初始化聊天会话表
+已有数据库的升级方式取决于当前结构：若尚无聊天表，可执行兼容脚本 `sql/chat_message_storage.sql` 补建缺失的聊天表，它包含当前定义；若 `chat_message` 是旧版结构，则按需执行 `sql/chat_image_message_migration.sql` 和 `sql/chat_message_receipt_migration.sql`，依次补齐图片/文件字段及 `displayed_at`。这些迁移只修改已有表，不会创建缺失的聊天表。`CREATE TABLE IF NOT EXISTS` 不会升级已有表。`status` 仍只表示已读状态，显示确认单独使用 `displayed_at`。
 
-私聊会话创建（`ID_CREATE_PRIVATE_CHAT_REQ/RSP` 的服务端入口）依赖额外的会话表。需要启用该能力时，在完成基础建表后执行：
-
-```powershell
-mysql -uroot -p < sql/chat_message_storage.sql
-```
-
-脚本创建 `chat_thread`、`private_chat`、群聊相关表和 `chat_message`。ChatServer1 会将文本及已核验的图片、普通文件写入 `chat_message`；桌面端通过 `ID_LOAD_CHAT_THREAD_REQ/RSP` 发现会话、通过 `ID_LOAD_CHAT_MSG_REQ/RSP` 分页增量加载历史。已有数据库还需执行 `sql/chat_image_message_migration.sql`（幂等补齐图片/文件资源字段和 `file` 消息类型）与 `sql/chat_message_receipt_migration.sql`（增加独立的 `displayed_at` 字段以支持显示确认）；`status` 仍只表示已读状态。
-
-### 3. 配置服务端连接信息
+### 2. 配置服务端连接信息
 
 按本机 MySQL 和 Redis 的实际账号修改下列文件中的 `[Mysql]`、`[Redis]`：
 
@@ -132,7 +124,7 @@ ResourceServer 的 `[StatusServer]` 与 `[Mysql]` 也必须与 ChatServer 指向
 
 `StatusServer/config.ini` 的 `[ChatServers]`、每台 ChatServer 的 `[SelfChatServer]` 和 `[PeerServer]` 共同定义这套拓扑。若修改端口、主机或名称，需要同步更新三份相关配置。
 
-### 4. 配置验证码服务
+### 3. 配置验证码服务
 
 ```powershell
 Set-Location VarifyServer
@@ -144,7 +136,7 @@ npm install
 
 > `config.example.json` 中 MySQL 端口为 `3306`。若验证码服务后续需要连接本项目的 MySQL X DevAPI，请按实际 MySQL 配置调整；当前验证码发送流程依赖 SMTP 与 Redis。
 
-### 5. 配置客户端网关地址
+### 4. 配置客户端网关地址
 
 桌面客户端从 `chat_app desktop/config.ini` 的 `[GateServer]` 读取 HTTP 网关地址。默认值为 `localhost:8080`；客户端与服务端不在同一台机器时，改为可访问的网关主机名或 IP。
 
@@ -171,6 +163,23 @@ build\ResourceServer\Debug\ResourceServer.exe
 根目录 CMake 会从 `proto/message.proto` 自动生成 protobuf/gRPC 代码。各服务的 `config.ini` 也会被复制到对应 Debug 目录；服务必须从可执行文件所在目录启动，才能读取这份运行时配置。
 
 桌面客户端使用 Qt Creator 打开 `chat_app desktop/CMakeLists.txt`，选择带 Qt SQL 模块的 Qt 6 kit 后构建运行。SQLite 使用 Qt 自带的 `QSQLITE` 驱动，不需要安装或启动独立数据库服务。
+
+## 自动化测试
+
+根目录 `CMakeLists.txt` 已通过 `add_subdirectory(tests)` 接入所有测试，`include(CTest)` 默认打开 `BUILD_TESTING`。先在根目录配置并执行一次默认构建，测试目标就会随项目一起编译：
+
+```powershell
+cmake --preset windows-vcpkg
+cmake --build --preset debug
+```
+
+之后运行 `run_tests.ps1` 逐项选择测试。脚本只调用 CTest，不会重新配置 CMake 或编译目标：
+
+```powershell
+.\run_tests.ps1
+```
+
+提示时输入 `y` 运行、回车跳过。也可以用 `-Tests tcp,sqlite` 直接指定测试；可选项为 `tcp`、`friend`、`message`、`sqlite` 和 `capacity`。连接容量测试需要 ChatServer 正在运行。好友和消息用例只在显式配置独立测试库时执行；未配置时会跳过，避免修改开发数据。SQLite 用例使用 Qt 6.5+ Core、Sql、Widgets 和 QSQLITE 插件；Windows 上根构建会从桌面构建缓存读取 Qt kit 与编译器，并在默认构建过程中完成独立子构建，避免混用 MSVC 和 MinGW。CI 使用独立 MySQL schema 运行数据库用例。具体覆盖范围、测试库配置及容量测试方式见 [测试笔记](note/测试.md)。
 
 ## 启动
 

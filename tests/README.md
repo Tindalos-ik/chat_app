@@ -1,4 +1,8 @@
-# 连接容量测试
+# 自动化测试
+
+根目录 CMake 默认启用 `BUILD_TESTING`，已注册的测试目标随根目录默认构建一起编译。可从根目录运行 `run_tests.ps1`，逐项选择要运行的测试；传入 `-Tests tcp,message` 等参数可跳过交互提示。数据库用例只在显式提供隔离测试库配置时运行。各目标的覆盖范围、MySQL 环境变量和 CI 方式见 [测试笔记](../note/测试.md)。
+
+## 连接容量测试
 
 `connection_capacity_test` 是针对真实 ChatServer 的 TCP 集成测试，不是纯内存单元测试。它会一台一台地持续建立并保持空闲 TCP 连接，直到出现第一次建连失败，或每台都达到探测上限 `CHAT_CONNECTION_MAX`。
 

@@ -6,13 +6,13 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <queue>
 #include <mutex>
 #include <string>
 #include "const.h"
 #include "MsgNode.h"
+#include "TcpFrameParser.h"
 #include <ctime>
 
 class CServer; // 前置声明，避免 CServer.h <-> CSession.h 循环包含
@@ -23,7 +23,7 @@ using boost::asio::ip::tcp;
  * CSession 会话类
  * 负责一条 TCP 连接上所有数据的收发。
  * 自定义协议：包头(4字节) = 消息id(2字节) + 消息体长度(2字节)，均为网络字节序。
- *   - 收包：先读满包头，解析出id和长度，再读满包体，投递给逻辑层处理
+ *   - 收包：任意 TCP 字节片段交给增量解析器，完整帧再投递给逻辑层
  *   - 发包：消息放入发送队列，通过 async_write 逐条发送，保证不交叉不乱序
  */
 class CSession : public std::enable_shared_from_this<CSession> {
@@ -36,7 +36,7 @@ public:
     void SetUserId(int uid);         // 登录成功后记录用户id
     int GetUserId();                 // 获取用户id
 
-    void Start();                    // 连接建立后开始收包（先读包头）
+    void Start();                    // 连接建立后开始异步收包
     void Send(char* msg, short max_length, short msgid); // 发送char*消息
     void Send(std::string msg, short msgid);             // 发送std::string消息
     void Close();                    // 关闭连接
@@ -51,19 +51,16 @@ public:
 
 
 private:
-    void ReadHead(int head_len);     // 读包头
-    void ReadBody(int body_len);     // 读包体
-    void asyncReadFull(std::size_t maxLength,
-        std::function<void(const boost::system::error_code&, std::size_t)> handler); // 从0开始读满maxLength字节
-    void asyncReadLen(std::size_t read_len, std::size_t total_len,
-        std::function<void(const boost::system::error_code&, std::size_t)> handler); // 循环读，直到读满total_len字节
+    void ReadSome();                 // 异步读取 TCP 字节片段并送入帧解析器
+    void HandleFrame(const chat_protocol::TcpFrame& frame); // 处理已完整解析的协议帧
     void HandleWrite(const boost::system::error_code& error, std::shared_ptr<CSession> shared_self); // 写完成回调
 
     tcp::socket _socket;              // 会话对应的socket
     std::string _session_id;          // 会话唯一标识（uuid字符串）
     std::weak_ptr<CServer> _server;   // 不延长服务器生命周期；回调中 lock 后才能使用
     bool _b_close;                    // 连接是否已关闭
-    char _data[MAX_LENGTH];           // 收发共用的缓冲区（直接用数组，避免手动new/delete导致泄漏）
+    char _data[MAX_LENGTH];           // 单次异步读的临时缓冲区；跨读状态由解析器保存
+    chat_protocol::TcpFrameParser _frame_parser; // 生产收包路径使用的增量帧解析器
 
     std::queue<std::shared_ptr<SendNode>> _send_que; // 待发送消息队列
     std::mutex _send_lock;                            // 保护发送队列
@@ -73,7 +70,6 @@ private:
     std::atomic_bool _disconnect_handled;
 
     std::shared_ptr<RecvNode> _recv_msg_node; // 正在接收的消息体节点
-    std::shared_ptr<MsgNode> _recv_head_node; // 收到的包头节点（用来解析id和长度）
     int _user_uid;                            // 登录后的用户id，未登录为0
 
     // 定时器线程读取、会话线程更新，必须使用原子变量避免数据竞争。

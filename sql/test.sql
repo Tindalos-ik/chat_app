@@ -1,5 +1,5 @@
 -- chat_app_db 的可重复执行测试数据。
--- 先执行 create_tables.sql 创建四张表；本脚本不会清空已有数据。
+-- 先执行 create_tables.sql 建立完整表结构；本脚本不会清空已有数据。
 -- 测试账号：test_alice、test_bob、test_carol、test_david、klein 的三个测试好友。
 -- 客户端登录密码均为 123456；pwd 保存的是客户端 xorString 后的值 745230。
 

@@ -58,7 +58,7 @@ LocalChatStorageMgr::~LocalChatStorageMgr()
     Close();
 }
 
-bool LocalChatStorageMgr::Initialize(qint64 uid)
+bool LocalChatStorageMgr::Initialize(qint64 uid, const QString &cacheRoot)
 {
     if (uid <= 0) {
         _lastError = QStringLiteral("无法为无效 uid 创建本地聊天数据库");
@@ -66,7 +66,18 @@ bool LocalChatStorageMgr::Initialize(qint64 uid)
         return false;
     }
 
-    if (IsReady() && _uid == uid) {
+    if (!cacheRoot.isEmpty() && !QDir::isAbsolutePath(cacheRoot)) {
+        _lastError = QStringLiteral("聊天缓存根目录必须是绝对路径");
+        return false;
+    }
+
+    const QString appDataPath = cacheRoot.isEmpty()
+        ? QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)
+        : QDir::cleanPath(cacheRoot);
+    const QString expectedPath = QDir(QDir(appDataPath).filePath(
+        QStringLiteral("chat_cache"))).filePath(
+            QStringLiteral("chat_cache_%1.db").arg(uid));
+    if (IsReady() && _uid == uid && _databasePath == expectedPath) {
         _cachedThreads = LoadThreads();
         return true;
     }
@@ -76,8 +87,6 @@ bool LocalChatStorageMgr::Initialize(qint64 uid)
     _uid = uid;
     _connectionName = QStringLiteral("local_chat_cache_%1").arg(uid);
 
-    const QString appDataPath = QStandardPaths::writableLocation(
-        QStandardPaths::AppLocalDataLocation);
     const QString cacheDirectory = QDir(appDataPath).filePath(QStringLiteral("chat_cache"));
     if (!QDir().mkpath(cacheDirectory)) {
         _lastError = QStringLiteral("无法创建本地聊天缓存目录：%1").arg(cacheDirectory);

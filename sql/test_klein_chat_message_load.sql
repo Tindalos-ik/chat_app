@@ -1,6 +1,6 @@
 -- klein 聊天历史加载测试数据。
 --
--- 前置条件：已执行 chat_message_storage.sql，且 user 表中存在：
+-- 前置条件：已执行 sql/create_tables.sql（或旧版分步流程中的基础表与聊天表脚本），且 user 表中存在：
 --   klein    (接收测试消息的账号)
 --   tindalos (发送测试消息的账号)
 --

@@ -58,8 +58,10 @@ class LocalChatStorageMgr : public Singleton<LocalChatStorageMgr>
 public:
     ~LocalChatStorageMgr();
 
-    // 打开 uid 的专属数据库。重复调用同一 uid 会刷新会话摘要；切换 uid 会先关闭旧库。
-    bool Initialize(qint64 uid);
+    // 打开 uid 的专属数据库。cacheRoot 为空时使用 Qt 应用数据目录；
+    // 测试可传入独立的绝对目录，避免写入真实用户缓存。
+    // 重复打开同一文件会刷新摘要；切换 uid 或根目录会先关闭旧库。
+    bool Initialize(qint64 uid, const QString &cacheRoot = QString());
     void Close();
 
     bool IsReady() const;

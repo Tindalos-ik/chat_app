@@ -1,5 +1,5 @@
 -- ============================================================
--- chat_app_db 全量建库建表脚本（MySQL 8.0+）
+-- chat_app_test_local 全量建库建表脚本（MySQL 8.0+）
 -- 项目服务使用 MySQL X DevAPI（默认端口 33060）；导入本文件时使用 mysql 客户端端口（默认 3306）
 --
 -- 说明：
@@ -10,11 +10,11 @@
 -- ============================================================
 
 -- 创建数据库（如果不存在）
-CREATE DATABASE IF NOT EXISTS `chat_app_db`
+CREATE DATABASE IF NOT EXISTS `chat_app_test_local`
     DEFAULT CHARACTER SET utf8mb4
     COLLATE utf8mb4_unicode_ci;
 
-USE `chat_app_db`;
+USE `chat_app_test_local`;
 
 -- ------------------------------------------------------------
 -- 1. user：账号 + 资料
@@ -188,3 +188,9 @@ CREATE TABLE IF NOT EXISTS `chat_message` (
 --   UPDATE `user` SET `uid` = 1000 WHERE `uid` = 0 AND `name` = 'klein';
 -- 注意执行顺序：先修正 user，再保证 user_id 的当前值大于最大 uid
 -- ============================================================
+
+SELECT TABLE_NAME
+  FROM information_schema.TABLES
+  WHERE TABLE_SCHEMA = 'chat_app_test_local'
+    AND TABLE_TYPE = 'BASE TABLE'
+  ORDER BY TABLE_NAME;

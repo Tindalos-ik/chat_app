@@ -1,8 +1,9 @@
 -- ============================================================
--- 已部署 chat_message 的图片消息迁移（MySQL 8.0+）
+-- 旧版 chat_message 的图片/文件字段迁移（MySQL 8.0+）
 --
--- 前置：chat_message_storage.sql 已执行，且当前库为 chat_app_db。
--- 新部署请直接执行更新后的 chat_message_storage.sql；已有库执行本文件。
+-- 前置：旧版 chat_message 表已存在，且当前库为 chat_app_db。
+-- 新库的完整结构已由 sql/create_tables.sql 创建，不需要执行本迁移。
+-- 旧库按需执行本文件，再执行 chat_message_receipt_migration.sql；本文件不会创建缺失的聊天表。
 --
 -- 不使用 CREATE INDEX IF NOT EXISTS：MySQL 不支持这条语法。
 -- 每项变更先查询 information_schema，再用 PREPARE 执行，故脚本可安全重跑，

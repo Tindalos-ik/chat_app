@@ -45,7 +45,9 @@
 
 | 文件 | 内容 |
 | --- | --- |
-| [sql/create_tables.sql](sql/create_tables.sql) | 数据库建表脚本（user/user_id/friend/friend_apply，friend_apply 已含 applicant_remark 字段） |
+| [sql/create_tables.sql](sql/create_tables.sql) | 全新环境完整数据库建表脚本（含用户、好友、会话、消息和回执表） |
+| [sql/chat_app_test_local.sql](sql/chat_app_test_local.sql) | 本机集成测试 schema 的完整建库建表脚本 |
+| [sql/chat_message_storage.sql](sql/chat_message_storage.sql) | 旧版分步初始化的聊天表兼容脚本；新环境执行统一建表脚本即可 |
 | [sql/chat_image_message_migration.sql](sql/chat_image_message_migration.sql) | 已部署 chat_message 的图片/文件资源字段和消息类型迁移脚本 |
 | [sql/chat_message_receipt_migration.sql](sql/chat_message_receipt_migration.sql) | 已部署 chat_message 的显示确认字段迁移脚本 |
 | [疑惑.md](note/疑惑.md) | 常见小知识点解答（uid/token、分布式、Qt 并发安全、MySQL/Redis 边界等） |
@@ -56,7 +58,7 @@
 | [连接池.md](note/连接池.md) | 项目中 4 类连接池 |
 | [grpc.md](note/grpc.md) | gRPC 应用 |
 | [服务部署.md](note/服务部署.md) | Windows/Linux 部署 |
-| [测试.md](note/测试.md) | 单元/集成测试总结：现有连接容量测试、运行方式、实测结果与后续补测计划 |
+| [测试.md](note/测试.md) | CTest 单元/集成测试：TCP 帧解析、好友事务、消息重试与离线同步、Qt/SQLite 缓存、连接容量及 CI |
 | [数据库设计.md](note/数据库设计.md) | MySQL 用户、社交、会话与消息表，以及客户端 SQLite 缓存设计 |
 | [聊天信息存储方案.md](note/聊天信息存储方案.md) | 服务端会话/消息表、客户端 SQLite 缓存管理器与增量同步设计 |
 | [聊天可靠性与资源安全提升.md](note/聊天可靠性与资源安全提升.md) | 消息 ACK、已读与未读、历史分包、图片下载鉴权和故障恢复边界 |

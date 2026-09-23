@@ -6,6 +6,7 @@
 #include <iomanip>
 #include <random>
 #include <cstring>
+#include <vector>
 #include "RedisMgr.h"
 #include <json-forwards.h>
 #include <json.h>
@@ -31,7 +32,6 @@ CSession::CSession(boost::asio::io_context &io_context, std::weak_ptr<CServer> s
     : _socket(io_context), _server(server), _b_close(false), _close_after_send(false),
       _disconnect_handled(false), _user_uid(0) {
     _session_id = generate_uuid(); // 每个会话分配一个唯一id，服务器用它管理会话
-    _recv_head_node = std::make_shared<MsgNode>(HEAD_TOTAL_LEN); // 包头固定4字节
     std::cout << "session created, id = " << _session_id << std::endl;
 }
 
@@ -55,11 +55,11 @@ int CSession::GetUserId() {
     return _user_uid;
 }
 
-// 连接建立后开始接收数据：先读4字节包头
+// 连接建立后开始接收数据；TCP 分片和多帧粘连由增量解析器处理。
 void CSession::Start() {
     // Session 在等待 accept 前就已构造，超时计时应从真正接入时开始。
     UpdateHeartbeat();
-    ReadHead(HEAD_TOTAL_LEN);
+    ReadSome();
 }
 
 // 发送消息（std::string版本）
@@ -206,140 +206,82 @@ void CSession::HandleWrite(const boost::system::error_code &error, std::shared_p
     }
 }
 
-// 读包头：包头固定4字节 = [消息id(2字节)] [消息体长度(2字节)]
-void CSession::ReadHead(int head_len) {
+// 每次读取任意长度的 TCP 字节，再由增量解析器恢复帧边界。
+void CSession::ReadSome() {
     auto self = shared_from_this();
-    asyncReadFull(head_len, [self, this](const boost::system::error_code &ec, std::size_t bytes_transfered) {
-        try {
-            if (ec) {
-                std::cout << "handle read failed, error is " << ec.message() << endl;
-                HandleDisconnect();
-                return;
-            }
-            if (bytes_transfered < HEAD_TOTAL_LEN) {
-                std::cout << "read length not match, read [" << bytes_transfered << "] , total ["
-                          << HEAD_TOTAL_LEN << "]" << endl;
-                HandleDisconnect();
-                return;
-            }
-
-            _recv_head_node->Clear(); // 复用包头节点
-            memcpy(_recv_head_node->_data, _data, bytes_transfered);
-
-            // 解析消息id（网络字节序 -> 主机字节序）
-            short msg_id = 0;
-            memcpy(&msg_id, _recv_head_node->_data, HEAD_ID_LEN);
-            msg_id = boost::asio::detail::socket_ops::network_to_host_short(msg_id);
-
-            // 解析消息体长度（网络字节序 -> 主机字节序）
-            short msg_len = 0;
-            memcpy(&msg_len, _recv_head_node->_data + HEAD_ID_LEN, HEAD_DATA_LEN);
-            msg_len = boost::asio::detail::socket_ops::network_to_host_short(msg_len);
-
-            // 非法长度直接断开，防止恶意包导致内存越界
-            if (msg_id <= 0 || msg_id > MAX_LENGTH || msg_len <= 0 || msg_len > MAX_LENGTH) {
-                std::cout << "invalid msg id [" << msg_id << "] or length [" << msg_len << "]" << endl;
-                HandleDisconnect();
-                return;
-            }
-
-            // 根据包体长度创建接收节点，继续读包体
-            _recv_msg_node = std::make_shared<RecvNode>(msg_len, msg_id);
-            ReadBody(msg_len);
-        } catch (std::exception &e) {
-            std::cout << "read head exception : " << e.what() << endl;
-            HandleDisconnect();
-        }
-    });
-}
-
-// 读包体：读满 body_len 字节后解析消息并投递到逻辑层
-void CSession::ReadBody(int body_len) {
-    auto self = shared_from_this();
-    asyncReadFull(body_len, [self, this, body_len](const boost::system::error_code &ec, std::size_t bytes_transfered) {
-        try {
-            if (ec) {
-                std::cout << "handle read failed, error is " << ec.message() << endl;
-                HandleDisconnect();
-                return;
-            }
-            if (bytes_transfered < static_cast<std::size_t>(body_len)) {
-                std::cout << "read length not match, read [" << bytes_transfered << "] , total ["
-                          << body_len << "]" << endl;
-                HandleDisconnect();
-                return;
-            }
-
-            // 把包体拷贝进接收节点，并补一个'\0'方便以字符串形式打印
-            memcpy(_recv_msg_node->_data, _data, bytes_transfered);
-            _recv_msg_node->_cur_len += static_cast<short>(bytes_transfered);
-            _recv_msg_node->_data[_recv_msg_node->_total_len] = '\0';
-            std::cout << "receive data is " << _recv_msg_node->_data << endl;
-
-            // 心跳属于传输层控制帧，不进入单线程 LogicSystem 队列。
-            // 身份认证仍由登录流程负责；这里仅检测连接是否能收发数据。
-            if (_recv_msg_node->GetMsgId() == ID_HEART_BEAT_REQ) {
-                Json::CharReaderBuilder reader;
-                Json::Value request;
-                std::string errors;
-                std::istringstream body(std::string(_recv_msg_node->_data, body_len));
-                if (!Json::parseFromStream(reader, body, &request, &errors) || !request.isObject()) {
-                    // 错误心跳不续期，沿用协议异常的统一清理路径。
+    _socket.async_read_some(boost::asio::buffer(_data, sizeof(_data)),
+        [self, this](const boost::system::error_code &ec, std::size_t bytes_transfered) {
+            try {
+                if (ec) {
+                    std::cout << "handle read failed, error is " << ec.message() << endl;
                     HandleDisconnect();
                     return;
                 }
-                UpdateHeartbeat();
-                Json::Value heartbeat_rsp;
-                heartbeat_rsp["error"] = ErrorCode::Success;
-                heartbeat_rsp["server_time"] = Json::Int64(std::time(nullptr));
-                Send(heartbeat_rsp.toStyledString(), ID_HEARTBEAT_RSP);
-                ReadHead(HEAD_TOTAL_LEN);
-                return;
+
+                std::vector<chat_protocol::TcpFrame> frames;
+                const auto parse_result = _frame_parser.Feed(_data, bytes_transfered, frames);
+
+                // 若同一段数据的后续头部非法，仍先处理此前已完成的帧。
+                for (const auto& frame : frames) {
+                    HandleFrame(frame);
+                    if (_disconnect_handled.load()) {
+                        return;
+                    }
+                }
+
+                if (!parse_result.IsOk()) {
+                    std::cout << "invalid msg id [" << parse_result.message_id
+                              << "] or length [" << parse_result.body_length << "]" << endl;
+                    HandleDisconnect();
+                    return;
+                }
+
+                ReadSome();
+            } catch (std::exception &e) {
+                std::cout << "read stream exception : " << e.what() << endl;
+                HandleDisconnect();
             }
-
-            // 业务帧读满也说明传输仍然活跃；业务 JSON 与权限仍由 LogicSystem 校验。
-            // 半包和零散字节不续期，避免对端只发几个字节就无限占用连接。
-            UpdateHeartbeat();
-
-            // 封装成逻辑节点投递给逻辑层处理（登录校验、聊天转发等）
-            LogicSystem::GetInstance()->PostMsgToQue(
-                std::make_shared<LogicNode>(shared_from_this(), _recv_msg_node));
-
-            // 处理完一条消息，继续读下一条的包头（长连接循环接收）
-            ReadHead(HEAD_TOTAL_LEN);
-        } catch (std::exception &e) {
-            std::cout << "read body exception : " << e.what() << endl;
-            HandleDisconnect();
-        }
-    });
-}
-
-// 清空缓冲区，并从0开始读满 maxLength 字节
-void CSession::asyncReadFull(std::size_t maxLength,
-                             std::function<void(const boost::system::error_code &, std::size_t)> handler) {
-    ::memset(_data, 0, MAX_LENGTH);
-    asyncReadLen(0, maxLength, handler);
-}
-
-// 循环读取，直到累计读满 total_len 字节才回调（解决TCP粘包/半包问题）
-void CSession::asyncReadLen(std::size_t read_len, std::size_t total_len,
-                            std::function<void(const boost::system::error_code &, std::size_t)> handler) {
-    auto self = shared_from_this();
-    _socket.async_read_some(boost::asio::buffer(_data + read_len, total_len - read_len),
-        [read_len, total_len, handler, self](const boost::system::error_code &ec, std::size_t bytes_transfered) {
-            if (ec) {
-                handler(ec, read_len + bytes_transfered); // 出错直接回调，由上层统一处理
-                return;
-            }
-            if (read_len + bytes_transfered >= total_len) {
-                handler(ec, read_len + bytes_transfered); // 长度够了，回调
-                return;
-            }
-            // 半包：继续读剩下的字节
-            self->asyncReadLen(read_len + bytes_transfered, total_len, handler);
         });
 }
 
+// 完整帧进入原有会话逻辑；半包不会触发业务，多帧按流中的顺序逐条处理。
+void CSession::HandleFrame(const chat_protocol::TcpFrame& frame) {
+    const auto body_length = static_cast<short>(frame.body.size());
+    const auto message_id = static_cast<short>(frame.message_id);
+    _recv_msg_node = std::make_shared<RecvNode>(body_length, message_id);
+    memcpy(_recv_msg_node->_data, frame.body.data(), frame.body.size());
+    _recv_msg_node->_cur_len = body_length;
+    _recv_msg_node->_data[frame.body.size()] = '\0';
+    std::cout << "receive data is " << _recv_msg_node->_data << endl;
+
+    // 心跳属于传输层控制帧，不进入单线程 LogicSystem 队列。
+    // 身份认证仍由登录流程负责；这里仅检测连接是否能收发数据。
+    if (message_id == ID_HEART_BEAT_REQ) {
+        Json::CharReaderBuilder reader;
+        Json::Value request;
+        std::string errors;
+        std::istringstream body(std::string(_recv_msg_node->_data, frame.body.size()));
+        if (!Json::parseFromStream(reader, body, &request, &errors) || !request.isObject()) {
+            // 错误心跳不续期，沿用协议异常的统一清理路径。
+            HandleDisconnect();
+            return;
+        }
+        UpdateHeartbeat();
+        Json::Value heartbeat_rsp;
+        heartbeat_rsp["error"] = ErrorCode::Success;
+        heartbeat_rsp["server_time"] = Json::Int64(std::time(nullptr));
+        Send(heartbeat_rsp.toStyledString(), ID_HEARTBEAT_RSP);
+        return;
+    }
+
+    // 业务帧读满也说明传输仍然活跃；业务 JSON 与权限仍由 LogicSystem 校验。
+    // 半包和零散字节不续期，避免对端只发几个字节就无限占用连接。
+    UpdateHeartbeat();
+
+    // 封装成逻辑节点投递给逻辑层处理（登录校验、聊天转发等）
+    LogicSystem::GetInstance()->PostMsgToQue(
+        std::make_shared<LogicNode>(shared_from_this(), _recv_msg_node));
+}
 LogicNode::LogicNode(std::shared_ptr<CSession> session, std::shared_ptr<RecvNode> recvnode)
     : _session(session), _recvnode(recvnode) {
 }

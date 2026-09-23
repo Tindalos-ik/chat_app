@@ -138,52 +138,42 @@ TCP 是**字节流**，没有消息边界。所以双方约定一个固定格式
 - **粘包**：发送方连续发两条消息，接收方一次 `read` 可能读到两条粘在一起的数据。
 - **半包**：一条消息太长，一次 `read` 只读到一部分。
 
-解决思路（本项目做法）：
+服务端 `CSession::ReadSome()` 每次接收一段任意长度的字节，并交给 `TcpFrameParser::Feed()`。解析器保存未读完的包头或包体；每凑齐一帧，就按收到的顺序返回给会话处理。一次读取含多帧时会逐帧处理；尾部不足一帧则留到下次读取。
 
-1. 先**循环读取**，读满固定的 4 字节包头；
-2. 从包头解析出 `msg_id` 和 `msg_len`；
-3. 校验长度合法（`0 < msg_len <= MAX_LENGTH`），再**循环读取** `msg_len` 字节包体；
-4. 包体读满后处理消息，然后回到第 1 步继续读下一条。
-
-核心函数 `asyncReadLen`（循环读直到读满 `total_len`）：
+核心调用：
 
 ```cpp
-void CSession::asyncReadLen(std::size_t read_len, std::size_t total_len, handler) {
+void CSession::ReadSome() {
     auto self = shared_from_this();
-    _socket.async_read_some(boost::asio::buffer(_data + read_len, total_len - read_len),
-        [read_len, total_len, handler, self](const boost::system::error_code& ec,
-                                             std::size_t bytes_transfered) {
-            if (ec) {
-                handler(ec, read_len + bytes_transfered);   // 出错：交给上层统一处理
-                return;
+    _socket.async_read_some(boost::asio::buffer(_data, sizeof(_data)),
+        [self, this](const boost::system::error_code& ec, std::size_t count) {
+            if (ec) { HandleDisconnect(); return; }
+            std::vector<chat_protocol::TcpFrame> frames;
+            const auto result = _frame_parser.Feed(_data, count, frames);
+            for (const auto& frame : frames) {
+                HandleFrame(frame);
+                if (_disconnect_handled.load()) return;
             }
-            if (read_len + bytes_transfered >= total_len) {
-                handler(ec, read_len + bytes_transfered);   // 读满：回调
-                return;
-            }
-            // 半包：继续读剩余字节
-            self->asyncReadLen(read_len + bytes_transfered, total_len, handler);
+            if (!result.IsOk()) { HandleDisconnect(); return; }
+            ReadSome();
         });
 }
 ```
 
 ### 5.3 防恶意包
 
-解析出 `msg_len` 后必须校验：
+包头的消息 ID 和长度都必须校验。`TcpFrameParser` 只接受 1 到 `MAX_LENGTH`；非法头部会让解析器进入失败状态，`CSession` 调用 `HandleDisconnect()`：
 
 ```cpp
-if (msg_id <= 0 || msg_id > MAX_LENGTH || msg_len <= 0 || msg_len > MAX_LENGTH) {
-    Close();                                  // 非法长度直接断开
-    _server->ClearSession(_session_id);
-    return;
-}
+if (msg_id == 0 || msg_id > MAX_LENGTH) return InvalidMessageId;
+if (msg_len == 0 || msg_len > MAX_LENGTH) return InvalidBodyLength;
 ```
 
-如果不校验，攻击者伪造一个超大 `msg_len`（比如 65535），`asyncReadLen` 就会疯狂申请/读取内存，最终越界崩溃。
+如果不校验，攻击者伪造一个超大 `msg_len`（比如 65535）会让接收端为异常长度分配缓存；校验发生在调整包体缓存大小之前。
 
 ### 5.4 本次修复：客户端也必须按同一状态机收包
 
-服务端的 `CSession` 用 `asyncReadLen()` 保证“包头读满后才读包体”，所以服务端天然能处理半包，也会连续开始下一次 `ReadHead()` 处理粘在一起的下一包。
+服务端的 `CSession` 用增量解析器恢复帧边界；半包留在解析器内部，粘在一起的多帧在同一次 `Feed()` 中按顺序返回。
 
 客户端 `TcpMgr` 虽然使用 Qt 的 `QTcpSocket::readyRead`，但面对的是同一条 TCP 字节流，也必须遵守同一规则。此次发送文本消息时暴露了两个客户端收包问题：
 
@@ -361,10 +351,9 @@ void CSession::HandleWrite(const boost::system::error_code& error,
 ### 8.1 投递：CSession → LogicSystem
 
 ```cpp
-// CSession 读满包体后：
+// CSession 的 HandleFrame 收到完整业务帧后：
 LogicSystem::GetInstance()->PostMsgToQue(
     std::make_shared<LogicNode>(shared_from_this(), _recv_msg_node));
-ReadHead(HEAD_TOTAL_LEN);   // 继续读下一条（长连接循环）
 ```
 
 `LogicNode` 就是队列元素：`{ shared_ptr<CSession> _session; shared_ptr<RecvNode> _recvnode; }`，记录"谁发的 + 发了什么"。
@@ -431,9 +420,9 @@ _fun_callbacks[MSG_CHAT_LOGIN] = std::bind(&LogicSystem::LoginHandler, this,
 解决：每次发起异步读都先 `auto self = shared_from_this();`，回调捕获 `self`，保证回调执行期间会话一定存活：
 
 ```cpp
-void CSession::ReadHead(int head_len) {
+void CSession::ReadSome() {
     auto self = shared_from_this();   // 关键！
-    asyncReadFull(head_len, [self, this](...) { ... });
+    _socket.async_read_some(boost::asio::buffer(_data), [self, this](...) { ... });
 }
 ```
 
@@ -461,9 +450,9 @@ void CSession::HandleDisconnect() {
 ## 10. 关键设计要点 
 
 1. **字节序**：包头里的 `msg_id`、`msg_len` 一律网络字节序，收发都要用 `host_to_network_short` / `network_to_host_short` 转换。
-2. **定长包头**：包头固定 4 字节是解决粘包的基础；先读满包头再读包体，两段都靠"循环读满"保证完整性。
+2. **定长包头**：包头固定 4 字节；增量解析器保存跨读取的包头与包体状态，并从一次读取中提取所有完整帧。
 3. **长度校验**：`msg_len > MAX_LENGTH` 必须断开连接，这是防内存越界的最低要求。
-4. **错误分支要 return**：读包头/包体出错或数据不足时，调用 `HandleDisconnect()` 后必须 `return`，否则会拿着不完整的数据继续解析。
+4. **错误分支要 return**：读取错误或非法头部触发 `HandleDisconnect()` 后必须 `return`；半包本身不是错误，等待后续字节。
 5. **缓冲区**：`CSession` 直接用栈数组 `char _data[MAX_LENGTH]`，避免手动 `new/delete` 泄漏；`MsgNode` 构造多分配 1 字节存 `'\0'`，方便打印调试。
 6. **发送队列**：同一 socket 同时只允许一个 `async_write`，消息用 `SendNode` 预先拼好整包再写出。
 7. **接收队列**：网络层与业务层通过 `condition_variable + mutex` 队列解耦，业务单线程消费。
@@ -481,9 +470,9 @@ void CSession::HandleDisconnect() {
   ▼
 CServer::HandleAccept ──► CSession::Start
   ▼
-CSession::ReadHead  ── 循环读满 4 字节包头，解析 id/len，校验
+CSession::ReadSome  ── 接收字节片段，交给 TcpFrameParser
   ▼
-CSession::ReadBody  ── 循环读满 len 字节包体
+TcpFrameParser::Feed ── 校验包头、组装完整帧
   ▼
 PostMsgToQue(LogicNode) ──► LogicSystem 消息队列
   ▼

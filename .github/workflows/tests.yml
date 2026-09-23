@@ -1,0 +1,101 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  ctest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: chat-ci-password
+          MYSQL_ROOT_HOST: '%'
+        ports:
+          - 3306:3306
+          - 33060:33060
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -pchat-ci-password"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system and Qt dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y default-mysql-client libgl1 libxkbcommon-x11-0
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          host: linux
+          target: desktop
+          arch: gcc_64
+          cache: true
+
+      - name: Install C++ test dependencies
+        run: |
+          git clone --depth 1 https://github.com/microsoft/vcpkg.git "$RUNNER_TEMP/chat-app-vcpkg"
+          "$RUNNER_TEMP/chat-app-vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+          "$RUNNER_TEMP/chat-app-vcpkg/vcpkg" install gtest redis-plus-plus mysql-connector-cpp boost-property-tree boost-uuid --triplet x64-linux
+          echo "VCPKG_ROOT=$RUNNER_TEMP/chat-app-vcpkg" >> "$GITHUB_ENV"
+
+      - name: Create isolated MySQL schema
+        env:
+          MYSQL_PWD: chat-ci-password
+        run: |
+          sed 's/chat_app_db/chat_app_test_ci/g' sql/create_tables.sql |
+            mysql --protocol=tcp -h 127.0.0.1 -P 3306 -u root
+
+      - name: Configure and build tests
+        run: |
+          cmake -S . -B build-ci -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_TARGET_TRIPLET=x64-linux \
+            -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR" \
+            -DCHAT_APP_TESTS_ONLY=ON
+          cmake --build build-ci --parallel 4
+
+      - name: Run CTest
+        env:
+          CHAT_FRIEND_TEST_CONFIRM_ISOLATED: 'YES'
+          CHAT_FRIEND_TEST_MYSQL_HOST: 127.0.0.1
+          CHAT_FRIEND_TEST_MYSQL_PORT: '33060'
+          CHAT_FRIEND_TEST_MYSQL_USER: root
+          CHAT_FRIEND_TEST_MYSQL_PASSWORD: chat-ci-password
+          CHAT_FRIEND_TEST_MYSQL_SCHEMA: chat_app_test_ci
+          CHAT_MESSAGE_TEST_DB_HOST: 127.0.0.1
+          CHAT_MESSAGE_TEST_DB_PORT: '33060'
+          CHAT_MESSAGE_TEST_DB_USER: root
+          CHAT_MESSAGE_TEST_DB_SCHEMA: chat_app_test_ci
+        run: |
+          cat > build-ci/tests/config.ini <<'EOF'
+          [Mysql]
+          host = 127.0.0.1
+          port = 33060
+          user = root
+          passwd = chat-ci-password
+          schema = chat_app_test_ci
+          poolsize = 2
+          EOF
+          ctest --test-dir build-ci --output-on-failure -LE capacity \
+            --output-junit ctest-results.xml
+          python3 - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          root = ET.parse('build-ci/ctest-results.xml').getroot()
+          skipped = [case.get('name') for case in root.iter('testcase')
+                     if case.find('skipped') is not None]
+          if skipped:
+              print('CI requires every non-capacity test to run; skipped:', ', '.join(skipped))
+              sys.exit(1)
+          PY
