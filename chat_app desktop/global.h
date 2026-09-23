@@ -62,7 +62,10 @@ enum ReqId{
     ID_MESSAGE_DISPLAY_ACK_REQ = 1036,  // 接收端已将消息实际绘制到当前会话
     ID_NOTIFY_MESSAGE_DISPLAYED = 1037, // 服务端通知发送端：对端已显示
     ID_MARK_THREAD_READ_REQ = 1038,     // 当前会话已读到 message_id 游标
-    ID_NOTIFY_THREAD_READ = 1039        // 服务端通知发送端：对端已读游标
+    ID_NOTIFY_THREAD_READ = 1039,       // 服务端通知发送端：对端已读游标
+    ID_FILE_CHAT_MSG_REQ = 1040,        // 文件消息请求：fromuid/touid/fileArray
+    ID_FILE_CHAT_MSG_RSP = 1041,        // 文件消息发送确认
+    ID_NOTIFY_FILE_CHAT_MSG_REQ = 1042  // 对端文件消息通知
 };
 
 // ResourceServer 使用独立 TCP 连接和 2+4 字节包头；这里的 ID 属于另一套协议，

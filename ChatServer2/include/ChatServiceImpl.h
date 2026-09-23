@@ -1,3 +1,4 @@
+// 文件作用：实现 ChatServer1 对其他 ChatServer 提供的 gRPC 服务。
 // rpc通信服务端 ， 继承service，重写服务函数
 #pragma once
 #ifndef CHATSERVER1_CHATSERVICEIMPL_H
@@ -32,6 +33,8 @@ using message::TextChatData;
 using message::ImageChatMsgReq;
 using message::ImageChatMsgRsp;
 using message::ImageChatData;
+using message::FileChatMsgReq;
+using message::FileChatMsgRsp;
 
 using message::KickUserReq;
 using message::KickUserRsp;
@@ -52,6 +55,8 @@ public:
     Status NotifyAuthFriend(ServerContext* context, const AuthFriendReq* request, AuthFriendRsp* response) override;
     Status NotifyTextChatMsg(ServerContext* context, const TextChatMsgReq* request, TextChatMsgRsp* response) override;
     Status NotifyImageChatMsg(ServerContext* context, const ImageChatMsgReq* request, ImageChatMsgRsp* response) override;
+    // 将已持久化文件通知转换为接收用户的 1042 TCP JSON；request 为来源服消息，response 回传处理结果。
+    Status NotifyFileChatMsg(ServerContext* context, const FileChatMsgReq* request, FileChatMsgRsp* response) override;
     Status NotifyMessageDisplayed(ServerContext* context, const MessageDisplayedReq* request,
                                   MessageDisplayedRsp* response) override;
     Status NotifyThreadRead(ServerContext* context, const ThreadReadReq* request,

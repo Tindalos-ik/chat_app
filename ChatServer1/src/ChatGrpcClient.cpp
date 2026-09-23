@@ -177,6 +177,31 @@ ImageChatMsgRsp ChatGrpcClient::NotifyImageChatMsg(std::string server_ip, const 
     return rsp;
 }
 
+// 仅传递源服务器已核验并落库的文件字段；对端负责构造 1042 TCP 通知。
+// 参数 server_ip 是 Redis 解析出的目标 ChatServer 名称；request 仅包含已提交消息的可信字段。
+FileChatMsgRsp ChatGrpcClient::NotifyFileChatMsg(std::string server_ip, const FileChatMsgReq& request) {
+    FileChatMsgRsp rsp;
+    rsp.set_error(ErrorCode::RPCFaild);
+    rsp.set_fromuid(request.fromuid());
+    rsp.set_touid(request.touid());
+    const auto it = _pools.find(server_ip);
+    if (it == _pools.end()) return rsp;
+    auto& pool = it->second;
+    const auto deadline = std::chrono::system_clock::now() + std::chrono::seconds(3);
+    ClientContext context;
+    context.set_deadline(deadline);
+    auto stub = pool->getConnectionUntil(deadline);
+    if (!stub) return rsp;
+    Defer defer([&pool, &stub]() { pool->returnConnection(std::move(stub)); });
+    const Status status = stub->NotifyFileChatMsg(&context, request, &rsp);
+    if (!status.ok()) {
+        std::cout << "NotifyFileChatMsg RPC failed, target_server=" << server_ip
+                  << ", code=" << status.error_code() << ", message=" << status.error_message() << std::endl;
+        rsp.set_error(ErrorCode::RPCFaild);
+    }
+    return rsp;
+}
+
 MessageDisplayedRsp ChatGrpcClient::NotifyMessageDisplayed(std::string server_ip,
                                                            const MessageDisplayedReq& request) {
     MessageDisplayedRsp rsp;

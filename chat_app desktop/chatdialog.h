@@ -52,6 +52,8 @@ private slots:
     void slot_text_chat_send_result(const QString &messageId, bool success, int deliveryState);
     void slot_image_chat_send_result(std::shared_ptr<ImageChatData>& image, bool success);
     void slot_image_chat(std::shared_ptr<ImageChatData>& image);
+    void slot_file_chat_send_result(std::shared_ptr<FileChatData>& file, bool success);
+    void slot_file_chat(std::shared_ptr<FileChatData>& file);
     void slot_message_delivery_updated(qint64 threadId, const QList<qint64> &messageIds,
                                        int deliveryState);
 
@@ -85,13 +87,22 @@ private:
     // 离线图片的元数据先随 1030 写入 SQLite；用户进入会话后再排队下载，不能把
     // resource_id 当作普通文本渲染，也不能依赖用户离线期间不可能收到的 1035。
     bool ParseStoredImageMessage(const LocalChatMessage &message, ImageChatData *image) const;
-    void QueueStoredImageMessage(const LocalChatMessage &message);
+    // 创建保持历史顺序的图片占位行并排队下载。appendToView=false 供“加载更早消息”
+    // 先收集整页后统一头插；返回值由调用方接管到 ChatView。
+    ChatItemBase *QueueStoredImageMessage(const LocalChatMessage &message,
+                                          bool appendToView = true);
     void appendDownloadedImage(const ImageChatData &image, const QString &localPath);
+    // 从元数据建立可点击文件卡片；只有用户点卡片并选择路径后才调用资源下载。
+    ChatItemBase *CreateFileChatItem(const FileChatData &file);
+    bool ParseStoredFileMessage(const LocalChatMessage &message, FileChatData *file) const;
+    void QueueOrAppendStoredFile(const LocalChatMessage &message);
     void LoadOlderLocalMessages();
     void SaveFriendAuthMessages(const std::shared_ptr<UserInfo> &friendInfo,
                                 const QList<std::shared_ptr<TextChatData>> &messages);
     void SendDisplayAcknowledgement(qint64 threadId, const QList<qint64> &messageIds);
     void SendReadReceipt(qint64 threadId, qint64 readThroughMessageId);
+    // 当前页还有未完成的入站图片时暂缓 1038，避免发送端在接收端尚未看到图片时显示已读。
+    void TrySendCurrentReadReceipt();
 
     std::shared_ptr<UserInfo> _current_chatuser;
     qint64 _current_thread_id = 0;
@@ -104,12 +115,20 @@ private:
     // 图片从本地预览开始，到 1034 确认并原子缓存完成前都保留该映射；失败时复用
     // ChatItemBase 的统一失败图标，不影响文本消息的发送状态。
     QHash<QString, QPointer<ChatItemBase>> _pending_image_items;
+    QHash<QString, QPointer<ChatItemBase>> _pending_file_items;
+    QHash<QString, FileChatData> _pending_file_metadata;
+    QHash<QString, QString> _pending_file_source_paths;
+    QSet<QString> _failed_file_msg_ids;
     // 图片确认后仍保留按正式 message_id 的弱引用，供 1037/1039 更新状态文字。
     QHash<qint64, QPointer<ChatItemBase>> _outgoing_image_items;
+    QHash<qint64, QPointer<ChatItemBase>> _outgoing_file_items;
     // 当前聊天窗口内已经请求或显示的历史图片 message_id。会话重绘时清空；实时
     // 推送和补同步同时到达时，借此避免对同一条消息重复下载、重复显示。
     QSet<qint64> _requested_image_message_ids;
     QSet<qint64> _displayed_image_message_ids;
+    QHash<qint64, QPointer<ChatItemBase>> _image_placeholder_items;
+    QSet<qint64> _pending_incoming_image_ids;
+    qint64 _current_read_receipt_target_id = 0;
     ChatImageTransferTask *_image_transfer = nullptr;
 
 signals:

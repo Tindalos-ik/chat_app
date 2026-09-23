@@ -2,7 +2,7 @@
 
 基于 C++ 的分布式即时聊天项目，包含 Qt 6 桌面客户端、HTTP 网关、状态服务、两个 TCP 聊天服务实例、资源服务和 Node.js 邮箱验证码服务。
 
-项目提供注册、邮箱验证码、登录、找回密码、好友申请/认证、好友列表加载、同账号重复登录互踢、客户端与 ChatServer 的应用层心跳检测，以及文本和图片消息的同服/跨服转发。图片二进制始终留在 ResourceServer：ChatServer 在写入 MySQL 前通过 gRPC 核验资源已完成，并保存由资源服务返回的可信元数据；桌面端通过现有 1007/1008 分片协议下载。桌面端以 SQLite 缓存会话、实时通知和登录后的增量历史，详见 `note/聊天信息存储方案.md`。
+项目提供注册、邮箱验证码、登录、找回密码、好友申请/认证、好友列表加载、同账号重复登录互踢、客户端与 ChatServer 的应用层心跳检测，以及文本、图片和普通文件消息。图片与文件正文始终保存在 ResourceServer；ChatServer 写入 MySQL 前分别核验图片或普通文件资源，只保存资源 ID 和可信元数据。桌面端使用 1007/1008 分片下载：图片自动缓存，文件在用户点击卡片并选择保存位置后下载。下载时 ResourceServer 校验登录 token、私聊成员身份、会话 ID 和消息资源归属。桌面端以 SQLite 缓存会话、实时通知和登录后的增量历史，详见 `note/聊天信息存储方案.md` 与 `note/文件传输.md`。
 
 ## 架构
 
@@ -22,8 +22,8 @@ ChatServer1 <----- gRPC -------> ChatServer2
   |                               |
   +----------- MySQL / Redis -----+
 
-Qt 桌面客户端 ---- TCP 9090（1007 携带 uid/token/thread_id）----> ResourceServer ----> uploads
-ChatServer1/2 -------- gRPC 50057 ----^（图片资源核验）
+Qt 桌面客户端 ---- TCP 9090（分片上传/下载；下载带 uid/token/thread_id）----> ResourceServer ----> uploads
+ChatServer1/2 -------- gRPC 50057 ----^（图片与普通文件资源核验）
 ResourceServer -------- gRPC 50052 / MySQL ----> StatusServer / private_chat 鉴权
 ```
 
@@ -34,7 +34,7 @@ ResourceServer -------- gRPC 50052 / MySQL ----> StatusServer / private_chat 鉴
 | StatusServer | C++、gRPC | 50052 | ChatServer 负载选择、token 签发和校验 |
 | ChatServer1 | C++、Boost.Asio、gRPC | TCP 8090 / gRPC 50055 | 长连接、会话和消息路由 |
 | ChatServer2 | C++、Boost.Asio、gRPC | TCP 8091 / gRPC 50056 | 第二个聊天服务实例、跨服转发 |
-| ResourceServer | C++、Boost.Asio、gRPC | TCP 9090 / gRPC 50057 | 图片分片上传、断点续传、下载；1007 校验登录 token、私聊成员关系与资源归属；以及 ChatServer 的已完成图片核验 |
+| ResourceServer | C++、Boost.Asio、gRPC | TCP 9090 / gRPC 50057 | 通用资源分片上传、断点续传和下载；1007 校验登录 token、私聊成员关系与资源归属；以及 ChatServer 的图片/文件资源核验 |
 | MySQL | MySQL 8 | X Protocol 33060 | 用户、好友和好友申请数据 |
 | Redis | Redis | 6379 | 验证码、token、在线路由和服务负载 |
 
@@ -46,7 +46,7 @@ chat_app/
 ├── ChatServer2/          # 第二台 TCP/gRPC 聊天服务
 ├── GateServer/           # HTTP 网关
 ├── StatusServer/         # 登录状态与负载均衡服务
-├── ResourceServer/       # 图片分片上传与断点续传服务
+├── ResourceServer/       # 图片和文件分片上传、断点续传与下载服务
 ├── VarifyServer/         # Node.js 邮箱验证码服务
 ├── chat_app desktop/     # Qt 6 桌面客户端
 ├── proto/message.proto   # 所有服务共用的 protobuf/gRPC 协议
@@ -103,7 +103,7 @@ mysql -uroot -p < sql/create_tables.sql
 mysql -uroot -p < sql/chat_message_storage.sql
 ```
 
-脚本创建 `chat_thread`、`private_chat`、群聊相关表和 `chat_message`。ChatServer1 会将文本和已核验图片写入 `chat_message`；桌面端通过 `ID_LOAD_CHAT_THREAD_REQ/RSP` 发现会话、通过 `ID_LOAD_CHAT_MSG_REQ/RSP` 分页增量加载历史。已有数据库还需依次执行 `sql/chat_image_message_migration.sql` 与 `sql/chat_message_receipt_migration.sql`：前者补齐图片元数据，后者增加独立的 `displayed_at` 字段以支持显示确认；`status` 仍只表示已读状态。
+脚本创建 `chat_thread`、`private_chat`、群聊相关表和 `chat_message`。ChatServer1 会将文本及已核验的图片、普通文件写入 `chat_message`；桌面端通过 `ID_LOAD_CHAT_THREAD_REQ/RSP` 发现会话、通过 `ID_LOAD_CHAT_MSG_REQ/RSP` 分页增量加载历史。已有数据库还需执行 `sql/chat_image_message_migration.sql`（幂等补齐图片/文件资源字段和 `file` 消息类型）与 `sql/chat_message_receipt_migration.sql`（增加独立的 `displayed_at` 字段以支持显示确认）；`status` 仍只表示已读状态。
 
 ### 3. 配置服务端连接信息
 
@@ -262,3 +262,4 @@ curl http://127.0.0.1:8080/get_test
 - [数据库设计](note/数据库设计.md)：MySQL 表结构说明。
 - [聊天信息存储方案](note/聊天信息存储方案.md)：服务端会话/消息模型、客户端 SQLite 缓存和增量同步边界。
 - [资源服务](note/资源服务.md)：资源上传、资源 ID、gRPC 图片核验与 TCP 分片下载协议。
+- [文件传输](note/文件传输.md)：私聊文件消息、手动下载和资源归属鉴权。

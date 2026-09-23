@@ -96,6 +96,9 @@ enum MSG_IDS {
     // 1038 表示用户已进入会话并读到指定游标，1039 将已读游标通知消息发送端。
     ID_MARK_THREAD_READ_REQ = 1038,
     ID_NOTIFY_THREAD_READ = 1039,
+    ID_FILE_CHAT_MSG_REQ = 1040, // 私聊文件消息请求
+    ID_FILE_CHAT_MSG_RSP = 1041, // 文件消息持久化确认
+    ID_NOTIFY_FILE_CHAT_MSG_REQ = 1042, // 通知接收方收到文件
 };
 
 #define LOGIN_COUNT "login_count"

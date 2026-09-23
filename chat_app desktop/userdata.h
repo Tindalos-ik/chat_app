@@ -159,6 +159,21 @@ struct ImageChatData {
     int deliveryState = 1; // 1034 的已保存/实时投递状态；1037/1039 再提升 UI 状态。
 };
 
+// 作用：描述一条私聊文件消息的元数据。文件不包含图片宽高；只有用户选择保存路径后
+// 客户端才会通过 ResourceClient 请求文件分片。
+struct FileChatData {
+    qint64 messageId = 0;   // ChatServer 持久化后的消息 ID
+    qint64 threadId = 0;    // ChatServer 返回的私聊会话 ID
+    QString msgId;          // 客户端发送前生成的 UUID
+    QString resourceId;     // ResourceServer upload_id；不包含本机路径或下载 URL
+    QString name;           // 原始文件名，仅作为展示和保存对话框默认名称
+    QString mimeType;       // MIME 元数据，不参与文件内容的自动打开
+    qint64 fileSize = 0;    // 服务端确认的文件字节数
+    int fromUid = 0;
+    int toUid = 0;
+    int deliveryState = 1;  // 1041/1042 的投递阶段
+};
+
 // 好友认证的好友资料与附加消息必须作为一个整体交给界面：先把好友加入 UserMgr，
 // 再用 textmsgs 中的 thread_id 创建本地正式会话，避免消息先到而找不到对端资料。
 struct FriendAuthResult {

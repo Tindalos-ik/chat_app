@@ -18,6 +18,9 @@ namespace {
 // ResourceServer 的单帧包体上限为 4 KB。下载数据还要经过 Base64 和 JSON 包装，
 // 因此原始字节不能贴近 4 KB；2 KB 可稳定给资源 ID、文件名和协议字段预留空间。
 constexpr Json::UInt64 kMaxDownloadChunkSize = 2 * 1024;
+// 服务端强制的单文件上限，避免绕过 Qt 客户端直接提交超大任务或分片。
+// 采用 100 MiB（二进制）并允许恰好等于上限的文件。
+constexpr Json::UInt64 kMaxUploadFileSize = 100ULL * 1024 * 1024;
 
 bool IsSafeUploadId(const std::string& upload_id) {
     if (upload_id.empty() || upload_id.size() > 160) {
@@ -80,46 +83,6 @@ void FillDownloadResponse(Json::Value& response, ErrorCodes error,
     response["total_size"] = total_size;
     response["offset"] = offset;
     response["is_last"] = is_last;
-}
-
-// 只从 ResourceServer 自己创建的任务目录中解析资源。resource_id 在协议层等同
-// upload_id，先经过字符白名单检查，再以 meta.json 中记录的原始文件名定位文件，
-// 不接受客户端提交的文件路径，避免路径穿越读取任意本机文件。
-ErrorCodes ResolveCompletedResource(const std::string& resource_id,
-                                    std::filesystem::path& final_path,
-                                    std::string& file_name,
-                                    Json::UInt64& total_size) {
-    if (!IsSafeUploadId(resource_id)) {
-        return ErrorCodes::Error_Json;
-    }
-
-    const std::filesystem::path task_dir = ConfigMgr::Inst().GetFilePath() / resource_id;
-    const std::filesystem::path meta_path = task_dir / "meta.json";
-    Json::Value meta;
-    if (!ReadJsonFile(meta_path, meta)) {
-        return ErrorCodes::ResourceNotFound;
-    }
-    if (!meta["completed"].asBool()) {
-        return ErrorCodes::ResourceNotCompleted;
-    }
-
-    const auto stored_name = std::filesystem::u8path(meta["name"].asString()).filename();
-    if (stored_name.empty() || !IsNonNegativeInteger(meta["total_size"])) {
-        return ErrorCodes::ResourceNotFound;
-    }
-
-    total_size = meta["total_size"].asUInt64();
-    final_path = task_dir / stored_name;
-    std::error_code ec;
-    if (!std::filesystem::exists(final_path, ec) || ec) {
-        return ErrorCodes::ResourceNotFound;
-    }
-    const auto actual_size = std::filesystem::file_size(final_path, ec);
-    if (ec || actual_size != total_size) {
-        return ErrorCodes::ResourceNotFound;
-    }
-    file_name = stored_name.u8string();
-    return ErrorCodes::Success;
 }
 
 // 当前 ResourceServer 只负责自定义 TCP 上传，还没有单独的 HTTP 静态文件服务。
@@ -260,6 +223,12 @@ void LogicWorker::HandleSyncFile(std::shared_ptr<CSession> session, const short 
         return;
     }
 
+    // 先于目录创建、meta.json 写入和续传文件检查拒绝过大声明，防止原始 TCP 客户端绕过 Qt 限制。
+    if (total_size > kMaxUploadFileSize) {
+        FillUploadResponse(response, UploadFileTooLarge, upload_id, total_size, 0, false);
+        return;
+    }
+
     std::lock_guard<std::mutex> lock(GetResourceFileMutex());
     const std::filesystem::path task_dir = ConfigMgr::Inst().GetFilePath() / upload_id;
     const std::filesystem::path meta_path = task_dir / "meta.json";
@@ -355,6 +324,13 @@ void LogicWorker::HandleUploadFile(std::shared_ptr<CSession> session, const shor
         offset > total_size || decoded_data.size() > total_size - offset ||
         is_last != (offset + decoded_data.size() == total_size)) {
         rtvalue["error"] = ErrorCodes::Error_Json;
+        return;
+    }
+
+    // 每个分片请求都独立检查总大小，不能只依赖此前的 1005 同步请求。
+    // 拒绝发生在持锁、读写任务元数据及打开 .part 文件之前。
+    if (total_size > kMaxUploadFileSize) {
+        FillUploadResponse(rtvalue, UploadFileTooLarge, upload_id, total_size, 0, false);
         return;
     }
 
@@ -479,7 +455,8 @@ void LogicWorker::HandleDownloadFile(std::shared_ptr<CSession> session, const sh
     }
 
     // 在拿文件锁、触及文件系统前先完成身份与会话资源归属校验。每个 1007 都携带
-    // 当前登录 token，不能把一次通过的连接当作永久授权。
+    // 当前登录 token，SQL 同时限定 thread_id、resource_id、image/file 类型和私聊成员。
+    // 不能把一次通过的连接当作永久授权。
     const ResourceAccessResult access = ResourceAccessAuthorizer::Instance()
         .AuthorizePrivateDownload(uid, token, thread_id, resource_id);
     if (access != ResourceAccessResult::Authorized) {
@@ -496,16 +473,21 @@ void LogicWorker::HandleDownloadFile(std::shared_ptr<CSession> session, const sh
               << ", uid=" << uid << ", thread_id=" << thread_id
               << ", offset=" << offset << ", chunk_size=" << requested_chunk_size << std::endl;
 
-    // 与上传、续传、完成重命名共用同一把锁，防止读到刚好被替换的文件。
+    // 与上传、续传、完成重命名及 gRPC 核验共用同一把锁，防止读到发布切换中的文件。
     std::lock_guard<std::mutex> lock(GetResourceFileMutex());
     std::filesystem::path final_path;
     std::string file_name;
     Json::UInt64 total_size = 0;
-    const ErrorCodes resolve_result = ResolveCompletedResource(resource_id, final_path, file_name, total_size);
+    // 下载复用可信文件解析器，不再维护第二套完成标志、文件名和大小校验逻辑。
+    VerifiedFileResource verified;
+    const ErrorCodes resolve_result = ResolveCompletedFileResourceLocked(resource_id, verified);
     if (resolve_result != ErrorCodes::Success) {
         FillDownloadResponse(response, resolve_result, resource_id, 0, 0, false);
         return;
     }
+    final_path = verified.finalPath;
+    file_name = verified.name;
+    total_size = verified.fileSize;
     if (offset > total_size) {
         FillDownloadResponse(response, ErrorCodes::UploadOffsetMismatch,
                              resource_id, total_size, total_size, false);

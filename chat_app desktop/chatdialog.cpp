@@ -30,6 +30,9 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QMessageBox>
+#include <QFileDialog>
+#include <QPushButton>
+#include <QFileInfo>
 
 namespace {
 constexpr int kLocalHistoryPageSize = 50;
@@ -88,10 +91,44 @@ ChatDialog::ChatDialog(QWidget *parent)
         emit TcpMgr::GetInstance()->sig_send_data(ReqId::ID_IMAGE_CHAT_MSG_REQ,
             QJsonDocument(envelope).toJson(QJsonDocument::Compact));
     });
+    connect(_image_transfer, &ChatImageTransferTask::fileUploadFinished, this,
+            [this](const FileChatData &file) {
+        if (!TcpMgr::GetInstance()->IsConnected()) {
+            if (auto item = _pending_file_items.value(file.msgId)) item->SetSendFailed(true);
+            _failed_file_msg_ids.insert(file.msgId);
+            return;
+        }
+        _pending_file_metadata.insert(file.msgId, file);
+        QJsonObject item;
+        // ResourceServer 已完成字节上传，此处只通过 1040 发送文件引用。聊天 TCP 包中
+        // 不包含本地路径和文件内容，fileArray 字段与服务端文件消息合同保持一致。
+        item["msgid"] = file.msgId; item["resource_id"] = file.resourceId;
+        item["name"] = file.name; item["mime_type"] = file.mimeType;
+        item["file_size"] = static_cast<double>(file.fileSize);
+        QJsonObject envelope;
+        envelope["fromuid"] = file.fromUid; envelope["touid"] = file.toUid;
+        envelope["fileArray"] = QJsonArray{item};
+        emit TcpMgr::GetInstance()->sig_send_data(ReqId::ID_FILE_CHAT_MSG_REQ,
+            QJsonDocument(envelope).toJson(QJsonDocument::Compact));
+    });
+    connect(_image_transfer, &ChatImageTransferTask::fileDownloadFailed, this,
+            [this](const FileChatData &file, const QString &reason) {
+        QMessageBox::warning(this, tr("文件下载失败"), reason);
+        qWarning() << "chat file download failed:" << file.resourceId << reason;
+    });
+    connect(_image_transfer, &ChatImageTransferTask::fileDownloadFinished, this,
+            [this](const FileChatData &file, const QString &path) {
+        QMessageBox::information(this, tr("文件已保存"), tr("文件已保存到：\n%1").arg(path));
+        qInfo() << "chat file saved:" << file.resourceId << path;
+    });
     connect(_image_transfer, &ChatImageTransferTask::uploadFailed, this,
             [this](const QString &msgId, const QString &message) {
         qWarning() << "chat image upload failed:" << message;
-        const auto item = _pending_image_items.take(msgId);
+        auto item = _pending_image_items.take(msgId);
+        if (!item) {
+            item = _pending_file_items.value(msgId);
+            if (item) _failed_file_msg_ids.insert(msgId);
+        }
         if (item) {
             item->SetSendFailed(true);
         }
@@ -107,6 +144,13 @@ ChatDialog::ChatDialog(QWidget *parent)
         // 不会因为一次网络波动永久卡在空白消息状态。
         if (image.messageId > 0) {
             _requested_image_message_ids.remove(image.messageId);
+            const auto placeholder = _image_placeholder_items.value(image.messageId);
+            if (placeholder) {
+                const auto self = UserMgr::GetInstance()->GetUserInfo();
+                const ChatRole role = self && image.fromUid == self->_uid
+                    ? ChatRole::Self : ChatRole::Other;
+                placeholder->setWidget(new TextBubble(role, tr("[图片加载失败，点击重试对话框后可重新下载]")));
+            }
         }
         const auto item = _pending_image_items.take(image.msgId);
         if (item) {
@@ -125,6 +169,13 @@ ChatDialog::ChatDialog(QWidget *parent)
         if (answer == QMessageBox::Retry) {
             if (image.messageId > 0) {
                 _requested_image_message_ids.insert(image.messageId);
+                const auto placeholder = _image_placeholder_items.value(image.messageId);
+                if (placeholder) {
+                    const auto self = UserMgr::GetInstance()->GetUserInfo();
+                    const ChatRole role = self && image.fromUid == self->_uid
+                        ? ChatRole::Self : ChatRole::Other;
+                    placeholder->setWidget(new TextBubble(role, tr("[图片加载中…]")));
+                }
             }
             _image_transfer->enqueueDownload(image);
         }
@@ -252,6 +303,10 @@ ChatDialog::ChatDialog(QWidget *parent)
             this, &ChatDialog::slot_image_chat_send_result);
     connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_image_chat,
             this, &ChatDialog::slot_image_chat);
+    connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_file_chat_send_result,
+            this, &ChatDialog::slot_file_chat_send_result);
+    connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_file_chat,
+            this, &ChatDialog::slot_file_chat);
     connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_local_chat_synced,
             this, &ChatDialog::slot_local_chat_synced);
     connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_message_delivery_updated,
@@ -448,6 +503,8 @@ void ChatDialog::slot_send_message()
         QWidget *pBubble = nullptr;
         ImageChatData imageToUpload;
         bool needsImageUpload = false;
+        bool needsFileUpload = false;
+        FileChatData fileToUpload;
 
         if(type == "text")
         {
@@ -489,8 +546,48 @@ void ChatDialog::slot_send_message()
         }
         else if(type == "file")
         {
-            // 文件消息：先按预览图展示（真正的文件发送待实现）
-            pBubble = new PictureBubble(role, msgList[i].pixmap);
+            fileToUpload.msgId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            fileToUpload.fromUid = userinfo->_uid;
+            fileToUpload.toUid = _current_chatuser->_uid;
+            fileToUpload.name = QFileInfo(msgList[i].content).fileName();
+            fileToUpload.fileSize = QFileInfo(msgList[i].content).size();
+            _pending_file_items.insert(fileToUpload.msgId, pChatItem);
+            _pending_file_metadata.insert(fileToUpload.msgId, fileToUpload);
+            _pending_file_source_paths.insert(fileToUpload.msgId, msgList[i].content);
+            auto *fileCard = new QPushButton(
+                tr("文件：%1\n%2 字节 · 点击选择保存位置")
+                    .arg(fileToUpload.name).arg(fileToUpload.fileSize));
+            fileCard->setMinimumSize(230, 72);
+            fileCard->setStyleSheet(QStringLiteral(
+                "QPushButton { text-align:left; padding:10px; border:1px solid #c8d3df; "
+                "border-radius:6px; background:#f5f8fb; color:#263746; } "
+                "QPushButton:hover { background:#e9f1f8; }"));
+            const QString fileMsgId = fileToUpload.msgId;
+            connect(fileCard, &QPushButton::clicked, this, [this, fileMsgId] {
+                const auto it = _pending_file_metadata.constFind(fileMsgId);
+                if (_failed_file_msg_ids.contains(fileMsgId)) {
+                    if (QMessageBox::question(this, tr("重试发送文件"), tr("文件发送失败，是否重试？"),
+                                              QMessageBox::Yes | QMessageBox::No) == QMessageBox::Yes) {
+                        const auto source = _pending_file_source_paths.constFind(fileMsgId);
+                        if (source != _pending_file_source_paths.cend()) {
+                            _failed_file_msg_ids.remove(fileMsgId);
+                            if (auto row = _pending_file_items.value(fileMsgId)) row->SetSendFailed(false);
+                            _image_transfer->enqueueFileUpload(*source, _pending_file_metadata.value(fileMsgId));
+                        }
+                    }
+                    return;
+                }
+                if (it == _pending_file_metadata.cend() || it->resourceId.isEmpty()
+                    || it->threadId <= 0) {
+                    QMessageBox::information(this, tr("文件处理中"),
+                                             tr("等待 ChatServer 确认文件消息后即可下载。"));
+                    return;
+                }
+                const QString path = QFileDialog::getSaveFileName(this, tr("保存文件"), it->name);
+                if (!path.isEmpty()) _image_transfer->enqueueFileDownload(*it, path);
+            });
+            pBubble = fileCard;
+            needsFileUpload = true;
         }
         if(pBubble != nullptr)
         {
@@ -501,6 +598,9 @@ void ChatDialog::slot_send_message()
             // 先展示本地预览，再排队上传；任务失败会把同一行标红，绝不把本地路径
             // 或图片字节拼入 1033 的聊天 TCP 包。
             _image_transfer->enqueueUpload(msgList[i].content, imageToUpload);
+        }
+        if (needsFileUpload) {
+            _image_transfer->enqueueFileUpload(msgList[i].content, fileToUpload);
         }
 
     }
@@ -662,9 +762,241 @@ void ChatDialog::slot_image_chat(std::shared_ptr<ImageChatData> &image)
     if (!image) {
         return;
     }
-    qInfo() << "ChatDialog received image notification, from=" << image->fromUid
-            << "to=" << image->toUid << "resource_id=" << image->resourceId;
-    _image_transfer->enqueueDownload(*image);
+    const auto currentUser = UserMgr::GetInstance()->GetUserInfo();
+    const auto storage = LocalChatStorageMgr::GetInstance();
+    const auto friends = UserMgr::GetInstance()->GetFriendList();
+    const auto peer = std::find_if(friends.cbegin(), friends.cend(), [&image](const auto &user) {
+        return user && user->_uid == image->fromUid;
+    });
+    if (!currentUser || image->toUid != currentUser->_uid || peer == friends.cend()
+        || !storage->IsReady() || image->threadId <= 0 || image->messageId <= 0) {
+        qWarning() << "ignore image notification missing private-chat metadata";
+        return;
+    }
+
+    // 1035 与文本、文件实时通知使用同一条“先落 SQLite，再刷新 UI”路径。这样通知属于
+    // 未打开会话时也不会因下载回调被丢弃；稍后进入会话仍能从正式历史创建图片占位行。
+    LocalChatThread thread;
+    thread.threadId = image->threadId;
+    thread.threadType = QStringLiteral("private");
+    thread.title = (*peer)->_name;
+    thread.peerUid = (*peer)->_uid;
+    for (const LocalChatThread &cached : storage->CachedThreads()) {
+        if (cached.threadId == thread.threadId) {
+            thread = cached;
+            thread.threadType = QStringLiteral("private");
+            thread.title = (*peer)->_name;
+            thread.peerUid = (*peer)->_uid;
+            break;
+        }
+    }
+
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const qint64 cursor = storage->SyncCursors().value(thread.threadId, 0);
+    const bool messageAlreadyKnown = storage->HasMessage(image->messageId);
+    const bool currentThread = _current_chatuser && _current_chatuser->_uid == image->fromUid
+        && _current_thread_id == thread.threadId;
+    if (image->messageId >= thread.lastMessageId) {
+        thread.lastMessageId = image->messageId;
+        thread.lastMessagePreview = QStringLiteral("[图片]");
+        thread.lastMessageAtMs = now;
+    }
+    thread.updatedAtMs = now;
+    if (!messageAlreadyKnown && !currentThread) ++thread.unreadCount;
+
+    QJsonObject metadata;
+    metadata["msgid"] = image->msgId;
+    metadata["resource_id"] = image->resourceId;
+    metadata["name"] = image->name;
+    metadata["mime_type"] = image->mimeType;
+    metadata["file_size"] = static_cast<double>(image->fileSize);
+    metadata["width"] = image->width;
+    metadata["height"] = image->height;
+    metadata["message_id"] = QString::number(image->messageId);
+    metadata["thread_id"] = QString::number(image->threadId);
+    LocalChatMessage stored;
+    stored.messageId = image->messageId;
+    stored.threadId = image->threadId;
+    stored.senderId = image->fromUid;
+    stored.recvId = image->toUid;
+    stored.contentType = QStringLiteral("image");
+    stored.content = QString::fromUtf8(QJsonDocument(metadata).toJson(QJsonDocument::Compact));
+    stored.createdAtMs = now;
+    stored.updatedAtMs = now;
+    stored.serverStatus = 0;
+    stored.sendState = 3;
+    stored.deliveryState = image->deliveryState;
+    stored.isRead = currentThread;
+    // 实时 1035 可能先于登录 1030 到达，只保存消息并维持原同步游标；否则单条较新的
+    // 实时消息会让 1029 跳过尚未补齐的较早消息，表现为接收端“吞消息”。
+    if (!storage->SaveReceivedMessages(thread, {stored}, cursor)) {
+        qWarning() << "save real-time image chat message failed:" << storage->LastError();
+        return;
+    }
+    emit TcpMgr::GetInstance()->sig_local_chat_synced(thread.threadId);
+}
+
+void ChatDialog::slot_file_chat_send_result(std::shared_ptr<FileChatData> &file, bool success)
+{
+    // 1041 用客户端 msgid 找回乐观文件卡片。失败时保留源路径和卡片供用户点击重试；
+    // 成功时使用服务端正式 messageId/threadId 更新投递状态和后续手动下载权限。
+    if (!file) return;
+    const auto item = _pending_file_items.value(file->msgId);
+    if (!success) {
+        if (item) item->SetSendFailed(true);
+        _failed_file_msg_ids.insert(file->msgId);
+        return;
+    }
+    if (item) item->SetDeliveryState(file->deliveryState > 0 ? file->deliveryState : 1);
+    // 1041 中的正式 threadId/messageId 原样保留；缺失时不从当前窗口猜测会话归属。
+    _pending_file_metadata.insert(file->msgId, *file);
+    _failed_file_msg_ids.remove(file->msgId);
+    _pending_file_source_paths.remove(file->msgId);
+    _pending_file_items.remove(file->msgId);
+    if (item && file->messageId > 0) _outgoing_file_items.insert(file->messageId, item);
+}
+
+void ChatDialog::slot_file_chat(std::shared_ptr<FileChatData> &file)
+{
+    if (!file) return;
+    const auto currentUser = UserMgr::GetInstance()->GetUserInfo();
+    const auto localStorage = LocalChatStorageMgr::GetInstance();
+    const auto friends = UserMgr::GetInstance()->GetFriendList();
+    const auto peer = std::find_if(friends.cbegin(), friends.cend(), [&file](const auto &user) {
+        return user && user->_uid == file->fromUid;
+    });
+    if (!currentUser || file->toUid != currentUser->_uid || peer == friends.cend()
+        || !localStorage->IsReady() || file->threadId <= 0 || file->messageId <= 0) {
+        qWarning() << "ignore file notification missing private-chat metadata";
+        return;
+    }
+    // 与实时文本通知一样，事务同时保存消息、会话摘要和同步游标；UI 是否打开此会话
+    // 不影响落库。当前会话由 sig_local_chat_synced 从 SQLite 重绘，其他会话只刷新摘要和未读数。
+    LocalChatThread thread;
+    thread.threadId = file->threadId;
+    thread.threadType = QStringLiteral("private");
+    thread.title = (*peer)->_name;
+    thread.peerUid = (*peer)->_uid;
+    for (const LocalChatThread &cached : localStorage->CachedThreads()) {
+        if (cached.threadId == thread.threadId) {
+            thread = cached;
+            thread.threadType = QStringLiteral("private");
+            thread.title = (*peer)->_name;
+            thread.peerUid = (*peer)->_uid;
+            break;
+        }
+    }
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const qint64 cursor = localStorage->SyncCursors().value(thread.threadId, 0);
+    const bool messageAlreadyKnown = localStorage->HasMessage(file->messageId);
+    const bool currentThread = _current_chatuser && _current_chatuser->_uid == file->fromUid
+        && _current_thread_id == thread.threadId;
+    if (file->messageId >= thread.lastMessageId) {
+        thread.lastMessageId = file->messageId;
+        thread.lastMessagePreview = QStringLiteral("[文件]");
+        thread.lastMessageAtMs = now;
+    }
+    thread.updatedAtMs = now;
+    if (!messageAlreadyKnown && !currentThread) ++thread.unreadCount;
+    QJsonObject metadata;
+    metadata["msgid"] = file->msgId;
+    metadata["resource_id"] = file->resourceId;
+    metadata["name"] = file->name;
+    metadata["mime_type"] = file->mimeType;
+    metadata["file_size"] = static_cast<double>(file->fileSize);
+    metadata["message_id"] = QString::number(file->messageId);
+    metadata["thread_id"] = QString::number(file->threadId);
+    LocalChatMessage stored;
+    stored.messageId = file->messageId;
+    stored.threadId = file->threadId;
+    stored.senderId = file->fromUid;
+    stored.recvId = file->toUid;
+    stored.contentType = QStringLiteral("file");
+    stored.content = QString::fromUtf8(QJsonDocument(metadata).toJson(QJsonDocument::Compact));
+    stored.createdAtMs = now;
+    stored.updatedAtMs = now;
+    stored.serverStatus = 0;
+    stored.sendState = 3;
+    stored.isRead = currentThread;
+    // 1042 只负责实时加速，不能宣称更早历史已经连续同步完成；游标仅由 1030 推进。
+    if (!localStorage->SaveReceivedMessages(thread, {stored}, cursor)) {
+        qWarning() << "save real-time file chat message failed:" << localStorage->LastError();
+        return;
+    }
+    emit TcpMgr::GetInstance()->sig_local_chat_synced(thread.threadId);
+}
+
+ChatItemBase *ChatDialog::CreateFileChatItem(const FileChatData &file)
+{
+    // 文件卡片只展示已核验的元数据。点击前不请求 ResourceServer；点击后先让用户选择
+    // 保存路径，再把原始 FileChatData 和目标路径交给串行传输任务。
+    const auto self = UserMgr::GetInstance()->GetUserInfo();
+    if (!self) return nullptr;
+    const bool sentBySelf = file.fromUid == self->_uid;
+    const auto friends = UserMgr::GetInstance()->GetFriendList();
+    const auto peer = std::find_if(friends.cbegin(), friends.cend(), [sentBySelf, &file](const auto &user) {
+        return user && user->_uid == (sentBySelf ? file.toUid : file.fromUid);
+    });
+    if (!sentBySelf && peer == friends.cend()) return nullptr;
+    const auto &display = sentBySelf ? self : *peer;
+    auto *row = new ChatItemBase(sentBySelf ? ChatRole::Self : ChatRole::Other);
+    row->setUserName(display->_name);
+    row->setUserAvatar(display->_uid, display->_icon);
+    auto *card = new QPushButton(tr("文件：%1\n%2 字节 · 点击选择保存位置")
+                                     .arg(file.name).arg(file.fileSize));
+    card->setMinimumSize(230, 72);
+    card->setStyleSheet(QStringLiteral(
+        "QPushButton { text-align:left; padding:10px; border:1px solid #c8d3df; "
+        "border-radius:6px; background:#f5f8fb; color:#263746; } "
+        "QPushButton:hover { background:#e9f1f8; }"));
+    connect(card, &QPushButton::clicked, this, [this, file] {
+        // 只有用户点击卡片并确认保存路径后，才向 ResourceServer 请求任何文件分片。
+        const QString path = QFileDialog::getSaveFileName(this, tr("保存文件"), file.name);
+        if (!path.isEmpty()) _image_transfer->enqueueFileDownload(file, path);
+    });
+    row->setWidget(card);
+    if (sentBySelf) row->SetDeliveryState(file.deliveryState > 0 ? file.deliveryState : 1);
+    return row;
+}
+
+bool ChatDialog::ParseStoredFileMessage(const LocalChatMessage &message, FileChatData *file) const
+{
+    // SQLite content 保存的是 1030/1042 的紧凑文件元数据 JSON。这里独立解析文件字段，
+    // 不复用图片解析器，也不要求 width/height，messageId/threadId 以消息列为准。
+    if (!file || message.contentType != QStringLiteral("file") || message.messageId <= 0
+        || message.threadId <= 0) return false;
+    const auto doc = QJsonDocument::fromJson(message.content.toUtf8());
+    if (!doc.isObject()) return false;
+    const auto item = doc.object();
+    bool sizeOk = false;
+    const qint64 size = item.value("file_size").toVariant().toLongLong(&sizeOk);
+    file->messageId = message.messageId; file->threadId = message.threadId;
+    file->msgId = item.value("msgid").toString();
+    file->resourceId = item.value("resource_id").toString();
+    file->name = item.value("name").toString();
+    file->mimeType = item.value("mime_type").toString();
+    file->fileSize = size; file->fromUid = static_cast<int>(message.senderId);
+    file->toUid = static_cast<int>(message.recvId);
+    return sizeOk && size > 0 && size <= 100LL * 1024 * 1024
+        && !file->msgId.isEmpty() && !file->resourceId.isEmpty() && !file->name.isEmpty()
+        && file->fromUid > 0 && file->toUid > 0;
+}
+
+void ChatDialog::QueueOrAppendStoredFile(const LocalChatMessage &message)
+{
+    FileChatData file;
+    if (!ParseStoredFileMessage(message, &file)) {
+        qWarning() << "ignore invalid cached file message:" << message.messageId;
+        return;
+    }
+    // 历史只显示元数据卡片；下载由卡片点击触发，不在会话打开或同步时自动拉取。
+    // 卡片实际 append 后即可发送 1036，因为“已显示”描述 UI 可见状态，与文件下载无关。
+    if (auto *row = CreateFileChatItem(file)) {
+        ui->chat_data->appendChatItem(row);
+        const auto self = UserMgr::GetInstance()->GetUserInfo();
+        if (self && file.fromUid != self->_uid)
+            SendDisplayAcknowledgement(file.threadId, {file.messageId});
+    }
 }
 
 void ChatDialog::appendDownloadedImage(const ImageChatData &image, const QString &localPath)
@@ -672,8 +1004,11 @@ void ChatDialog::appendDownloadedImage(const ImageChatData &image, const QString
     // 自己发送的预览已经在 1033 前插入；资源缓存完成只解除 pending 状态，不能再追加一行。
     auto pending = _pending_image_items.find(image.msgId);
     if (pending != _pending_image_items.end()) {
+        const bool optimisticPreviewStillVisible = !pending.value().isNull();
         _pending_image_items.erase(pending);
-        return;
+        if (optimisticPreviewStillVisible) return;
+        // 同步刷新可能已删除原乐观气泡并从 SQLite 建立了正式占位行。此时 QPointer
+        // 已为空，下载结果必须继续向下替换正式占位行，否则这条图片会永久停在加载中。
     }
 
     const auto self = UserMgr::GetInstance()->GetUserInfo();
@@ -712,16 +1047,25 @@ void ChatDialog::appendDownloadedImage(const ImageChatData &image, const QString
         return;
     }
     const ChatRole role = sentBySelf ? ChatRole::Self : ChatRole::Other;
-    const auto &displayUser = sentBySelf ? self : *friendIter;
-    auto *chatItem = new ChatItemBase(role);
-    chatItem->setUserName(displayUser->_name);
-    chatItem->setUserAvatar(displayUser->_uid, displayUser->_icon);
-    chatItem->setWidget(new PictureBubble(role, pixmap));
-    ui->chat_data->appendChatItem(chatItem);
+    auto chatItem = _image_placeholder_items.take(image.messageId);
+    if (chatItem) {
+        // 历史加载时已经按 message_id 顺序插入占位行，下载完成只原位替换内容，
+        // 不能再次 append，否则所有异步图片都会堆到聊天窗口最底部。
+        chatItem->setWidget(new PictureBubble(role, pixmap));
+    } else {
+        const auto &displayUser = sentBySelf ? self : *friendIter;
+        chatItem = new ChatItemBase(role);
+        chatItem->setUserName(displayUser->_name);
+        chatItem->setUserAvatar(displayUser->_uid, displayUser->_icon);
+        chatItem->setWidget(new PictureBubble(role, pixmap));
+        ui->chat_data->appendChatItem(chatItem);
+    }
     if (image.messageId > 0) {
         _displayed_image_message_ids.insert(image.messageId);
         if (!sentBySelf) {
+            _pending_incoming_image_ids.remove(image.messageId);
             SendDisplayAcknowledgement(image.threadId, {image.messageId});
+            TrySendCurrentReadReceipt();
         }
     }
     qInfo() << "received image appended to chat view, resource_id=" << image.resourceId;
@@ -779,16 +1123,18 @@ void ChatDialog::SaveFriendAuthMessages(const std::shared_ptr<UserInfo> &friendI
         localMessage.sendState = 3;
         const bool receivedFromFriend = message->GetSendUid() != currentUser->_uid;
         localMessage.isRead = !receivedFromFriend;
-        // 同一条认证消息可因 TCP/gRPC 重试再次到达；同步游标已经覆盖该 message_id
-        // 时只做 SQLite 的幂等更新，不能再次累计未读数。
-        const bool messageAlreadyKnown = localStorage->SyncCursors().value(thread.threadId, 0)
-                                         >= message->GetMessageId();
+        // 同一条认证消息可因 TCP/gRPC 重试再次到达；用正式 message_id 查询消息表
+        // 去重，不能把“是否已经落库”误等同于连续同步游标已经覆盖该消息。
+        const qint64 syncCursor = localStorage->SyncCursors().value(thread.threadId, 0);
+        const bool messageAlreadyKnown = localStorage->HasMessage(message->GetMessageId());
         if (!messageAlreadyKnown && receivedFromFriend
             && (!_current_chatuser || _current_chatuser->_uid != friendInfo->_uid)) {
             ++thread.unreadCount;
         }
 
-        if (!localStorage->SaveReceivedMessages(thread, {localMessage}, message->GetMessageId())) {
+        // 好友认证通知与 1019/1035/1042 一样属于单条实时消息，只负责落库，不能用
+        // 自身 message_id 推进 1030 连续游标，否则会跳过认证通知之前尚未补齐的消息。
+        if (!localStorage->SaveReceivedMessages(thread, {localMessage}, syncCursor)) {
             qWarning() << "save friend authentication message failed:" << localStorage->LastError();
             continue;
         }
@@ -924,8 +1270,8 @@ void ChatDialog::slot_text_chat(std::shared_ptr<TextChatData> &message)
                                  && _current_chatuser->_uid == (*iter)->_uid
                                  && _current_thread_id == thread.threadId;
     const bool receivedFromFriend = message->GetSendUid() != currentUser->_uid;
-    const bool messageAlreadyKnown = localStorage->SyncCursors().value(thread.threadId, 0)
-                                     >= message->GetMessageId();
+    const qint64 syncCursor = localStorage->SyncCursors().value(thread.threadId, 0);
+    const bool messageAlreadyKnown = localStorage->HasMessage(message->GetMessageId());
     if (message->GetMessageId() >= thread.lastMessageId) {
         thread.lastMessageId = message->GetMessageId();
         thread.lastMessagePreview = message->GetContent();
@@ -950,7 +1296,8 @@ void ChatDialog::slot_text_chat(std::shared_ptr<TextChatData> &message)
     // 用户正在查看此正式会话时，这条消息无需短暂计为未读；否则保留未读状态。
     localMessage.isRead = !receivedFromFriend || isCurrentThread;
 
-    if (!localStorage->SaveReceivedMessages(thread, {localMessage}, message->GetMessageId())) {
+    // 1019 与图片/文件通知一样只落库、不推进连续同步游标，避免登录期间越过离线缺口。
+    if (!localStorage->SaveReceivedMessages(thread, {localMessage}, syncCursor)) {
         qWarning() << "save real-time text chat message failed:" << localStorage->LastError();
         return;
     }
@@ -1032,6 +1379,10 @@ void ChatDialog::slot_message_delivery_updated(qint64 threadId, const QList<qint
         if (imageItem != _outgoing_image_items.end() && imageItem.value()) {
             imageItem.value()->SetDeliveryState(deliveryState);
         }
+        const auto fileItem = _outgoing_file_items.find(messageId);
+        if (fileItem != _outgoing_file_items.end() && fileItem.value()) {
+            fileItem.value()->SetDeliveryState(deliveryState);
+        }
     }
     Q_UNUSED(threadId);
 }
@@ -1068,6 +1419,20 @@ void ChatDialog::SendReadReceipt(qint64 threadId, qint64 readThroughMessageId)
     request["read_through_message_id"] = QString::number(readThroughMessageId);
     emit TcpMgr::GetInstance()->sig_send_data(ID_MARK_THREAD_READ_REQ,
                                               QJsonDocument(request).toJson(QJsonDocument::Compact));
+}
+
+void ChatDialog::TrySendCurrentReadReceipt()
+{
+    if (_current_thread_id <= 0 || _current_read_receipt_target_id <= 0
+        || !_pending_incoming_image_ids.isEmpty()
+        || !TcpMgr::GetInstance()->IsConnected()) {
+        return;
+    }
+    // 1038 是按游标确认，发送 last_message_id 会连带把更早消息全部标成已读。
+    // 因此当前页任意一张入站图片尚未真正替换为 PictureBubble 时，都不能发送该游标。
+    const qint64 readThrough = _current_read_receipt_target_id;
+    _current_read_receipt_target_id = 0;
+    SendReadReceipt(_current_thread_id, readThrough);
 }
 
 void ChatDialog::AppendStoredTextMessage(const LocalChatMessage &message,
@@ -1142,22 +1507,57 @@ bool ChatDialog::ParseStoredImageMessage(const LocalChatMessage &message, ImageC
     return image->fromUid > 0 && image->toUid > 0;
 }
 
-void ChatDialog::QueueStoredImageMessage(const LocalChatMessage &message)
+ChatItemBase *ChatDialog::QueueStoredImageMessage(const LocalChatMessage &message,
+                                                   bool appendToView)
 {
     if (message.threadId != _current_thread_id || message.messageId <= 0
         || _requested_image_message_ids.contains(message.messageId)
         || _displayed_image_message_ids.contains(message.messageId)) {
-        return;
+        return nullptr;
     }
     ImageChatData image;
     if (!ParseStoredImageMessage(message, &image)) {
         qWarning() << "ignore invalid cached image message:" << message.messageId;
-        return;
+        const auto self = UserMgr::GetInstance()->GetUserInfo();
+        if (!self || !_current_chatuser) return nullptr;
+        const bool sentBySelf = message.senderId == self->_uid;
+        const auto &displayUser = sentBySelf ? self : _current_chatuser;
+        const ChatRole role = sentBySelf ? ChatRole::Self : ChatRole::Other;
+        auto *invalidRow = new ChatItemBase(role);
+        invalidRow->setUserName(displayUser->_name);
+        invalidRow->setUserAvatar(displayUser->_uid, displayUser->_icon);
+        invalidRow->setWidget(new TextBubble(role, tr("[图片消息元数据无效，无法加载]")));
+        if (!sentBySelf) {
+            // 消息虽然以错误占位行可见，但图片正文没有显示，不能越过它发送已读游标。
+            _pending_incoming_image_ids.insert(message.messageId);
+        }
+        if (appendToView) ui->chat_data->appendChatItem(invalidRow);
+        return invalidRow;
     }
+
+    const auto self = UserMgr::GetInstance()->GetUserInfo();
+    if (!self || !_current_chatuser) return nullptr;
+    const bool sentBySelf = image.fromUid == self->_uid;
+    const auto &displayUser = sentBySelf ? self : _current_chatuser;
+    const ChatRole role = sentBySelf ? ChatRole::Self : ChatRole::Other;
+    auto *placeholder = new ChatItemBase(role);
+    placeholder->setUserName(displayUser->_name);
+    placeholder->setUserAvatar(displayUser->_uid, displayUser->_icon);
+    placeholder->setWidget(new TextBubble(role, tr("[图片加载中…]")));
+    if (sentBySelf) {
+        placeholder->SetDeliveryState(message.serverStatus == 1 ? 4 : message.deliveryState);
+        _outgoing_image_items.insert(message.messageId, placeholder);
+    } else {
+        // 入站图片在 PictureBubble 原位替换成功前构成已读屏障，1038 不能越过它。
+        _pending_incoming_image_ids.insert(message.messageId);
+    }
+    _image_placeholder_items.insert(message.messageId, placeholder);
     _requested_image_message_ids.insert(message.messageId);
+    if (appendToView) ui->chat_data->appendChatItem(placeholder);
     qInfo() << "queue offline image message, message_id=" << image.messageId
             << "resource_id=" << image.resourceId;
     _image_transfer->enqueueDownload(image);
+    return placeholder;
 }
 
 void ChatDialog::slot_load_older_local_messages()
@@ -1201,7 +1601,18 @@ void ChatDialog::LoadOlderLocalMessages()
                 }
             }
         } else if (message.contentType == QStringLiteral("image")) {
-            QueueStoredImageMessage(message);
+            if (auto *chatItem = QueueStoredImageMessage(message, false)) {
+                historyItems.append(chatItem);
+            }
+        } else if (message.contentType == QStringLiteral("file")) {
+            FileChatData file;
+            if (ParseStoredFileMessage(message, &file)) {
+                if (auto *chatItem = CreateFileChatItem(file)) {
+                    historyItems.append(chatItem);
+                    if (self && file.fromUid != self->_uid)
+                        displayedMessageIds.append(file.messageId);
+                }
+            }
         }
     }
     if (!historyItems.isEmpty()) {
@@ -1236,6 +1647,9 @@ void ChatDialog::SetCurrentChatUser(const std::shared_ptr<UserInfo> &chatUser, q
     _loading_older_local_history = false;
     _requested_image_message_ids.clear();
     _displayed_image_message_ids.clear();
+    _image_placeholder_items.clear();
+    _pending_incoming_image_ids.clear();
+    _current_read_receipt_target_id = 0;
     ui->chat_title_label->setText(_current_chatuser->_name);
     ui->chat_stack->setCurrentWidget(ui->chat_page);
 
@@ -1255,6 +1669,8 @@ void ChatDialog::SetCurrentChatUser(const std::shared_ptr<UserInfo> &chatUser, q
                 }
             } else if (message.contentType == QStringLiteral("image")) {
                 QueueStoredImageMessage(message);
+            } else if (message.contentType == QStringLiteral("file")) {
+                QueueOrAppendStoredFile(message);
             }
         }
         if (!recentMessages.isEmpty()) {
@@ -1269,12 +1685,11 @@ void ChatDialog::SetCurrentChatUser(const std::shared_ptr<UserInfo> &chatUser, q
         // 文本已在上面的 appendChatItem 后实际可见，才允许 1036。图片由下载回调在
         // PictureBubble 插入后单独确认，不能把“已排队下载”误报为已显示。
         SendDisplayAcknowledgement(threadId, displayedMessageIds);
-        for (const LocalChatThread &thread : storage->CachedThreads()) {
-            if (thread.threadId == threadId) {
-                SendReadReceipt(threadId, thread.lastMessageId);
-                break;
-            }
-        }
+        // 只确认本次实际从 SQLite 取出并参与渲染的最新消息，不能使用会话摘要中
+        // 可能尚未同步到本地的 last_message_id，否则接收端缺消息时发送端仍会显示已读。
+        if (!recentMessages.isEmpty())
+            _current_read_receipt_target_id = recentMessages.last().messageId;
+        TrySendCurrentReadReceipt();
     }
 
     for (int index = 0; index < ui->session_list->count(); ++index) {

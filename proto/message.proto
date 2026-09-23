@@ -71,6 +71,19 @@ message ResourceVerifyRsp {
 service ResourceService {
     // 原子核验一批聊天图片：任意一项未完成、缺失或不是图片，整批失败。
     rpc VerifyImages (ResourceVerifyReq) returns (ResourceVerifyRsp) {}
+    rpc VerifyFiles (ResourceFileVerifyReq) returns (ResourceFileVerifyRsp) {}
+}
+
+message ResourceFileVerifyReq { repeated string resource_ids = 1; }
+message VerifiedFileResource {
+    string resource_id = 1;
+    string name = 2;
+    string mime_type = 3;
+    uint64 file_size = 4;
+}
+message ResourceFileVerifyRsp {
+    int32 error = 1;
+    repeated VerifiedFileResource resources = 2;
 }
 
 // ==================== 聊天服务器之间的 RPC 通信 ====================
@@ -200,6 +213,32 @@ message ImageChatMsgRsp {
     repeated ImageChatData imagemsgs = 4;
 }
 
+// 已由 ResourceServer 核验并落库的私聊文件元数据。
+message FileChatData {
+    string msgid = 1;
+    string resource_id = 2;
+    string name = 3;
+    string mime_type = 4;
+    uint64 file_size = 5;
+    uint64 message_id = 6;
+    uint64 thread_id = 7;
+    int32 sender_id = 8;
+    int32 recv_id = 9;
+    uint64 created_at_ms = 10;
+    int32 status = 11;
+}
+message FileChatMsgReq {
+    int32 fromuid = 1;
+    int32 touid = 2;
+    repeated FileChatData filemsgs = 3;
+}
+message FileChatMsgRsp {
+    int32 error = 1;
+    int32 fromuid = 2;
+    int32 touid = 3;
+    repeated FileChatData filemsgs = 4;
+}
+
 message KickUserReq{
     int32 uid = 1; // 被踢用户的 uid
     string session_id = 2; // 发起方在 Redis 中读到的旧会话 id，用于防止陈旧 RPC 误踢新会话
@@ -247,6 +286,7 @@ service ChatService {
     rpc NotifyTextChatMsg (TextChatMsgReq) returns (TextChatMsgRsp) {}
     // 批量转发已核验、已落库的图片消息，由接收方所在服务器推送给目标用户。
     rpc NotifyImageChatMsg (ImageChatMsgReq) returns (ImageChatMsgRsp) {}
+    rpc NotifyFileChatMsg (FileChatMsgReq) returns (FileChatMsgRsp) {}
     // 通知消息已显示，由接收方所在服务器通知目标用户。
     rpc NotifyMessageDisplayed (MessageDisplayedReq) returns (MessageDisplayedRsp) {}
     // 通知消息已读，由接收方所在服务器通知目标用户。

@@ -1,5 +1,6 @@
 #pragma once
 
+// 文件作用：声明 1007 私聊资源下载授权器，组合 StatusServer 登录校验和 MySQL 消息归属校验。
 #include <cstdint>
 #include <string>
 
@@ -13,8 +14,13 @@ enum class ResourceAccessResult {
 
 class ResourceAccessAuthorizer {
 public:
+    // 获取进程内唯一授权器实例。
     static ResourceAccessAuthorizer& Instance();
 
+    // 授权一次私聊资源下载。每个请求都会重新校验，不能复用连接或上次请求的授权结果。
+    // uid：当前登录用户 ID；token：该用户当前登录凭证；threadId：私聊会话 ID；
+    // resourceId：请求下载的资源 ID，必须由该 thread 的 image/file 消息引用。
+    // 返回 Authorized 表示可继续读取，Denied 表示凭证或归属不匹配，Unavailable 表示鉴权依赖故障。
     ResourceAccessResult AuthorizePrivateDownload(int uid, const std::string& token,
                                                    std::uint64_t threadId,
                                                    const std::string& resourceId) const;

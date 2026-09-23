@@ -21,6 +21,7 @@ struct ReadReceipt;
 typedef std::function<void(std::shared_ptr<CSession>, const short &msg_id, const std::string &msg_data)> FunCallBack;
 
 /*
+ * 文件作用：ChatServer1 的业务调度与 TCP 请求处理入口。
  * LogicSystem 逻辑层（单例）
  * 会话层解析完一条消息后调用 PostMsgToQue 投递到队列，
  * 本类的 worker 线程从队列取出消息，按消息id分发到对应的处理函数。
@@ -47,6 +48,9 @@ private:
     void AuthFriend(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data); // 好友认证
     void HandleTextMsg(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data); // 处理文本消息
     void HandleImageMsg(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data); // 核验、持久化并投递图片消息
+    // 处理 1040 私聊文件请求；session 用于认证发送者，msg_id 为 TCP 请求 ID，msg_data 为 JSON 包体。
+    // 服务端核验资源后持久化，再确认发送方并尽力通知接收方。
+    void HandleFileMsg(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data);
     void LoadChatMessages(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data); // 按会话游标增量读取历史消息
     void LoadChatThreads(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data); // 按会话游标发现新增私聊
     void UpdateUserProfile(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data); // 更新当前登录用户资料

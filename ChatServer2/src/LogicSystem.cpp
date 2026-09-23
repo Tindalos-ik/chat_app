@@ -58,6 +58,22 @@ Json::Value BuildVerifiedImageJson(const StoredTextMessage& message) {
     return item;
 }
 
+Json::Value BuildVerifiedFileJson(const StoredTextMessage& message) {
+    Json::Value item;
+    item["msgid"] = message.uniqueId;
+    item["resource_id"] = message.resourceId;
+    item["name"] = message.name;
+    item["mime_type"] = message.mimeType;
+    item["file_size"] = static_cast<Json::UInt64>(message.fileSize);
+    item["message_id"] = static_cast<Json::UInt64>(message.messageId);
+    item["thread_id"] = static_cast<Json::UInt64>(message.threadId);
+    item["sender_id"] = message.senderId;
+    item["recv_id"] = message.recvId;
+    item["created_at_ms"] = static_cast<Json::UInt64>(message.createdAtMs);
+    item["status"] = message.status;
+    return item;
+}
+
 // 图片请求的候选大小和尺寸不会被信任，但固定协议仍要求它们是非负整数，避免不同版本
 // 的客户端把不完整对象误当作图片发送请求。JsonCpp 会将负数 asUInt64 转成大数，故需先判型。
 bool IsNonNegativeJsonInteger(const Json::Value& value) {
@@ -85,15 +101,17 @@ Json::Value BuildHistoryMessageJson(const StoredTextMessage& message) {
     item["recv_id"] = message.recvId;
     item["content"] = message.content;
     item["message_type"] = message.messageType;
-    if (message.messageType == "image") {
+    if (message.messageType == "image" || message.messageType == "file") {
         // 离线图片下载依赖这些已由 ResourceServer 核验过的元数据。
         item["msgid"] = message.uniqueId;
         item["resource_id"] = message.resourceId;
         item["name"] = message.name;
         item["mime_type"] = message.mimeType;
         item["file_size"] = static_cast<Json::UInt64>(message.fileSize);
-        item["width"] = message.width;
-        item["height"] = message.height;
+        if (message.messageType == "image") {
+            item["width"] = message.width;
+            item["height"] = message.height;
+        }
     }
     item["created_at_ms"] = static_cast<Json::UInt64>(message.createdAtMs);
     item["status"] = message.status;
@@ -225,6 +243,10 @@ void LogicSystem::RegisterCallBacks() {
                                              const short &msg_id,
                                              const std::string &msg_data) {
         HandleImageMsg(session, msg_id, msg_data);
+    };
+    _fun_callbacks[ID_FILE_CHAT_MSG_REQ] = [this](std::shared_ptr<CSession> session,
+                                            const short &msg_id, const std::string &msg_data) {
+        HandleFileMsg(session, msg_id, msg_data);
     };
     _fun_callbacks[ID_LOAD_CHAT_MSG_REQ] = [this](std::shared_ptr<CSession> session,
                                             const short &msg_id,
@@ -1110,6 +1132,131 @@ void LogicSystem::HandleImageMsg(std::shared_ptr<CSession> session, const short 
         std::cout << "image chat cross-server push succeeded, from=" << fromuid
                   << ", to=" << touid << ", target_server=" << targetServer << std::endl;
     }
+}
+
+// 私聊文件入口：先用 ResourceServer 的已发布资源记录替换所有客户端候选元数据，
+// 再事务落库；成功后才确认发送方并尝试实时通知接收方。
+void LogicSystem::HandleFileMsg(std::shared_ptr<CSession> session, const short& msg_id,
+                                const std::string& msg_data) {
+    (void)msg_id;
+    Json::Value response;
+    response["error"] = ErrorCode::Success;
+    Defer defer([&response, session] {
+        session->Send(response.toStyledString(), ID_FILE_CHAT_MSG_RSP);
+    });
+    Json::CharReaderBuilder reader;
+    Json::Value request;
+    std::istringstream stream(msg_data);
+    std::string errors;
+    if (!session || !Json::parseFromStream(reader, stream, &request, &errors) || !request.isObject()) {
+        response["error"] = ErrorCode::Error_Json;
+        return;
+    }
+    const int fromuid = request["fromuid"].asInt();
+    const int touid = request["touid"].asInt();
+    const Json::Value& fileArray = request["fileArray"];
+    response["fromuid"] = fromuid;
+    response["touid"] = touid;
+    if (fileArray.isArray()) response["fileArray"] = fileArray; // 失败时保留 msgid，客户端可定位气泡。
+    if (session->GetUserId() != fromuid || touid <= 0 || fromuid == touid ||
+        !fileArray.isArray() || fileArray.empty() || fileArray.size() > 50) {
+        response["error"] = ErrorCode::Error_Json;
+        return;
+    }
+
+    message::ResourceFileVerifyReq verifyRequest;
+    std::vector<std::string> msgids;
+    msgids.reserve(fileArray.size());
+    for (const auto& item : fileArray) {
+        // 客户端只提供资源句柄与关联 UUID；其他任何声明都不能成为数据库元数据来源。
+        if (!item.isObject() || !item["msgid"].isString() || !item["resource_id"].isString()) {
+            response["error"] = ErrorCode::Error_Json;
+            return;
+        }
+        const std::string msgid = item["msgid"].asString();
+        const std::string resourceId = item["resource_id"].asString();
+        if (msgid.empty() || msgid.size() > 128 || resourceId.empty()) {
+            response["error"] = ErrorCode::Error_Json;
+            return;
+        }
+        msgids.push_back(msgid);
+        verifyRequest.add_resource_ids(resourceId);
+    }
+
+    // VerifyFiles 原子核验资源是否已发布并返回权威文件属性；任何错误都在碰数据库前退出。
+    const auto verified = ResourceGrpcClient::GetInstance()->VerifyFiles(verifyRequest);
+    if (verified.error() != ErrorCode::Success ||
+        verified.resources_size() != verifyRequest.resource_ids_size()) {
+        response["error"] = verified.error() == ErrorCode::Success ? ErrorCode::RPCFaild : verified.error();
+        return;
+    }
+    std::vector<VerifiedFileMessage> files;
+    files.reserve(msgids.size());
+    for (int i = 0; i < verified.resources_size(); ++i) {
+        const auto& resource = verified.resources(i);
+        // 按索引绑定 msgid，同时核对资源 ID，避免错误或版本不匹配的响应串换资源。
+        if (resource.resource_id() != verifyRequest.resource_ids(i) || resource.name().empty() ||
+            resource.mime_type().empty()) {
+            response["error"] = ErrorCode::RPCFaild;
+            return;
+        }
+        VerifiedFileMessage file;
+        file.uniqueId = msgids[static_cast<std::size_t>(i)];
+        file.resourceId = resource.resource_id();
+        file.name = resource.name();
+        file.mimeType = resource.mime_type();
+        file.fileSize = resource.file_size();
+        files.push_back(std::move(file));
+    }
+
+    std::uint64_t threadId = 0;
+    std::vector<StoredTextMessage> stored;
+    if (!MysqlMgr::GetInstance()->SavePrivateFileMessages(fromuid, touid, files, threadId, stored)) {
+        response["error"] = ErrorCode::RPCFaild;
+        return;
+    }
+    Json::Value confirmed(Json::arrayValue);
+    for (const auto& file : stored) confirmed.append(BuildVerifiedFileJson(file));
+    response["thread_id"] = static_cast<Json::UInt64>(threadId);
+    response["fileArray"] = confirmed;
+    response["persisted"] = true;
+    response["realtime_delivered"] = false;
+    response["delivered"] = false;
+
+    // 落库结果已成功。在线推送只是加速路径，其失败必须保留 1041 成功语义以免客户端重发。
+    std::string targetServer;
+    if (!RedisMgr::GetInstance()->Get(USERIPPREFIX + std::to_string(touid), targetServer)) return;
+    const std::string selfServer = ConfigMgr::Inst()["SelfChatServer"]["name"];
+    if (targetServer == selfServer) {
+        const auto target = UserMgr::GetInstance()->GetSession(touid);
+        if (target) {
+            Json::Value notice;
+            notice["error"] = ErrorCode::Success;
+            notice["fromuid"] = fromuid;
+            notice["touid"] = touid;
+            notice["delivered"] = true;
+            notice["fileArray"] = confirmed;
+            target->Send(notice.toStyledString(), ID_NOTIFY_FILE_CHAT_MSG_REQ);
+            response["delivered"] = true;
+            response["realtime_delivered"] = true;
+        }
+        return;
+    }
+    message::FileChatMsgReq push;
+    push.set_fromuid(fromuid);
+    push.set_touid(touid);
+    for (const auto& file : stored) {
+        auto* data = push.add_filemsgs();
+        data->set_msgid(file.uniqueId); data->set_resource_id(file.resourceId);
+        data->set_name(file.name); data->set_mime_type(file.mimeType); data->set_file_size(file.fileSize);
+        data->set_message_id(file.messageId); data->set_thread_id(file.threadId);
+        data->set_sender_id(file.senderId); data->set_recv_id(file.recvId);
+        data->set_created_at_ms(file.createdAtMs); data->set_status(file.status);
+    }
+    const auto pushResult = ChatGrpcClient::GetInstance()->NotifyFileChatMsg(targetServer, push);
+    response["delivered"] = pushResult.error() == ErrorCode::Success;
+    response["realtime_delivered"] = pushResult.error() == ErrorCode::Success;
+    if (pushResult.error() != ErrorCode::Success) response["delivery_error"] = pushResult.error();
 }
 
 void LogicSystem::LoadChatThreads(std::shared_ptr<CSession> session, const short &msg_id,

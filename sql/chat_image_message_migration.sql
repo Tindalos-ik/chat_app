@@ -28,8 +28,24 @@ SET @sql = IF(
   (SELECT COUNT(*) FROM information_schema.COLUMNS
    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'chat_message'
      AND COLUMN_NAME = 'message_type') = 0,
-  'ALTER TABLE `chat_message` ADD COLUMN `message_type` ENUM(''text'', ''image'', ''system'') NOT NULL DEFAULT ''text'' COMMENT ''text=文本，image=已核验图片，system=系统消息'' AFTER `client_msg_id`',
+  'ALTER TABLE `chat_message` ADD COLUMN `message_type` ENUM(''text'', ''image'', ''file'', ''system'') NOT NULL DEFAULT ''text'' COMMENT ''text=文本，image/file=ResourceServer 已核验资源，system=系统消息'' AFTER `client_msg_id`',
   'SELECT 1');
+PREPARE chat_image_migration_stmt FROM @sql;
+EXECUTE chat_image_migration_stmt;
+DEALLOCATE PREPARE chat_image_migration_stmt;
+
+-- 文件消息复用资源字段，图片尺寸列保持 NULL；兼容 message_type 尚未创建的旧库。
+SET @sql = IF(
+  (SELECT COUNT(*) FROM information_schema.COLUMNS
+   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'chat_message'
+     AND COLUMN_NAME = 'message_type') = 0,
+  'ALTER TABLE `chat_message` ADD COLUMN `message_type` ENUM(''text'', ''image'', ''file'', ''system'') NOT NULL DEFAULT ''text'' COMMENT ''text=文本，image/file=ResourceServer 已核验资源，system=系统消息'' AFTER `client_msg_id`',
+  IF(
+    (SELECT COLUMN_TYPE FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'chat_message'
+       AND COLUMN_NAME = 'message_type') NOT LIKE '%file%',
+    'ALTER TABLE `chat_message` MODIFY COLUMN `message_type` ENUM(''text'', ''image'', ''file'', ''system'') NOT NULL DEFAULT ''text'' COMMENT ''text=文本，image/file=ResourceServer 已核验资源，system=系统消息''',
+    'SELECT 1'));
 PREPARE chat_image_migration_stmt FROM @sql;
 EXECUTE chat_image_migration_stmt;
 DEALLOCATE PREPARE chat_image_migration_stmt;

@@ -76,6 +76,8 @@ public:
     QList<LocalChatMessage> LoadMessagesBefore(qint64 threadId,
                                                qint64 beforeMessageId,
                                                int limit = 50);
+    // 判断正式 message_id 是否已经落库。实时通知用它去重，但不会借此推进 1030 同步游标。
+    bool HasMessage(qint64 messageId) const;
 
     // 服务端下发会话列表时写入或更新本地会话信息。
     bool UpsertThread(const LocalChatThread &thread);

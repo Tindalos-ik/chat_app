@@ -2,6 +2,8 @@
 #ifndef MYSQL_MGR_H
 #define MYSQL_MGR_H
 
+// 文件作用：声明 ChatServer1 的 MySQL 连接池、聊天持久化记录结构及数据访问接口。
+
 #include <mysqlx/xdevapi.h>  // X DevAPI 头文件
 #include <memory>
 #include <queue>
@@ -71,6 +73,16 @@ struct VerifiedImageMessage {
     std::uint64_t fileSize = 0;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+};
+
+// 文件元数据只允许从 ResourceServer VerifyFiles 响应构造。
+// 数据结构作用：待写入私聊的已核验文件描述。只能用 VerifyFiles 响应构造。
+struct VerifiedFileMessage {
+    std::string uniqueId;
+    std::string resourceId;
+    std::string name;
+    std::string mimeType;
+    std::uint64_t fileSize = 0;
 };
 
 struct PrivateChatThread {
@@ -240,6 +252,12 @@ public:
                                   const std::vector<VerifiedImageMessage>& imageMessages,
                                   std::uint64_t& threadId,
                                   std::vector<StoredTextMessage>& storedMessages);
+    // 原子保存一批已核验私聊文件；senderUid/recvUid 为双方 UID，fileMessages 为可信资源描述；
+    // threadId 输出正式会话 ID，storedMessages 输出数据库生成的确认及同步字段。
+    bool SavePrivateFileMessages(int senderUid, int recvUid,
+                                 const std::vector<VerifiedFileMessage>& fileMessages,
+                                 std::uint64_t& threadId,
+                                 std::vector<StoredTextMessage>& storedMessages);
 
     // 按 (thread_id, message_id) 游标正序读取。调用方传入 limit + 1 即可判断是否还有下一页。
     // 同时校验 uid 必须属于该私聊，避免客户端借 thread_id 读取他人聊天记录。

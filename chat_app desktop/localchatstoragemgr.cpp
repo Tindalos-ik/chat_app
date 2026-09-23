@@ -210,6 +210,22 @@ QList<LocalChatMessage> LocalChatStorageMgr::LoadMessagesBefore(qint64 threadId,
                          threadId, beforeMessageId, limit);
 }
 
+bool LocalChatStorageMgr::HasMessage(qint64 messageId) const
+{
+    if (!IsReady() || messageId <= 0) {
+        return false;
+    }
+    QSqlQuery query(_database);
+    query.prepare(QStringLiteral(
+        "SELECT 1 FROM local_chat_message WHERE message_id = ? LIMIT 1"));
+    query.addBindValue(messageId);
+    if (!query.exec()) {
+        const_cast<LocalChatStorageMgr *>(this)->SetError(QStringLiteral("检查本地消息是否存在失败"));
+        return false;
+    }
+    return query.next();
+}
+
 bool LocalChatStorageMgr::UpsertThread(const LocalChatThread &thread)
 {
     if (!IsReady() || thread.threadId <= 0
@@ -471,6 +487,12 @@ QList<qint64> LocalChatStorageMgr::MarkOutgoingMessagesRead(qint64 threadId, qin
 
 bool LocalChatStorageMgr::CreateSchema()
 {
+    int schemaVersion = 0;
+    QSqlQuery versionQuery(_database);
+    if (versionQuery.exec(QStringLiteral("PRAGMA user_version")) && versionQuery.next()) {
+        schemaVersion = versionQuery.value(0).toInt();
+    }
+
     // 所有建表使用 IF NOT EXISTS，可安全在每次登录时调用；后续字段变更应追加版本迁移。
     const QList<QString> statements = {
         QStringLiteral(
@@ -537,7 +559,16 @@ bool LocalChatStorageMgr::CreateSchema()
             "CHECK (delivery_state IN (1, 2, 3, 4))"))) {
         return false;
     }
-    return Execute(QStringLiteral("PRAGMA user_version = 2"));
+    if (schemaVersion < 3) {
+        // 旧客户端曾用实时通知/发送确认的单条 message_id 推进连续同步游标，可能越过
+        // 尚未写入 SQLite 的离线消息。保留全部本地消息，只归零游标触发一次完整补同步；
+        // local_chat_message 主键和 HasMessage 会保证重复历史幂等且不重复增加未读数。
+        if (!Execute(QStringLiteral(
+                "UPDATE local_sync_cursor SET max_message_id = 0, synced_at_ms = 0"))) {
+            return false;
+        }
+    }
+    return Execute(QStringLiteral("PRAGMA user_version = 3"));
 }
 
 bool LocalChatStorageMgr::Execute(const QString &sql)

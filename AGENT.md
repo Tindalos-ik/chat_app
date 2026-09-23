@@ -44,7 +44,7 @@
 | 文件 | 内容 |
 | --- | --- |
 | [sql/create_tables.sql](sql/create_tables.sql) | 数据库建表脚本（user/user_id/friend/friend_apply，friend_apply 已含 applicant_remark 字段） |
-| [sql/chat_image_message_migration.sql](sql/chat_image_message_migration.sql) | 已部署 chat_message 的图片消息字段迁移脚本 |
+| [sql/chat_image_message_migration.sql](sql/chat_image_message_migration.sql) | 已部署 chat_message 的图片/文件资源字段和消息类型迁移脚本 |
 | [sql/chat_message_receipt_migration.sql](sql/chat_message_receipt_migration.sql) | 已部署 chat_message 的显示确认字段迁移脚本 |
 | [疑惑.md](note/疑惑.md) | 常见小知识点解答（uid/token、分布式、Qt 并发安全、MySQL/Redis 边界等） |
 | [全栈聊天室.md](note/全栈聊天室.md) | 架构总览 |
@@ -71,3 +71,4 @@
 | [json.md](note/json.md) | JSON 在客户端、C++ 服务端和 Node.js 配置中的使用 |
 | [资源服务.md](note/资源服务.md) | ResourceServer 上传任务、资源 ID 与分片下载协议 |
 | [总结图片传输.md](note/总结图片传输.md) | 图片上传、核验、路由、下载、持久化与联调边界总结 |
+| [文件传输.md](note/文件传输.md) | 私聊文件上传、可信元数据、手动下载鉴权与历史同步 |

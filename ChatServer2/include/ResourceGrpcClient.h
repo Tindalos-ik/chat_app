@@ -9,12 +9,15 @@
 #include <iostream>
 #include <memory>
 
-// ChatServer 到 ResourceServer 的专用客户端。资源服务只返回可信图片元数据；
-// ChatServer 不会把客户端声称的文件属性直接写入聊天记录。
+// 文件作用：封装 ChatServer 到 ResourceServer 的 gRPC 客户端调用。
+// VerifyImages/VerifyFiles 只返回资源服务认定的可信元数据；调用方不得把客户端属性落库。
 class ResourceGrpcClient : public Singleton<ResourceGrpcClient> {
     friend class Singleton<ResourceGrpcClient>;
 public:
+    // 核验已发布图片资源。request 为待核验资源 ID 列表，响应含权威图片元数据。
     message::ResourceVerifyRsp VerifyImages(const message::ResourceVerifyReq& request);
+    // 核验已发布普通文件。request 为待核验资源 ID 列表，响应含权威名称/MIME/字节数。
+    message::ResourceFileVerifyRsp VerifyFiles(const message::ResourceFileVerifyReq& request);
 
 private:
     ResourceGrpcClient();
@@ -45,6 +48,23 @@ inline message::ResourceVerifyRsp ResourceGrpcClient::VerifyImages(
     const grpc::Status status = stub_->VerifyImages(&context, request, &response);
     if (!status.ok()) {
         std::cerr << "verify image resources RPC failed, code=" << status.error_code()
+                  << ", message=" << status.error_message() << std::endl;
+        response.Clear();
+        response.set_error(ErrorCode::RPCFaild);
+    }
+    return response;
+}
+
+inline message::ResourceFileVerifyRsp ResourceGrpcClient::VerifyFiles(
+    const message::ResourceFileVerifyReq& request) {
+    message::ResourceFileVerifyRsp response;
+    response.set_error(ErrorCode::RPCFaild);
+    if (!stub_) return response;
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(3));
+    const grpc::Status status = stub_->VerifyFiles(&context, request, &response);
+    if (!status.ok()) {
+        std::cerr << "verify file resources RPC failed, code=" << status.error_code()
                   << ", message=" << status.error_message() << std::endl;
         response.Clear();
         response.set_error(ErrorCode::RPCFaild);

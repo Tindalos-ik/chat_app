@@ -2,6 +2,7 @@
 #define CHATITEMBASE_H
 #include <QWidget>
 #include <QGridLayout> // 网格布局
+#include <QHBoxLayout>
 #include <QLabel>
 #include "global.h"
 
@@ -26,6 +27,8 @@ private:
     QLabel *m_pNameLabel;
     QLabel *m_pIconLabel;
     QLabel *m_pSendStatusLabel;
+    // 状态图标和气泡放在同一个横向布局中，保证窗口拉伸或用户名变宽时仍彼此紧贴。
+    QHBoxLayout *m_pBubbleRowLayout;
     QWidget *m_pBubble;
 };
 

@@ -77,6 +77,9 @@ signals:
     // 由 ChatImageTransferTask 再通过 ResourceClient 下载。
     void sig_image_chat_send_result(std::shared_ptr<ImageChatData>& image, bool success);
     void sig_image_chat(std::shared_ptr<ImageChatData>& image);
+    // 1041 文件发送确认和 1042 对端通知，使用独立解析的文件元数据。
+    void sig_file_chat_send_result(std::shared_ptr<FileChatData>& file, bool success);
+    void sig_file_chat(std::shared_ptr<FileChatData>& file);
     // 1030 已成功写入 SQLite；界面按 threadId 刷新摘要或当前聊天页。
     void sig_local_chat_synced(qint64 threadId);
     void sig_message_delivery_updated(qint64 threadId, const QList<qint64> &messageIds,

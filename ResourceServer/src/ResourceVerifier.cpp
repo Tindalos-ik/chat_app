@@ -55,6 +55,30 @@ bool ValidDimensions(std::uint32_t width, std::uint32_t height) {
     return width > 0 && height > 0 && width <= 100000 && height <= 100000;
 }
 
+std::string MimeTypeFromName(const std::string& name) {
+    // MIME 由 ResourceServer 按发布文件名推导，不采用 RPC/客户端传入的 MIME。
+    // 未列出的扩展名仍允许作为普通文件核验，使用通用二进制类型，不构成文件格式白名单。
+    std::string ext = std::filesystem::u8path(name).extension().u8string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    if (ext == ".txt" || ext == ".log" || ext == ".csv") return "text/plain";
+    if (ext == ".pdf") return "application/pdf";
+    if (ext == ".zip") return "application/zip";
+    if (ext == ".json") return "application/json";
+    if (ext == ".doc") return "application/msword";
+    if (ext == ".docx") return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    if (ext == ".xls") return "application/vnd.ms-excel";
+    if (ext == ".xlsx") return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    if (ext == ".ppt") return "application/vnd.ms-powerpoint";
+    if (ext == ".pptx") return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+    if (ext == ".png") return "image/png";
+    if (ext == ".jpg" || ext == ".jpeg") return "image/jpeg";
+    if (ext == ".gif") return "image/gif";
+    if (ext == ".webp") return "image/webp";
+    return "application/octet-stream";
+}
+
 bool DetectImageMetadata(const std::filesystem::path& filePath, std::string& mimeType,
                          std::uint32_t& width, std::uint32_t& height) {
     std::ifstream input(filePath, std::ios::binary);
@@ -172,37 +196,45 @@ std::mutex& GetResourceFileMutex() {
 ErrorCodes ResolveCompletedImageResourceLocked(const std::string& resourceId,
                                                VerifiedImageResource& resource) {
     resource = {};
-    if (!IsSafeUploadId(resourceId)) {
-        return ErrorCodes::Error_Json;
-    }
-    const std::filesystem::path taskDir = ConfigMgr::Inst().GetFilePath() / resourceId;
-    Json::Value meta;
-    if (!ReadJsonFile(taskDir / "meta.json", meta)) {
-        return ErrorCodes::ResourceNotFound;
-    }
-    if (!meta["completed"].asBool()) {
-        return ErrorCodes::ResourceNotCompleted;
-    }
-    const auto storedName = std::filesystem::u8path(meta["name"].asString()).filename();
-    if (storedName.empty() || !IsNonNegativeInteger(meta["total_size"])) {
-        return ErrorCodes::ResourceNotFound;
-    }
-    std::error_code ec;
-    const std::filesystem::path finalPath = taskDir / storedName;
-    if (!std::filesystem::exists(finalPath, ec) || ec) {
-        return ErrorCodes::ResourceNotFound;
-    }
-    const auto actualSize = std::filesystem::file_size(finalPath, ec);
-    if (ec || actualSize != meta["total_size"].asUInt64()) {
-        return ErrorCodes::ResourceNotFound;
-    }
+    VerifiedFileResource file;
+    // 先复用通用文件核验，确保图片与普通文件遵守相同的 ID、完成状态和实际大小检查。
+    const ErrorCodes fileResult = ResolveCompletedFileResourceLocked(resourceId, file);
+    if (fileResult != ErrorCodes::Success) return fileResult;
     resource.resourceId = resourceId;
-    resource.finalPath = finalPath;
-    resource.name = storedName.u8string();
-    resource.fileSize = actualSize;
-    if (!DetectImageMetadata(finalPath, resource.mimeType, resource.width, resource.height)) {
+    resource.finalPath = file.finalPath;
+    resource.name = file.name;
+    resource.fileSize = file.fileSize;
+    if (!DetectImageMetadata(file.finalPath, resource.mimeType, resource.width, resource.height)) {
         resource = {};
         return ErrorCodes::ResourceNotImage;
     }
+    return ErrorCodes::Success;
+}
+
+ErrorCodes ResolveCompletedFileResourceLocked(const std::string& resourceId,
+                                              VerifiedFileResource& resource) {
+    resource = {};
+    // resource_id 会成为任务目录名，限制字符集以阻止路径分隔符和目录穿越。
+    if (!IsSafeUploadId(resourceId)) return ErrorCodes::Error_Json;
+    const std::filesystem::path taskDir = ConfigMgr::Inst().GetFilePath() / resourceId;
+    Json::Value meta;
+    // 只信任 ResourceServer 自己保存的任务元数据，并要求明确的 bool 完成标志。
+    if (!ReadJsonFile(taskDir / "meta.json", meta)) return ErrorCodes::ResourceNotFound;
+    if (!meta["completed"].isBool()) return ErrorCodes::ResourceNotFound;
+    if (!meta["completed"].asBool()) return ErrorCodes::ResourceNotCompleted;
+    const auto storedName = std::filesystem::u8path(meta["name"].asString()).filename();
+    if (storedName.empty() || !IsNonNegativeInteger(meta["total_size"])) return ErrorCodes::ResourceNotFound;
+    std::error_code ec;
+    const std::filesystem::path finalPath = taskDir / storedName;
+    // 只允许从任务目录内以元数据文件名定位普通文件，并重新读取磁盘大小和元数据对比。
+    if (!std::filesystem::is_regular_file(finalPath, ec) || ec) return ErrorCodes::ResourceNotFound;
+    const auto actualSize = std::filesystem::file_size(finalPath, ec);
+    if (ec || actualSize != meta["total_size"].asUInt64()) return ErrorCodes::ResourceNotFound;
+    resource.resourceId = resourceId;
+    resource.finalPath = finalPath;
+    resource.name = storedName.u8string();
+    // 可信 MIME 与其他返回字段均由本服务计算；未知扩展名保持可下载并标记为通用二进制。
+    resource.mimeType = MimeTypeFromName(resource.name);
+    resource.fileSize = actualSize;
     return ErrorCodes::Success;
 }

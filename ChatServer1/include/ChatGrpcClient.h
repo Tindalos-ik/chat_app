@@ -40,6 +40,8 @@ using message::TextChatData;
 using message::ImageChatMsgReq;
 using message::ImageChatMsgRsp;
 using message::ImageChatData;
+using message::FileChatMsgReq;
+using message::FileChatMsgRsp;
 
 using message::KickUserReq;
 using message::KickUserRsp;
@@ -131,6 +133,8 @@ public:
     AuthFriendRsp NotifyAuthFriend(std::string server_ip, const AuthFriendReq& request);
     TextChatMsgRsp NotifyTextChatMsg(std::string server_ip, const TextChatMsgReq& request);
     ImageChatMsgRsp NotifyImageChatMsg(std::string server_ip, const ImageChatMsgReq& request);
+    // 向目标 ChatServer 转发已持久化文件消息，deadline 防止路由线程无限等待。
+    FileChatMsgRsp NotifyFileChatMsg(std::string server_ip, const FileChatMsgReq& request);
     MessageDisplayedRsp NotifyMessageDisplayed(std::string server_ip, const MessageDisplayedReq& request);
     ThreadReadRsp NotifyThreadRead(std::string server_ip, const ThreadReadReq& request);
     KickUserRsp NotifyKickUser(std::string server_ip, const KickUserReq& request);

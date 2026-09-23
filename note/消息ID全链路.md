@@ -55,6 +55,9 @@ HTTP 负责注册、登录、验证码和重置密码等短请求。登录拿到
 | `ID_NOTIFY_MESSAGE_DISPLAYED` (`1037`) | 服务端推送发送端 | 对方已显示指定消息，客户端将投递状态提升为“已显示” |
 | `ID_MARK_THREAD_READ_REQ` (`1038`) | 接收端 `{thread_id,read_through_message_id}` | 当前会话已读游标；服务端只更新该用户实际接收的未读消息 |
 | `ID_NOTIFY_THREAD_READ` (`1039`) | 服务端推送发送端 | 对方已读到指定游标，客户端将对应发送消息显示为“已读” |
+| `ID_FILE_CHAT_MSG_REQ` (`1040`) | TCP `{fromuid,touid,fileArray}` 私聊文件请求 | ChatServer 以 session UID 鉴权，并调用 ResourceServer 核验已完成的普通文件 |
+| `ID_FILE_CHAT_MSG_RSP` (`1041`) | 文件发送确认 | 成功表示可信元数据已持久化；实时推送失败时仍由 1030 历史补齐 |
+| `ID_NOTIFY_FILE_CHAT_MSG_REQ` (`1042`) | 收到私聊文件通知 | 只传资源元数据；Qt 保存到 SQLite 并显示可点击卡片，不自动下载 |
 
 ResourceServer 的独立协议使用其自身的上传分片、断点同步消息常量。完成回包包含
 `resource_url`；客户端只有拿到该字段后，才向 ChatServer 发送 `ID_UPDATE_USER_PROFILE_REQ`。

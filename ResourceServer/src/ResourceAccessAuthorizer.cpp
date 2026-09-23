@@ -11,7 +11,7 @@
 #include <stdexcept> 
 
 namespace { // 匿名命名空间：其中定义的内容只在当前 .cpp 文件内可见，避免与其他文件的同名符号冲突。
-// 检查某个用户是否有权访问指定私聊线程中的私有图片资源。
+// 检查某个用户是否有权访问指定私聊线程中的图片或普通文件资源。
 // 参数说明：
 //   mysql：MySQL 配置节，包含 host、user、passwd、schema、port 等字段。
 //   uid：请求下载的用户 ID。
@@ -22,8 +22,8 @@ namespace { // 匿名命名空间：其中定义的内容只在当前 .cpp 文�
 //   false 表示没有找到匹配记录，无权访问。
 // 异常：
 //   如果 MySQL 配置不完整，或数据库操作失败，会抛出异常，由上层统一处理。
-bool HasPrivateImageAccess(const SectionInfo& mysql, int uid, std::uint64_t threadId,
-                           const std::string& resourceId) {
+bool HasPrivateResourceAccess(const SectionInfo& mysql, int uid, std::uint64_t threadId,
+                              const std::string& resourceId) {
     const std::string host = mysql["host"];
     const std::string user = mysql["user"];
     const std::string password = mysql["passwd"];
@@ -41,13 +41,15 @@ bool HasPrivateImageAccess(const SectionInfo& mysql, int uid, std::uint64_t thre
     //   1. private_chat 表中存在该 thread_id 的私聊记录；
     //   2. chat_message 表中存在同一 thread_id 的消息；
     //   3. 该消息的 resource_id 等于请求的 resourceId；
-    //   4. 该消息类型是 image；
+    //   4. 该消息类型是 image 或 file；
     //   5. 当前用户 uid 是该私聊的 user1_id 或 user2_id 之一。
     // LIMIT 1 表示只关心是否存在至少一条匹配记录。
+    // 单条关联查询同时证明资源属于指定 thread、消息类型允许下载且用户是该私聊成员。
+    // 资源 ID 必须和 thread_id 一起命中，避免成员借有效凭证读取其他会话的资源。
     const std::string sql =
         "SELECT 1 FROM private_chat AS pc "
         "INNER JOIN chat_message AS cm ON cm.thread_id = pc.thread_id "
-        "WHERE pc.thread_id = ? AND cm.resource_id = ? AND cm.message_type = 'image' "
+        "WHERE pc.thread_id = ? AND cm.resource_id = ? AND cm.message_type IN ('image', 'file') "
         "AND (pc.user1_id = ? OR pc.user2_id = ?) LIMIT 1";
     // 执行 SQL，并按顺序绑定占位符 ? 的值
     // 使用参数绑定而不是拼接字符串，可以避免 SQL 注入。
@@ -146,9 +148,9 @@ ResourceAccessResult ResourceAccessAuthorizer::AuthorizePrivateDownload(
 
     // 身份验证通过后，再查询 MySQL，确认该用户确实有权访问该私聊图片资源。
     try {
-        // 调用匿名命名空间中的 HasPrivateImageAccess：
+        // 调用匿名命名空间中的 HasPrivateResourceAccess：
         // ConfigMgr::Inst()["Mysql"] 用于读取 MySQL 配置节。
-        return HasPrivateImageAccess(ConfigMgr::Inst()["Mysql"], uid, threadId, resourceId)
+        return HasPrivateResourceAccess(ConfigMgr::Inst()["Mysql"], uid, threadId, resourceId)
             ? ResourceAccessResult::Authorized
             : ResourceAccessResult::Denied;
     } catch (const std::exception&) {

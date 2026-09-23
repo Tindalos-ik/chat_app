@@ -28,6 +28,11 @@ ChatItemBase::ChatItemBase(ChatRole role, QWidget* parent)
     m_pSendStatusLabel->hide();
 
     m_pBubble = new QWidget();
+    m_pBubbleRowLayout = new QHBoxLayout();
+    m_pBubbleRowLayout->setContentsMargins(0, 0, 0, 0);
+    m_pBubbleRowLayout->setSpacing(3);
+    auto *bubbleRow = new QWidget();
+    bubbleRow->setLayout(m_pBubbleRowLayout);
 
     QGridLayout *pGlayout = new QGridLayout();
     pGlayout->setVerticalSpacing(3);
@@ -40,26 +45,28 @@ ChatItemBase::ChatItemBase(ChatRole role, QWidget* parent)
     if(m_role == ChatRole::Self){
         m_pNameLabel->setContentsMargins(0,0,8,0);
         m_pNameLabel->setAlignment(Qt::AlignRight);
-        // 自己消息：弹簧 | 状态图标 | 气泡 | 头像。状态图标在气泡左端，失败时
-        // 不会挤压头像，也不会改变气泡内文字的宽度。
-        pGlayout->addWidget(m_pNameLabel, 0,2,1,1);
-        pGlayout->addWidget(m_pIconLabel, 0,3,2,1, Qt::AlignTop);
+        // 状态图标和气泡先组成一个不可拆分的内容行，再由外层弹簧整体推到头像左侧。
+        // 因此短文本、长用户名、图片和文件卡片都会保持“状态图标贴着气泡”。
+        m_pBubbleRowLayout->addWidget(m_pSendStatusLabel, 0, Qt::AlignVCenter);
+        m_pBubbleRowLayout->addWidget(m_pBubble, 0, Qt::AlignTop);
+        pGlayout->addWidget(m_pNameLabel, 0,1,1,1);
+        pGlayout->addWidget(m_pIconLabel, 0,2,2,1, Qt::AlignTop);
         pGlayout->addItem(pSpacer, 1,0,1,1);
-        pGlayout->addWidget(m_pSendStatusLabel, 1,1,1,1, Qt::AlignRight | Qt::AlignVCenter);
-        pGlayout->addWidget(m_pBubble, 1,2,1,1, Qt::AlignRight | Qt::AlignTop);
-        pGlayout->setColumnStretch(0,2); // 第零行占40%比例
-        pGlayout->setColumnStretch(2,3); // 气泡列占60%比例
+        pGlayout->addWidget(bubbleRow, 1,1,1,1, Qt::AlignRight | Qt::AlignTop);
+        pGlayout->setColumnStretch(0, 1);
+        pGlayout->setColumnStretch(1, 0);
     }else{
         m_pNameLabel->setContentsMargins(8,0,0,0);
         m_pNameLabel->setAlignment(Qt::AlignLeft);
-        // 对方消息与自己消息镜像：左头像、气泡、状态图标、右侧弹簧。
+        // 对方消息使用镜像内容行；虽然正常接收消息不显示状态图标，失败提示仍与气泡相邻。
+        m_pBubbleRowLayout->addWidget(m_pBubble, 0, Qt::AlignTop);
+        m_pBubbleRowLayout->addWidget(m_pSendStatusLabel, 0, Qt::AlignVCenter);
         pGlayout->addWidget(m_pIconLabel, 0,0,2,1, Qt::AlignTop);
         pGlayout->addWidget(m_pNameLabel, 0,1,1,1);
-        pGlayout->addWidget(m_pBubble, 1,1,1,1, Qt::AlignLeft | Qt::AlignTop);
-        pGlayout->addWidget(m_pSendStatusLabel, 1,2,1,1, Qt::AlignLeft | Qt::AlignVCenter);
-        pGlayout->addItem(pSpacer, 1,3,1,1);
-        pGlayout->setColumnStretch(1,3);
-        pGlayout->setColumnStretch(3,2);
+        pGlayout->addWidget(bubbleRow, 1,1,1,1, Qt::AlignLeft | Qt::AlignTop);
+        pGlayout->addItem(pSpacer, 1,2,1,1);
+        pGlayout->setColumnStretch(1, 0);
+        pGlayout->setColumnStretch(2, 1);
     }
 
     this->setLayout(pGlayout);
@@ -78,8 +85,11 @@ void ChatItemBase::setUserAvatar(int uid, const QString &avatarPath)
 
 void ChatItemBase::setWidget(QWidget *w)
 {
-    QGridLayout *pGlayout = (qobject_cast<QGridLayout*>(this->layout()));
-    pGlayout->replaceWidget(m_pBubble, w);
+    if (!w || !m_pBubbleRowLayout) {
+        return;
+    }
+    QLayoutItem *oldItem = m_pBubbleRowLayout->replaceWidget(m_pBubble, w);
+    delete oldItem;
     delete m_pBubble;
     m_pBubble = w;
 }

@@ -1196,6 +1196,59 @@ bool MysqlMgr::SavePrivateImageMessages(
     }
 }
 
+// 按批次事务保存文件消息。width/height 使用 SQL NULL，资源元数据全部来自已核验结构。
+bool MysqlMgr::SavePrivateFileMessages(
+    int senderUid, int recvUid, const std::vector<VerifiedFileMessage>& fileMessages,
+    std::uint64_t& threadId, std::vector<StoredTextMessage>& storedMessages)
+{
+    threadId = 0;
+    storedMessages.clear();
+    if (senderUid <= 0 || recvUid <= 0 || senderUid == recvUid || fileMessages.empty() ||
+        !CreatePrivateChat(senderUid, recvUid, threadId) || threadId == 0) return false;
+    auto con = pool_->GetConnection();
+    if (con == nullptr) return false;
+    Defer defer([&con, this]() { pool_->ReturnConnection(std::move(con)); });
+    try {
+        con->startTransaction();
+        std::vector<StoredTextMessage> saved;
+        saved.reserve(fileMessages.size());
+        const std::string insertSql =
+            "INSERT INTO chat_message "
+            "(thread_id, sender_id, recv_id, client_msg_id, message_type, content, resource_id, resource_name, "
+            "mime_type, file_size, width, height, created_at, updated_at, status) "
+            "VALUES (?, ?, ?, ?, 'file', '', ?, ?, ?, ?, NULL, NULL, NOW(), NOW(), 0)";
+        for (const auto& file : fileMessages) {
+            if (file.uniqueId.empty() || file.resourceId.empty() || file.name.empty() ||
+                file.mimeType.empty()) {
+                con->rollback();
+                return false;
+            }
+            auto result = con->sql(insertSql).bind(threadId).bind(senderUid).bind(recvUid)
+                .bind(file.uniqueId).bind(file.resourceId).bind(file.name).bind(file.mimeType)
+                .bind(file.fileSize).execute();
+            const auto messageId = result.getAutoIncrementValue();
+            if (messageId == 0) { con->rollback(); return false; }
+            StoredTextMessage message;
+            message.messageId = messageId; message.threadId = threadId;
+            message.senderId = senderUid; message.recvId = recvUid;
+            message.uniqueId = file.uniqueId; message.messageType = "file";
+            message.resourceId = file.resourceId; message.name = file.name;
+            message.mimeType = file.mimeType; message.fileSize = file.fileSize;
+            message.createdAtMs = static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count());
+            saved.push_back(std::move(message));
+        }
+        con->commit();
+        storedMessages = std::move(saved);
+        return true;
+    } catch (const std::exception& e) {
+        try { con->rollback(); } catch (...) {}
+        std::cout << "save private file messages exception: " << e.what() << std::endl;
+        return false;
+    }
+}
+
 bool MysqlMgr::LoadPrivateTextMessages(int uid, std::uint64_t threadId,
                                        std::uint64_t afterMessageId, int limit,
                                        std::vector<StoredTextMessage>& messages)

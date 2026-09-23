@@ -14,7 +14,7 @@
 namespace {
 constexpr int kHeartbeatIntervalMs = 20 * 1000;
 constexpr int kHeartbeatResponseTimeoutMs = 60 * 1000;
-constexpr qint64 kMaxChatImageBytes = 100LL * 1024 * 1024;
+constexpr qint64 kMaxChatResourceBytes = 100LL * 1024 * 1024;
 
 // 1033/1034/1035 只共享图片元数据。这里集中做边界校验，后续 ResourceClient 不会收到
 // 空 resource_id、超大尺寸或伪造 MIME 的下载任务。
@@ -37,7 +37,7 @@ bool ParseImageArray(const QJsonObject &envelope, QList<std::shared_ptr<ImageCha
         const int width = object.value("width").toInt();
         const int height = object.value("height").toInt();
         if (msgId.isEmpty() || resourceId.isEmpty() || name.isEmpty() || !sizeOk || fileSize <= 0
-            || fileSize > kMaxChatImageBytes || width <= 0 || height <= 0
+            || fileSize > kMaxChatResourceBytes || width <= 0 || height <= 0
             || !mimeType.startsWith(QStringLiteral("image/"))) {
             return false;
         }
@@ -61,9 +61,37 @@ bool ParseImageArray(const QJsonObject &envelope, QList<std::shared_ptr<ImageCha
 
 // 1030 离线同步把图片元数据保存到 local_chat_message.content 的紧凑 JSON 中。图片
 // 文件本身永远不进入 SQLite；登录后由 ChatImageTransferTask 根据 resource_id 下载。
-QString SerializeStoredImage(const QJsonObject &item)
+QString SerializeStoredResourceMetadata(const QJsonObject &item)
 {
     return QString::fromUtf8(QJsonDocument(item).toJson(QJsonDocument::Compact));
+}
+
+// 1040/1041/1042 和 1030 文件历史共用这个解析器。只校验文件字段，绝不要求图片宽高。
+// 服务端返回的 message_id/thread_id 直接保留，不能从当前聊天窗口推测。
+bool ParseFileArray(const QJsonObject &envelope, QList<std::shared_ptr<FileChatData>> *files)
+{
+    const int from = envelope.value("fromuid").toInt(), to = envelope.value("touid").toInt();
+    const QJsonArray array = envelope.value("fileArray").toArray();
+    if (from <= 0 || to <= 0 || array.isEmpty()) return false;
+    for (const auto &value : array) {
+        const auto item = value.toObject();
+        bool ok = false;
+        const qint64 size = item.value("file_size").toVariant().toLongLong(&ok);
+        auto file = std::make_shared<FileChatData>();
+        file->msgId = item.value("msgid").toString();
+        file->resourceId = item.value("resource_id").toString();
+        file->name = item.value("name").toString();
+        file->mimeType = item.value("mime_type").toString();
+        file->fileSize = size;
+        file->messageId = item.value("message_id").toVariant().toLongLong();
+        file->threadId = item.value("thread_id").toVariant().toLongLong();
+        file->fromUid = from; file->toUid = to;
+        file->deliveryState = envelope.value("realtime_delivered").toBool() ? 2 : 1;
+        if (!ok || file->msgId.isEmpty() || file->resourceId.isEmpty() || file->name.isEmpty()
+            || size <= 0 || size > kMaxChatResourceBytes) return false;
+        files->append(file);
+    }
+    return true;
 }
 }
 
@@ -590,7 +618,8 @@ void TcpMgr::initHandlers()
             message.recvId = item.value("recv_id").toInt();
             message.contentType = item.value("message_type").toString(QStringLiteral("text"));
             if (message.contentType != QStringLiteral("text")
-                && message.contentType != QStringLiteral("image")) {
+                && message.contentType != QStringLiteral("image")
+                && message.contentType != QStringLiteral("file")) {
                 qWarning() << "ignore unsupported synced message type:" << message.contentType;
                 continue;
             }
@@ -623,20 +652,36 @@ void TcpMgr::initHandlers()
                 images.front()->messageId = message.messageId;
                 images.front()->threadId = threadId;
                 // 存服务端回包的完整可信元数据；content 对 image 不展示给用户。
-                message.content = SerializeStoredImage(item);
+                message.content = SerializeStoredResourceMetadata(item);
             }
+            if (message.contentType == QStringLiteral("file")) {
+                QJsonObject envelope;
+                envelope["fromuid"] = message.senderId;
+                envelope["touid"] = message.recvId;
+                envelope["fileArray"] = QJsonArray{item};
+                QList<std::shared_ptr<FileChatData>> files;
+                if (!ParseFileArray(envelope, &files) || files.size() != 1) continue;
+                files.front()->messageId = message.messageId;
+                files.front()->threadId = threadId;
+                message.content = SerializeStoredResourceMetadata(item);
+            }
+            // 实时 1019/1035/1042 可能已经把同一正式 message_id 写入 SQLite，但它们
+            // 不推进连续同步游标。1030 再次覆盖记录时不能重复增加会话未读数。
+            const bool messageAlreadyStored = storage->HasMessage(message.messageId);
             localMessages.append(message);
             maxMessageId = qMax(maxMessageId, message.messageId);
             // 登录增量同步的每条新入站未读消息都要计入摘要；实时 1019 的路径
             // 已自行计数。当前会话随后会由 ChatDialog::SetCurrentChatUser 原子清零。
-            if (message.messageId > previousSyncCursor && message.senderId != currentUser->_uid
+            if (!messageAlreadyStored && message.messageId > previousSyncCursor
+                && message.senderId != currentUser->_uid
                 && message.serverStatus == 0) {
                 ++thread.unreadCount;
             }
             if (message.messageId >= thread.lastMessageId) {
                 thread.lastMessageId = message.messageId;
                 thread.lastMessagePreview = message.contentType == QStringLiteral("image")
-                    ? QStringLiteral("[图片]") : message.content;
+                    ? QStringLiteral("[图片]") : message.contentType == QStringLiteral("file")
+                    ? QStringLiteral("[文件]") : message.content;
                 thread.lastMessageAtMs = message.createdAtMs;
             }
         }
@@ -697,7 +742,7 @@ void TcpMgr::initHandlers()
         // 次 SQLite 事务，避免每确认一条消息就重复刷新会话列表和当前聊天窗口。
         QHash<qint64, LocalChatThread> threads;
         QHash<qint64, QList<LocalChatMessage>> messagesByThread;
-        QHash<qint64, qint64> maxMessageIds;
+        QHash<qint64, qint64> existingSyncCursors;
         QHash<qint64, QStringList> uniqueIdsByThread;
         for (const QJsonValue &value : textArray) {
             const QJsonObject textObj = value.toObject();
@@ -753,6 +798,9 @@ void TcpMgr::initHandlers()
                     }
                 }
                 threads.insert(threadId, thread);
+                // 1018 只确认本次发送消息已经持久化，并不能证明该 message_id 之前的
+                // 离线消息都已同步；事务写库时必须维持原 1030 连续游标。
+                existingSyncCursors.insert(threadId, storage->SyncCursors().value(threadId, 0));
             }
 
             LocalChatThread &thread = threads[threadId];
@@ -777,14 +825,13 @@ void TcpMgr::initHandlers()
             localMessage.deliveryState = deliveryState;
             localMessage.isRead = true;
             messagesByThread[threadId].append(localMessage);
-            maxMessageIds[threadId] = qMax(maxMessageIds.value(threadId, 0), messageId);
             uniqueIdsByThread[threadId].append(uniqueId);
         }
 
         for (auto threadIter = threads.cbegin(); threadIter != threads.cend(); ++threadIter) {
             const qint64 threadId = threadIter.key();
             if (!storage->SaveReceivedMessages(threadIter.value(), messagesByThread.value(threadId),
-                                               maxMessageIds.value(threadId))) {
+                                               existingSyncCursors.value(threadId, 0))) {
                 qWarning() << "save confirmed text messages failed:" << storage->LastError();
                 for (const QString &uniqueId : uniqueIdsByThread.value(threadId)) {
                     emit sig_text_chat_send_result(uniqueId, false);
@@ -907,6 +954,56 @@ void TcpMgr::initHandlers()
     });
     _handler.insert(ID_NOTIFY_IMAGE_CHAT_MSG_REQ, [handle_image_chat](ReqId id, int len, QByteArray data) {
         handle_image_chat(false, id, len, data);
+    });
+
+    auto handle_file_chat = [this](bool sendResult, ReqId, int, QByteArray data) {
+        // 1041（发送确认）和 1042（对端通知）共享信封结构。成功消息必须通过
+        // ParseFileArray 的完整校验，确保 UI/ResourceClient 只接收可信的资源元数据。
+        const QJsonDocument doc = QJsonDocument::fromJson(data);
+        if (!doc.isObject()) return;
+        const QJsonObject envelope = doc.object();
+        const int error = envelope.value("error").toInt(ErrorCodes::SUCCESS);
+        QList<std::shared_ptr<FileChatData>> files;
+        if (!ParseFileArray(envelope, &files)) {
+            // 1041 失败回包可能只回显请求标识（msgid/resource_id），没有 name、MIME、
+            // file_size。该分支只恢复失败气泡所需的 msgid；成功确认和 1042 不能降级解析。
+            if (!sendResult || error == ErrorCodes::SUCCESS) return;
+            files.clear();
+            const int fromUid = envelope.value("fromuid").toInt();
+            const int toUid = envelope.value("touid").toInt();
+            if (fromUid <= 0 || toUid <= 0) return;
+            for (const QJsonValue &value : envelope.value("fileArray").toArray()) {
+                const QJsonObject item = value.toObject();
+                const QString msgId = item.value("msgid").toString();
+                if (msgId.isEmpty()) continue;
+                auto file = std::make_shared<FileChatData>();
+                file->msgId = msgId;
+                file->resourceId = item.value("resource_id").toString();
+                file->fromUid = fromUid;
+                file->toUid = toUid;
+                file->messageId = item.value("message_id").toVariant().toLongLong();
+                file->threadId = item.value("thread_id").toVariant().toLongLong();
+                files.append(file);
+            }
+        }
+        const auto current = UserMgr::GetInstance()->GetUserInfo();
+        if (!current) return;
+        const bool success = error == ErrorCodes::SUCCESS;
+        for (auto &file : files) {
+            // 发送确认只能属于当前登录用户发出的消息；实时通知只能属于当前用户接收的
+            // 消息。threadId/messageId 直接保留服务端值，禁止用当前打开会话补齐。
+            if ((sendResult && file->fromUid == current->_uid && file->toUid != current->_uid)
+                || (!sendResult && file->toUid == current->_uid && file->fromUid != current->_uid)) {
+                if (sendResult) emit sig_file_chat_send_result(file, success);
+                else if (success) emit sig_file_chat(file);
+            }
+        }
+    };
+    _handler.insert(ID_FILE_CHAT_MSG_RSP, [handle_file_chat](ReqId id, int len, QByteArray data) {
+        handle_file_chat(true, id, len, data);
+    });
+    _handler.insert(ID_NOTIFY_FILE_CHAT_MSG_REQ, [handle_file_chat](ReqId id, int len, QByteArray data) {
+        handle_file_chat(false, id, len, data);
     });
 
     _handler.insert(ID_NOTIFY_MESSAGE_DISPLAYED, [this](ReqId id, int len, QByteArray data) {

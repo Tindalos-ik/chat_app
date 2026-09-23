@@ -186,6 +186,45 @@ Status ChatServiceImpl::NotifyImageChatMsg(ServerContext* context, const ImageCh
     return Status::OK;
 }
 
+// 只做已保存文件消息的接收端在线通知，不写数据库，也不从客户端取元数据。
+Status ChatServiceImpl::NotifyFileChatMsg(ServerContext* context, const FileChatMsgReq* request,
+                                          FileChatMsgRsp* response) {
+    (void)context;
+    response->set_error(ErrorCode::Success);
+    response->set_fromuid(request->fromuid());
+    response->set_touid(request->touid());
+    const auto session = UserMgr::GetInstance()->GetSession(request->touid());
+    if (!session) {
+        response->set_error(ErrorCode::UidInvalid);
+        return Status::OK; // 消息已由源服持久化，接收方可经 1030 历史同步。
+    }
+    Json::Value notification;
+    notification["error"] = ErrorCode::Success;
+    notification["fromuid"] = request->fromuid();
+    notification["touid"] = request->touid();
+    notification["delivered"] = true;
+    Json::Value files(Json::arrayValue);
+    for (const auto& file : request->filemsgs()) {
+        *response->add_filemsgs() = file;
+        Json::Value item;
+        item["msgid"] = file.msgid();
+        item["resource_id"] = file.resource_id();
+        item["name"] = file.name();
+        item["mime_type"] = file.mime_type();
+        item["file_size"] = static_cast<Json::UInt64>(file.file_size());
+        item["message_id"] = static_cast<Json::UInt64>(file.message_id());
+        item["thread_id"] = static_cast<Json::UInt64>(file.thread_id());
+        item["sender_id"] = file.sender_id();
+        item["recv_id"] = file.recv_id();
+        item["created_at_ms"] = static_cast<Json::UInt64>(file.created_at_ms());
+        item["status"] = file.status();
+        files.append(std::move(item));
+    }
+    notification["fileArray"] = files;
+    session->Send(notification.toStyledString(), ID_NOTIFY_FILE_CHAT_MSG_REQ);
+    return Status::OK;
+}
+
 Status ChatServiceImpl::NotifyMessageDisplayed(ServerContext* context, const MessageDisplayedReq* request,
                                                MessageDisplayedRsp* response) {
     // RPC 只负责把已经持久化的展示结果投递给本机在线发送端，不能以 RPC 参数为准
