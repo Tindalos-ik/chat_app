@@ -50,6 +50,7 @@
 | [sql/chat_message_storage.sql](sql/chat_message_storage.sql) | 旧版分步初始化的聊天表兼容脚本；新环境执行统一建表脚本即可 |
 | [sql/chat_image_message_migration.sql](sql/chat_image_message_migration.sql) | 已部署 chat_message 的图片/文件资源字段和消息类型迁移脚本 |
 | [sql/chat_message_receipt_migration.sql](sql/chat_message_receipt_migration.sql) | 已部署 chat_message 的显示确认字段迁移脚本 |
+| [sql/chat_group_migration.sql](sql/chat_group_migration.sql) | 已部署群表 owner_uid/active、角色0/2与 RESTRICT 外键迁移 |
 | [疑惑.md](note/疑惑.md) | 常见小知识点解答（uid/token、分布式、Qt 并发安全、MySQL/Redis 边界等） |
 | [全栈聊天室.md](note/全栈聊天室.md) | 架构总览 |
 | [分布式聊天服务设计.md](note/分布式聊天服务设计.md) | 分布式设计总结：服务拆分、双通道登录、负载均衡/在线路由/跨服转发 |
@@ -58,11 +59,12 @@
 | [连接池.md](note/连接池.md) | 项目中 4 类连接池 |
 | [grpc.md](note/grpc.md) | gRPC 应用 |
 | [服务部署.md](note/服务部署.md) | Windows/Linux 部署 |
-| [测试.md](note/测试.md) | CTest 单元/集成测试：TCP 帧解析、好友事务、消息重试与离线同步、Qt/SQLite 缓存、连接容量及 CI |
+| [测试.md](note/测试.md) | CTest TCP/好友/私聊/群事务与权限回归、SQLite缓存、真实双实例隔离验证边界及CI |
 | [数据库设计.md](note/数据库设计.md) | MySQL 用户、社交、会话与消息表，以及客户端 SQLite 缓存设计 |
 | [聊天信息存储方案.md](note/聊天信息存储方案.md) | 服务端会话/消息表、客户端 SQLite 缓存管理器与增量同步设计 |
 | [聊天可靠性与资源安全提升.md](note/聊天可靠性与资源安全提升.md) | 消息 ACK、已读与未读、历史分包、图片下载鉴权和故障恢复边界 |
 | [聊天服务器服务.md](note/聊天服务器服务.md) | proto 中定义的 ChatServer gRPC 服务、消息字段与跨服转发约定 |
+| [聊天信息收发.md](note/聊天信息收发.md) | 私聊与纯文本群聊先持久化后投递、群行锁授权、独立群失效通知与帧边界 |
 | [服务器踢人.md](note/服务器踢人.md) | 同服/跨服重复登录互踢、1021 投递、会话清理与当前边界 |
 | [心跳检测.md](note/心跳检测.md) | 1023/1024 双端心跳、单调时钟、超时参数、幂等清理与复测步骤 |
 | [异常处理.md](note/异常处理.md) | TCP/心跳异常、Qt/Asio 异步回调对象生命周期与服务端、客户端停止顺序 |

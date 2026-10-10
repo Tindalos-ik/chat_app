@@ -15,7 +15,7 @@ Qt 客户端
   │
   └─ TCP 长连接 + [ID(2B) + 长度(2B) + JSON] ──> ChatServer:8090/8091
                                                    ├─ Redis：token、在线位置、用户缓存
-                                                   ├─ MySQL：用户、好友申请、好友关系
+                                                   ├─ MySQL：账号、社交、私聊/群聊、消息与回执
                                                    └─ gRPC：ChatServer1 <-> ChatServer2
 ```
 
@@ -58,6 +58,19 @@ HTTP 负责注册、登录、验证码和重置密码等短请求。登录拿到
 | `ID_FILE_CHAT_MSG_REQ` (`1040`) | TCP `{fromuid,touid,fileArray}` 私聊文件请求 | ChatServer 以 session UID 鉴权，并调用 ResourceServer 核验已完成的普通文件 |
 | `ID_FILE_CHAT_MSG_RSP` (`1041`) | 文件发送确认 | 成功表示可信元数据已持久化；实时推送失败时仍由 1030 历史补齐 |
 | `ID_NOTIFY_FILE_CHAT_MSG_REQ` (`1042`) | 收到私聊文件通知 | 只传资源元数据；Qt 保存到 SQLite 并显示可点击卡片，不自动下载 |
+| `ID_CREATE_GROUP_REQ/RSP` | `{request_id,name}` | 事务创建群thread/群/role2群主，返回group对象 |
+| `ID_SEARCH_GROUP_REQ/RSP` | `{request_id,thread_id}` | 精确搜索有效群号，返回group对象 |
+| `ID_JOIN_GROUP_REQ/RSP` | `{request_id,thread_id}` | 直接加入，重复保持一行，返回group对象 |
+| `ID_LOAD_GROUP_LIST_REQ/RSP` | `{request_id,after_thread_id,page_size}` | 从0建立session UID快照，groups/next_thread_id/load_more，4KiB分页；整轮成功才客户端失效对账 |
+| `ID_LOAD_GROUP_MEMBERS_REQ/RSP` | `{request_id,thread_id,after_uid,page_size}` | 有效成员才能查，members[{uid,nick,role}]/next_uid/load_more |
+| `ID_GROUP_TEXT_MSG_REQ/RSP` | `{thread_id,textArray:[{msgid,content}]}` | 当前成员单份消息事务，正式元数据及sender_nick，persisted与实时结果分离 |
+| `ID_NOTIFY_GROUP_TEXT_MSG` | 群文本正式元数据+target_member_uid | 提交后按成员扇出，同服/跨服目标锁内授权并排队，不再落库 |
+| `ID_KICK_GROUP_MEMBER_REQ/RSP` | `{request_id,thread_id,target_member_uid}` | 仅群主踢普通成员，不踢群主 |
+| `ID_DISSOLVE_GROUP_REQ/RSP` | `{request_id,thread_id}` | 仅群主active=0逻辑解散，保留全部历史 |
+| `ID_NOTIFY_GROUP_STATE` | `{thread_id,type:'group',active:false,reason,target_member_uid}` | reason kicked/dissolved，只失效本群，不触发账号下线 |
+
+群管理/列表/成员响应原样回传字符串request_id；group对象为 `{thread_id,type:'group',name,owner_uid,active:true}`。身份只用登录session UID。群不可用返回 GroupUnavailable，非成员 GroupNotMember，非群主管理/试图踢群主 GroupPermissionDenied；群号为uint64 thread_id，没有独立编号。群历史使用既有 ID_LOAD_CHAT_MSG_REQ/RSP，type group 或数据库实际类型分派；有效成员可读加入前历史，踢出/解散后拒绝。
+
 
 ResourceServer 的独立协议使用其自身的上传分片、断点同步消息常量。完成回包包含
 `resource_url`；客户端只有拿到该字段后，才向 ChatServer 发送 `ID_UPDATE_USER_PROFILE_REQ`。
@@ -247,7 +260,7 @@ ChatServer TCP 包固定为：
 | --- | --- | --- |
 | GateServer | 验证码、注册、登录、重置密码 | 登录回包字段可继续补充用户资料 |
 | StatusServer | ChatServer 负载选择、token 签发/校验 | 更完整的在线状态管理 |
-| ChatServer1 | TCP 登录、搜索、好友申请/认证、私聊创建/查询、文本持久化、会话/历史消息加载、显示确认与已读回执 | 撤回、发送幂等重试 |
-| ChatServer 间 gRPC | 好友申请、认证结果、在线文本转发，以及文本完整元数据同步 | 离线补偿和重试 |
+| ChatServer1 | 登录、社交、私聊创建/消息/历史/回执；群创建/精确搜索/加入/分页/文本/群主踢人/逻辑解散 | 撤回、发送幂等重试 |
+| ChatServer 间 gRPC | 社交、私聊文本/资源/回执；群已提交消息与独立群状态转发 | 生产级重试与传输身份边界 |
 | Qt 客户端 | HTTP 流程、TCP 登录/搜索/好友、SQLite 历史与增量同步、在线文本收发、发送失败状态和上拉本地历史 | 文本发送重试 |
 | VarifyServer | Redis 验证码、邮件发送 | 邮件失败后的补偿和监控 |

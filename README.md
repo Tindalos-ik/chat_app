@@ -2,7 +2,7 @@
 
 基于 C++ 的分布式即时聊天项目，包含 Qt 6 桌面客户端、HTTP 网关、状态服务、两个 TCP 聊天服务实例、资源服务和 Node.js 邮箱验证码服务。
 
-项目提供注册、邮箱验证码、登录、找回密码、好友申请/认证、好友列表加载、同账号重复登录互踢、客户端与 ChatServer 的应用层心跳检测，以及文本、图片和普通文件消息。图片与文件正文始终保存在 ResourceServer；ChatServer 写入 MySQL 前分别核验图片或普通文件资源，只保存资源 ID 和可信元数据。桌面端使用 1007/1008 分片下载：图片自动缓存，文件在用户点击卡片并选择保存位置后下载。下载时 ResourceServer 校验登录 token、私聊成员身份、会话 ID 和消息资源归属。桌面端以 SQLite 缓存会话、实时通知和登录后的增量历史，详见 `note/聊天信息存储方案.md` 与 `note/文件传输.md`。
+项目提供注册、邮箱验证码、登录、找回密码、好友申请/认证、好友列表、重复登录互踢、心跳，以及私聊文本/图片/普通文件和纯文本群聊。群号即 uint64 thread_id，支持输入群名创建、精确搜群号、直接加入、成员分页、历史补拉、群主踢普通成员和逻辑解散；群成员失效通知只影响指定群，不注销账号连接。图片与文件正文留在 ResourceServer；ChatServer 核验可信资源后只保存元数据，资源下载鉴权仍仅支持私聊，不扩展到群附件。桌面端使用 SQLite 缓存会话和消息，详见聊天存储与收发笔记。
 
 ## 架构
 
@@ -95,7 +95,7 @@ mysql --protocol=tcp -h 127.0.0.1 -P 3306 -uroot -p < sql/create_tables.sql
 
 项目服务通过 MySQL X DevAPI 使用 `33060` 端口；上面的 `mysql` 命令行客户端使用传统协议端口 `3306`。`sql/chat_message_storage.sql` 保留给旧版分步初始化流程，只创建缺失的聊天表，不会升级已有表结构；新库不需要再执行它。
 
-已有数据库的升级方式取决于当前结构：若尚无聊天表，可执行兼容脚本 `sql/chat_message_storage.sql` 补建缺失的聊天表，它包含当前定义；若 `chat_message` 是旧版结构，则按需执行 `sql/chat_image_message_migration.sql` 和 `sql/chat_message_receipt_migration.sql`，依次补齐图片/文件字段及 `displayed_at`。这些迁移只修改已有表，不会创建缺失的聊天表。`CREATE TABLE IF NOT EXISTS` 不会升级已有表。`status` 仍只表示已读状态，显示确认单独使用 `displayed_at`。
+已有数据库若尚无聊天表，可执行 `sql/chat_message_storage.sql` 补建当前结构；已有旧消息表按需执行图片/文件与回执迁移。已有旧群表必须停写备份后执行一次 `sql/chat_group_migration.sql`，增加 owner_uid/active、统一角色0/2及 RESTRICT 外键，再部署新版 ChatServer。重跑 CREATE TABLE IF NOT EXISTS 不会升级已有表。解散仅active=0，历史不删除；群消息每条只写一行recv_id=0，提交后按成员UID扇出，实时失败不等于保存失败。
 
 ### 2. 配置服务端连接信息
 
@@ -180,6 +180,9 @@ cmake --build --preset debug
 ```
 
 提示时输入 `y` 运行、回车跳过。也可以用 `-Tests tcp,sqlite` 直接指定测试；可选项为 `tcp`、`friend`、`message`、`sqlite` 和 `capacity`。连接容量测试需要 ChatServer 正在运行。好友和消息用例只在显式配置独立测试库时执行；未配置时会跳过，避免修改开发数据。SQLite 用例使用 Qt 6.5+ Core、Sql、Widgets 和 QSQLITE 插件；Windows 上根构建会从桌面构建缓存读取 Qt kit 与编译器，并在默认构建过程中完成独立子构建，避免混用 MSVC 和 MinGW。CI 使用独立 MySQL schema 运行数据库用例。具体覆盖范围、测试库配置及容量测试方式见 [测试笔记](note/测试.md)。
+
+群事务测试为 `group_transaction_test`，随CMake注册编译；从显式隔离config.ini工作目录运行，并设置 `CHAT_GROUP_TEST_SCHEMA=chat_app_test_*` 与 `CHAT_GROUP_TEST_CONFIRM_ISOLATED=YES`，不使用开发库。真实双实例验证应另建仓库外运行目录、独立MySQL schema/Redis端口与运行配置，再实际HTTP/TCP登录；数据库2/3/1项回归与双服TCP smoke的命令、脚本、输出及初失败修复保存在交付报告，Qt界面验证单独记录。详见测试笔记。
+
 
 ## 启动
 

@@ -2,6 +2,9 @@
 
 根目录 CMake 默认启用 `BUILD_TESTING`，已注册的测试目标随根目录默认构建一起编译。可从根目录运行 `run_tests.ps1`，逐项选择要运行的测试；传入 `-Tests tcp,message` 等参数可跳过交互提示。数据库用例只在显式提供隔离测试库配置时运行。各目标的覆盖范围、MySQL 环境变量和 CI 方式见 [测试笔记](../note/测试.md)。
 
+`group_transaction_test` 是真实 MySQL 群事务/权限用例，链接生产 MysqlMgr；只在工作目录 config.ini 与 `CHAT_GROUP_TEST_SCHEMA=chat_app_test_*` 一致且 `CHAT_GROUP_TEST_CONFIRM_ISOLATED=YES` 时运行。无隔离配置跳过，显式连接失败报失败；不访问开发库。它验证重复加入、角色权限、单行消息、加入前/离线历史、撤权行锁、实际插入后回滚和带历史逻辑解散。构建该目标后可从独立配置工作目录运行其exe，或者为CTest提供同一隔离工作目录配置；run_tests.ps1现有菜单未增加group选项。
+
+
 ## 连接容量测试
 
 `connection_capacity_test` 是针对真实 ChatServer 的 TCP 集成测试，不是纯内存单元测试。它会一台一台地持续建立并保持空闲 TCP 连接，直到出现第一次建连失败，或每台都达到探测上限 `CHAT_CONNECTION_MAX`。
