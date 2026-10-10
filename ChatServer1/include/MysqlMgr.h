@@ -16,6 +16,7 @@
 #include <utility>
 #include "singleton.h"
 #include "data.h"
+#include <functional>
 
 // 好友认证成功时随通知下发的初始会话消息。
 // 这里使用独立的数据结构，避免数据访问层依赖 protobuf 生成头文件；
@@ -48,6 +49,7 @@ struct StoredTextMessage {
     std::uint64_t fileSize = 0;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+    std::string senderNick; // 群消息显示名，资料缺失时使用 UID
 };
 
 struct DisplayReceipt {
@@ -91,6 +93,20 @@ struct PrivateChatThread {
     int user2Id = 0;
 };
 
+// 群号就是 chat_thread.id；active=false 的群和所有历史永久保留。
+struct GroupChatThread {
+    std::uint64_t threadId = 0;
+    std::string name;
+    int ownerUid = 0;
+    bool active = true;
+};
+struct GroupChatMember {
+    int uid = 0;
+    std::string nick;
+    int role = 0;
+};
+// 所有群权限读取与修改都在事务内锁同一 group_chat 行，防止撤权后的旧权限成功。
+enum class GroupAction { Create, Search, Join, Members, Send, Kick, Dissolve, History, Authorize };
 /**
  * @class MySqlPool
  * @brief MySQL 连接池类，继承自 Singleton 单例模板
@@ -277,6 +293,23 @@ public:
                                std::uint64_t readThroughMessageId,
                                std::vector<ReadReceipt>& receipts);
 
+    // uid 必须来自登录 session；threadId 为群号（Create 时输出），name 仅用于创建；
+    // targetUid 仅用于踢人，after/limit 用于成员或消息分页。返回协议错误码。
+    // texts 是(msgid,content)纯文本批次；Send 仅成功提交后可使用输出recipients/messages扇出。
+    // group/members/messages 为对应操作结果；失败结果不应通知客户端为已持久化。
+    // authorizedDelivery 在持锁且提交前执行：Authorize用于TCP入队，Send用于实际帧字节门限；
+    // 返回false会回滚并分别返回ServerBusy/MessageTooLarge，回调不能再次获取数据库连接。
+    // Authorize仅核对有效成员，不写消息；Kick/Dissolve仅群主，禁止踢群主。
+    int GroupOperation(GroupAction action, int uid, std::uint64_t& threadId,
+        const std::string& name, int targetUid, std::uint64_t after, int limit,
+        const std::vector<std::pair<std::string, std::string>>& texts,
+        GroupChatThread& group, std::vector<GroupChatMember>& members,
+        std::vector<StoredTextMessage>& messages, std::vector<int>& recipients,
+        const std::function<bool()>& authorizedDelivery = {});
+    // 单次一致性查询完整有效群列表；LogicSystem 绑定 session 保存快照再按字节分页。
+    int LoadGroupSnapshot(int uid, std::vector<GroupChatThread>& groups);
+    // 只读会话类型，用于历史请求可靠分派；不授予成员权限。
+    bool IsGroupThread(std::uint64_t threadId);
 private:
     MysqlMgr();
 

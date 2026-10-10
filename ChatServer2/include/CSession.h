@@ -14,6 +14,7 @@
 #include "const.h"
 #include "MsgNode.h"
 #include <ctime>
+#include "MysqlMgr.h"
 
 class CServer; // 前置声明，避免 CServer.h <-> CSession.h 循环包含
 
@@ -39,6 +40,14 @@ public:
     void Start();                    // 连接建立后开始收包（先读包头）
     void Send(char* msg, short max_length, short msgid); // 发送char*消息
     void Send(std::string msg, short msgid);             // 发送std::string消息
+    // 群通知区分成功排队与实时失败；不改变既有私聊 Send 调用约定。
+    bool TrySend(const std::string& msg, short msgid);
+    // 仅 LogicSystem 线程访问，生命周期随 session；UID 与游标防止跨身份/跳页读取。
+    struct GroupListSnapshot {
+        int uid = 0;
+        std::uint64_t next = 0;
+        std::vector<GroupChatThread> groups;
+    } groupListSnapshot;
     void Close();                    // 关闭连接
     // 幂等断线入口：关闭 socket，注销本机会话，并按 session_id 条件清理 Redis 在线路由
     void HandleDisconnect();

@@ -115,16 +115,18 @@ CREATE TABLE IF NOT EXISTS `private_chat` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ------------------------------------------------------------
--- 7. group_chat：群聊信息表；群聊业务流程暂未接入
+-- 7. group_chat：有效群与逻辑解散状态；群号即 thread_id
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `group_chat` (
   `thread_id`  BIGINT UNSIGNED NOT NULL,
   `name`       VARCHAR(255) NOT NULL DEFAULT '',
+  `owner_uid`  BIGINT UNSIGNED NOT NULL,
+  `active`     TINYINT NOT NULL DEFAULT 1,
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`thread_id`),
   CONSTRAINT `fk_group_chat_thread`
     FOREIGN KEY (`thread_id`) REFERENCES `chat_thread` (`id`)
-    ON DELETE CASCADE
+    ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ------------------------------------------------------------
@@ -133,14 +135,15 @@ CREATE TABLE IF NOT EXISTS `group_chat` (
 CREATE TABLE IF NOT EXISTS `group_chat_member` (
   `thread_id`   BIGINT UNSIGNED NOT NULL,
   `user_id`     BIGINT UNSIGNED NOT NULL,
-  `role`        TINYINT NOT NULL DEFAULT 0 COMMENT '0=成员, 1=管理员, 2=创建者',
+  `role`        TINYINT NOT NULL DEFAULT 0 COMMENT '0=成员, 2=群主',
   `joined_at`   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `muted_until` TIMESTAMP NULL DEFAULT NULL,
   PRIMARY KEY (`thread_id`, `user_id`),
   KEY `idx_user_threads` (`user_id`, `thread_id`),
+  CONSTRAINT `chk_group_role` CHECK (`role` IN (0,2)),
   CONSTRAINT `fk_group_member_thread`
     FOREIGN KEY (`thread_id`) REFERENCES `group_chat` (`thread_id`)
-    ON DELETE CASCADE
+    ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ------------------------------------------------------------

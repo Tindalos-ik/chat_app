@@ -64,15 +64,19 @@ void CSession::Start() {
 
 // 发送消息（std::string版本）
 void CSession::Send(std::string msg, short msgid) {
+    TrySend(msg, msgid);
+}
+
+bool CSession::TrySend(const std::string& msg, short msgid) {
     std::lock_guard<std::mutex> lock(_send_lock);
-    if (_close_after_send) {
-        return;
+    if (_close_after_send || _disconnect_handled.load() || msg.size() > 32767) {
+        return false;
     }
     std::size_t send_que_size = _send_que.size();
     // 发送队列已满，说明对端消费能力不足，丢弃本次消息防止内存无限膨胀
     if (send_que_size > MAX_SENDQUE) {
         std::cout << "session: " << _session_id << " send que fulled, size is " << MAX_SENDQUE << endl;
-        return;
+        return false;
     }
 
     // 封装成发送节点（构造时自动打包头部：id + 长度）
@@ -80,13 +84,14 @@ void CSession::Send(std::string msg, short msgid) {
 
     // 队列里已经有消息在发送中，等前面发完再发，避免数据乱序
     if (send_que_size > 0) {
-        return;
+        return true;
     }
 
     // 队列之前是空的，说明当前没有异步写在进行，立刻启动第一个写
     auto &msgnode = _send_que.front();
     boost::asio::async_write(_socket, boost::asio::buffer(msgnode->_data, msgnode->_total_len),
         std::bind(&CSession::HandleWrite, this, std::placeholders::_1, SharedSelf()));
+    return true;
 }
 
 // 发送消息（char*版本）

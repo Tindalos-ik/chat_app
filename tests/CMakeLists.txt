@@ -39,7 +39,7 @@ target_link_libraries(chat_mysql_test_support PUBLIC
     Threads::Threads
 )
 
-foreach(test_name IN ITEMS friend_transaction_test message_retry_offline_sync_test)
+foreach(test_name IN ITEMS friend_transaction_test message_retry_offline_sync_test group_transaction_test)
     add_executable(${test_name} ${test_name}.cpp)
     target_link_libraries(${test_name} PRIVATE
         GTest::gtest_main chat_mysql_test_support)

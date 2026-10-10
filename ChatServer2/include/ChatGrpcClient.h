@@ -138,6 +138,9 @@ public:
     MessageDisplayedRsp NotifyMessageDisplayed(std::string server_ip, const MessageDisplayedReq& request);
     ThreadReadRsp NotifyThreadRead(std::string server_ip, const ThreadReadReq& request);
     KickUserRsp NotifyKickUser(std::string server_ip, const KickUserReq& request);
+    // 转发已提交群通知；server 为路由名，request 明确群/发送者/目标成员；
+    // 连接池获取与 RPC 共用三秒截止时间，不参与消息持久化。
+    message::GroupNotifyRsp NotifyGroup(const std::string& server, const message::GroupNotifyReq& request);
 
 private:
     ChatGrpcClient();

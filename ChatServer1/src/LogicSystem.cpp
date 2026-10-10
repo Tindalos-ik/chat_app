@@ -12,6 +12,7 @@
 #include "ChatGrpcClient.h"
 #include "ResourceGrpcClient.h"
 #include "CServer.h"
+#include <algorithm>
 
 using namespace std;
 
@@ -101,6 +102,10 @@ Json::Value BuildHistoryMessageJson(const StoredTextMessage& message) {
     item["recv_id"] = message.recvId;
     item["content"] = message.content;
     item["message_type"] = message.messageType;
+    if (!message.senderNick.empty()) {
+        item["sender_nick"] = message.senderNick;
+        item["msgid"] = message.uniqueId;
+    }
     if (message.messageType == "image" || message.messageType == "file") {
         // 离线图片下载依赖这些已由 ResourceServer 核验过的元数据。
         item["msgid"] = message.uniqueId;
@@ -276,6 +281,13 @@ void LogicSystem::RegisterCallBacks() {
                                                const short &msg_id, const std::string &msg_data) {
         HandleThreadRead(session, msg_id, msg_data);
     };
+    for (short id : {ID_CREATE_GROUP_REQ, ID_SEARCH_GROUP_REQ, ID_JOIN_GROUP_REQ,
+         ID_LOAD_GROUP_LIST_REQ, ID_LOAD_GROUP_MEMBERS_REQ, ID_GROUP_TEXT_MSG_REQ,
+         ID_KICK_GROUP_MEMBER_REQ, ID_DISSOLVE_GROUP_REQ}) {
+        _fun_callbacks[id] = [this](std::shared_ptr<CSession> session, const short& id, const std::string& data) {
+            HandleGroup(session, id, data);
+        };
+    }
 }
 
 void LogicSystem::UpdateUserProfile(std::shared_ptr<CSession> session, const short &msg_id,
@@ -1361,7 +1373,14 @@ void LogicSystem::LoadChatMessages(std::shared_ptr<CSession> session, const shor
 
     // 多取一条只用于判断 load_more；真正返回给客户端的永远不超过 pageSize 条。
     std::vector<StoredTextMessage> messages;
-    if (!MysqlMgr::GetInstance()->LoadPrivateTextMessages(
+    const bool isGroup = request.get("type", "").asString() == "group" ||
+        MysqlMgr::GetInstance()->IsGroupThread(threadId);
+    if (isGroup) {
+        GroupChatThread group; std::vector<GroupChatMember> members; std::vector<int> recipients;
+        const int error = MysqlMgr::GetInstance()->GroupOperation(GroupAction::History, uid, threadId,
+            "", 0, afterMessageId, pageSize + 1, {}, group, members, messages, recipients);
+        if (error != Success) { sendError(error); return; }
+    } else if (!MysqlMgr::GetInstance()->LoadPrivateTextMessages(
             uid, threadId, afterMessageId, pageSize + 1, messages)) {
         sendError(ErrorCode::RPCFaild);
         return;
@@ -1381,8 +1400,9 @@ void LogicSystem::LoadChatMessages(std::shared_ptr<CSession> session, const shor
         candidateArray.append(BuildHistoryMessageJson(message));
         // 先按 load_more=true 测量：这比最终没有后续页时的 false 至少不小，
         // 因而最终实际发送的 JSON 也一定不超过预算。
-        const Json::Value candidateResponse = BuildHistoryResponse(
+        Json::Value candidateResponse = BuildHistoryResponse(
             threadId, message.messageId, candidateArray, true);
+        if (isGroup) candidateResponse["type"] = "group";
         if (SerializeCompactJson(candidateResponse).size() > kMaxHistoryResponseJsonBytes) {
             if (messageArray.empty()) {
                 // 不能拆分一条消息而让客户端把片段当作完整内容，也不能不推进游标后让
@@ -1401,7 +1421,9 @@ void LogicSystem::LoadChatMessages(std::shared_ptr<CSession> session, const shor
     // messages 最多有 pageSize + 1 条。未放入的多取一条既可能来自请求页边界，
     // 也可能来自 4 KiB 边界；两种情况都必须让客户端从本帧游标继续读取。
     const bool loadMore = returnedCount < messages.size();
-    sendResponse(BuildHistoryResponse(threadId, nextMessageId, messageArray, loadMore));
+    Json::Value finalResponse = BuildHistoryResponse(threadId, nextMessageId, messageArray, loadMore);
+    if (isGroup) finalResponse["type"] = "group";
+    sendResponse(finalResponse);
 }
 
 void LogicSystem::HandleMessageDisplayed(std::shared_ptr<CSession> session, const short &msg_id,
@@ -1594,3 +1616,170 @@ void LogicSystem::CreatePrivateChat(std::shared_ptr<CSession> session, const sho
     rtvalue["thread_id"] = thread_id;
 }
 
+
+namespace {
+bool GroupId(const Json::Value& request, const char* key, std::uint64_t& value) {
+    if (request[key].isUInt64()) { value = request[key].asUInt64(); return true; }
+    return ParseUint64StringField(request, key, value);
+}
+Json::Value GroupJson(const GroupChatThread& group) {
+    Json::Value value;
+    value["thread_id"] = static_cast<Json::UInt64>(group.threadId);
+    value["type"] = "group"; value["name"] = group.name;
+    value["owner_uid"] = group.ownerUid; value["active"] = group.active;
+    return value;
+}
+}
+
+bool LogicSystem::ForwardGroup(int targetUid, int senderUid, std::uint64_t threadId,
+                              const std::string& payload, bool stateChange) {
+    std::string server;
+    if (!RedisMgr::GetInstance()->Get(USERIPPREFIX + std::to_string(targetUid), server)) return false;
+    if (server == ConfigMgr::Inst()["SelfChatServer"]["name"]) {
+        auto session = UserMgr::GetInstance()->GetSession(targetUid);
+        if (!session) return false;
+        if (!stateChange) {
+            GroupChatThread group; std::vector<GroupChatMember> members;
+            std::vector<StoredTextMessage> messages; std::vector<int> recipients;
+            return MysqlMgr::GetInstance()->GroupOperation(GroupAction::Authorize, targetUid, threadId,
+                "", 0, 0, 0, {}, group, members, messages, recipients,
+                [&]() { return session->TrySend(payload, ID_NOTIFY_GROUP_TEXT_MSG); }) == Success;
+        }
+        return session->TrySend(payload, stateChange ? ID_NOTIFY_GROUP_STATE : ID_NOTIFY_GROUP_TEXT_MSG);
+    }
+    message::GroupNotifyReq request;
+    request.set_thread_id(threadId); request.set_sender_uid(senderUid);
+    request.set_target_member_uid(targetUid); request.set_state_change(stateChange);
+    request.set_payload_json(payload);
+    return ChatGrpcClient::GetInstance()->NotifyGroup(server, request).error() == Success;
+}
+
+void LogicSystem::HandleGroup(std::shared_ptr<CSession> session, const short& id, const std::string& data) {
+    if (!session) return;
+    const short responseId = id + 1;
+    Json::Value request, response;
+    response["error"] = Error_Json; response["type"] = "group";
+    Defer reply([&]() { session->Send(SerializeCompactJson(response), responseId); });
+    Json::CharReaderBuilder reader; std::string errors; std::istringstream stream(data);
+    if (!Json::parseFromStream(reader, stream, &request, &errors) || !request.isObject()) return;
+    if (request["request_id"].isString()) response["request_id"] = request["request_id"];
+    if (id != ID_GROUP_TEXT_MSG_REQ && (!request["request_id"].isString() ||
+        request["request_id"].asString().empty() || request["request_id"].asString().size() > 128)) return;
+    const int uid = session->GetUserId();
+    if (uid <= 0) return;
+    std::uint64_t thread = 0;
+    if (id != ID_CREATE_GROUP_REQ && id != ID_LOAD_GROUP_LIST_REQ &&
+        (!GroupId(request, "thread_id", thread) || thread == 0)) return;
+    response["thread_id"] = static_cast<Json::UInt64>(thread);
+    int page = 50;
+    if (request.isMember("page_size")) {
+        if (!request["page_size"].isInt()) return;
+        page = request["page_size"].asInt();
+        if (page <= 0 || page > 100) return;
+    }
+    if (id == ID_LOAD_GROUP_LIST_REQ) {
+        std::uint64_t after = 0;
+        if (!GroupId(request, "after_thread_id", after)) return;
+        auto& snapshot = session->groupListSnapshot;
+        if (after == 0) {
+            snapshot = {};
+            const int error = MysqlMgr::GetInstance()->LoadGroupSnapshot(uid, snapshot.groups);
+            if (error != Success) { response["error"] = error; return; }
+            snapshot.uid = uid;
+        } else if (snapshot.uid != uid || snapshot.next != after) return;
+        response["groups"] = Json::Value(Json::arrayValue);
+        response["error"] = Success; response["load_more"] = true;
+        std::uint64_t next = after; size_t count = 0;
+        auto pos = std::upper_bound(snapshot.groups.begin(), snapshot.groups.end(), after,
+            [](std::uint64_t value, const GroupChatThread& group) { return value < group.threadId; });
+        while (pos != snapshot.groups.end() && count < static_cast<size_t>(page)) {
+            Json::Value candidate = response;
+            candidate["groups"].append(GroupJson(*pos));
+            candidate["next_thread_id"] = static_cast<Json::UInt64>(pos->threadId);
+            if (SerializeCompactJson(candidate).size() > kMaxHistoryResponseJsonBytes) break;
+            response = std::move(candidate); next = pos->threadId; ++pos; ++count;
+        }
+        response["next_thread_id"] = static_cast<Json::UInt64>(next);
+        response["load_more"] = pos != snapshot.groups.end(); snapshot.next = next;
+        if (count == 0 && pos != snapshot.groups.end()) response["error"] = MessageTooLarge;
+        return;
+    }
+    GroupAction action = GroupAction::Search;
+    int target = 0; std::uint64_t after = 0; std::string name;
+    std::vector<std::pair<std::string, std::string>> texts;
+    if (id == ID_CREATE_GROUP_REQ) {
+        action = GroupAction::Create;
+        if (!request["name"].isString()) return;
+        name = request["name"].asString();
+    } else if (id == ID_JOIN_GROUP_REQ) action = GroupAction::Join;
+    else if (id == ID_LOAD_GROUP_MEMBERS_REQ) {
+        action = GroupAction::Members;
+        if (request.isMember("after_uid") && !GroupId(request, "after_uid", after)) return;
+        if (after > 2147483647ULL) return;
+    } else if (id == ID_GROUP_TEXT_MSG_REQ) {
+        action = GroupAction::Send;
+        response["textArray"] = request["textArray"]; response["persisted"] = false;
+        if (!request["textArray"].isArray() || request["textArray"].empty()) return;
+        for (const auto& item : request["textArray"]) {
+            if (!item["msgid"].isString() || !item["content"].isString()) return;
+            texts.emplace_back(item["msgid"].asString(), item["content"].asString());
+        }
+    } else if (id == ID_KICK_GROUP_MEMBER_REQ) {
+        action = GroupAction::Kick;
+        if (!request["target_member_uid"].isInt()) return;
+        target = request["target_member_uid"].asInt();
+    } else if (id == ID_DISSOLVE_GROUP_REQ) action = GroupAction::Dissolve;
+    GroupChatThread group; std::vector<GroupChatMember> members;
+    std::vector<StoredTextMessage> messages; std::vector<int> recipients;
+    response["error"] = MysqlMgr::GetInstance()->GroupOperation(action, uid, thread, name,
+        target, after, page + 1, texts, group, members, messages, recipients, [&]() {
+            if (action != GroupAction::Send) return true;
+            Json::Value candidate=response;
+            candidate["textArray"]=Json::Value(Json::arrayValue);
+            for (const auto& message : messages) candidate["textArray"].append(BuildHistoryMessageJson(message));
+            candidate["persisted"]=true; candidate["realtime_delivered"]=false; candidate["delivered"]=false;
+            candidate["target_member_uid"]=2147483647;
+            return SerializeCompactJson(candidate).size() <= kMaxHistoryResponseJsonBytes;
+        });
+    if (response["error"].asInt() != Success) return;
+    response["thread_id"] = static_cast<Json::UInt64>(thread);
+    if (action == GroupAction::Create || action == GroupAction::Search || action == GroupAction::Join)
+        response["group"] = GroupJson(group);
+    if (action == GroupAction::Members) {
+        response["members"] = Json::Value(Json::arrayValue); response["load_more"] = true;
+        int next = static_cast<int>(after); size_t count = 0;
+        for (const auto& member : members) {
+            if (count >= static_cast<size_t>(page)) break;
+            Json::Value item; item["uid"]=member.uid; item["nick"]=member.nick; item["role"]=member.role;
+            Json::Value candidate=response; candidate["members"].append(item); candidate["next_uid"]=member.uid;
+            if (SerializeCompactJson(candidate).size() > kMaxHistoryResponseJsonBytes) break;
+            response=std::move(candidate); next=member.uid; ++count;
+        }
+        response["next_uid"]=next; response["load_more"]=count < members.size();
+        if (count == 0 && !members.empty()) response["error"]=MessageTooLarge;
+    }
+    if (action == GroupAction::Send) {
+        response["textArray"]=Json::Value(Json::arrayValue);
+        for (const auto& message : messages) response["textArray"].append(BuildHistoryMessageJson(message));
+        response["persisted"]=true;
+        bool delivered = true;
+        for (int member : recipients) {
+            if (member == uid) continue;
+            Json::Value notify=response; notify.removeMember("request_id");
+            notify["target_member_uid"]=member;
+            if (!ForwardGroup(member, uid, thread, SerializeCompactJson(notify), false)) delivered=false;
+        }
+        response["realtime_delivered"]=delivered; response["delivered"]=delivered;
+    }
+    if (action == GroupAction::Kick || action == GroupAction::Dissolve) {
+        if (action == GroupAction::Dissolve) response["active"]=false;
+        if (action == GroupAction::Kick) response["target_member_uid"]=target;
+        for (int member : recipients) {
+            Json::Value notify; notify["error"]=Success; notify["type"]="group";
+            notify["thread_id"]=static_cast<Json::UInt64>(thread); notify["active"]=false;
+            notify["reason"]=action == GroupAction::Kick ? "kicked" : "dissolved";
+            notify["target_member_uid"]=member;
+            ForwardGroup(member, uid, thread, SerializeCompactJson(notify), true);
+        }
+    }
+}

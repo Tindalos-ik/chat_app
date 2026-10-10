@@ -274,6 +274,17 @@ message ThreadReadRsp {
     int32 error = 1;
 }
 
+// 群通知专用信封。thread_id 是群号，sender_uid 是发送者，target_member_uid 是
+// 实际接收成员；payload_json 为已提交消息或群状态通知，目标服绝不二次落库。
+message GroupNotifyReq {
+    uint64 thread_id = 1;
+    int32 sender_uid = 2;
+    int32 target_member_uid = 3;
+    bool state_change = 4;
+    string payload_json = 5;
+}
+message GroupNotifyRsp { int32 error = 1; }
+
 // 聊天服务器之间的 gRPC 服务定义。
 service ChatService {
     // 转发好友申请，由接收方所在服务器通知目标用户。
@@ -293,4 +304,6 @@ service ChatService {
     rpc NotifyThreadRead (ThreadReadReq) returns (ThreadReadRsp) {}
     // 踢出用户，由接收方所在服务器通知目标用户。
     rpc NotifyKickUser (KickUserReq) returns (KickUserRsp) {}
+    // 群消息/成员失效通知不关闭用户连接，与重复登录踢人完全独立。
+    rpc NotifyGroup (GroupNotifyReq) returns (GroupNotifyRsp) {}
 }

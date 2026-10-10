@@ -560,7 +560,7 @@ TEST(FriendTransactionIntegration, RealApplicationAuthenticationIsAtomicAndIdemp
     EXPECT_EQ(CountMessages(*session, rollbackRecipientUid, rollbackApplicantUid), 0U);
 
     const std::uint64_t greatestThreadIdBeforeFailure =
-        ReadUnsignedScalar(*session, "SELECT COALESCE(MAX(id), 0) FROM chat_thread");
+        ReadUnsignedScalar(*session, "SELECT CAST(COALESCE(MAX(id), 0) AS UNSIGNED) FROM chat_thread");
     ScopedTrigger failMessageInsert(*session, "friend_tx_fail_" + token);
     ASSERT_NO_THROW(failMessageInsert.InstallFailureForMessage(
         rollbackRecipientUid, rollbackApplicantUid));

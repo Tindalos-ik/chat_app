@@ -59,6 +59,11 @@ private:
     void HandleThreadRead(std::shared_ptr<CSession> session, const short &msg_id, const std::string &msg_data);
     void ForwardDisplayReceipt(const DisplayReceipt& receipt);
     void ForwardReadReceipt(const ReadReceipt& receipt);
+    // 群 TCP 入口：session 唯一授权来源；msg_id 选择操作，data 为管理或文本 JSON。
+    void HandleGroup(std::shared_ptr<CSession> session, const short& msg_id, const std::string& data);
+    // 已提交群通知扇出；文本目标投递前再次事务授权，状态通知绝不注销连接。
+    bool ForwardGroup(int targetUid, int senderUid, std::uint64_t threadId,
+                      const std::string& payload, bool stateChange);
 
     bool GetBaseInfo(std::string base_key, int uid, std::shared_ptr<UserInfo>& userinfo);
 

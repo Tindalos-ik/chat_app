@@ -320,3 +320,26 @@ Status ChatServiceImpl::NotifyKickUser(ServerContext* context, const KickUserReq
 void ChatServiceImpl::RegisterServer(std::shared_ptr<CServer> p_server){
     _p_server = p_server;
 }
+
+Status ChatServiceImpl::NotifyGroup(ServerContext*, const message::GroupNotifyReq* request,
+                                    message::GroupNotifyRsp* response) {
+    auto session = UserMgr::GetInstance()->GetSession(request->target_member_uid());
+    response->set_error(UidInvalid);
+    if (!session) return Status::OK;
+    if (!request->state_change()) {
+        auto thread = request->thread_id();
+        GroupChatThread group;
+        std::vector<GroupChatMember> members;
+        std::vector<StoredTextMessage> messages;
+        std::vector<int> recipients;
+        const int error = MysqlMgr::GetInstance()->GroupOperation(GroupAction::Authorize,
+            request->target_member_uid(), thread, "", 0, 0, 0, {}, group, members, messages, recipients,
+            [&]() { return session->TrySend(request->payload_json(), ID_NOTIFY_GROUP_TEXT_MSG); });
+        if (error != Success) { response->set_error(error); return Status::OK; }
+        response->set_error(Success);
+        return Status::OK;
+    }
+    response->set_error(session->TrySend(request->payload_json(),
+        request->state_change() ? ID_NOTIFY_GROUP_STATE : ID_NOTIFY_GROUP_TEXT_MSG) ? Success : ServerBusy);
+    return Status::OK;
+}

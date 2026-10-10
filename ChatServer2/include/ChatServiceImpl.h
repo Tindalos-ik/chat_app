@@ -63,6 +63,9 @@ public:
                             ThreadReadRsp* response) override;
     //bool GetBaseInfo(std::string base_key, int uid, std::shared_ptr<UserInfo>& userinfo);
     Status NotifyKickUser(ServerContext* context, const KickUserReq* request, KickUserRsp* response) override;
+    // 目标服仅转发群信封；文本推送前再次事务检查有效成员，状态通知不关 socket。
+    Status NotifyGroup(ServerContext* context, const message::GroupNotifyReq* request,
+                       message::GroupNotifyRsp* response) override;
 
     void RegisterServer(std::shared_ptr<CServer> p_server);
 private:

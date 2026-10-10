@@ -1457,3 +1457,139 @@ bool MysqlMgr::MarkPrivateThreadRead(int readerUid, std::uint64_t threadId,
         return false;
     }
 }
+
+int MysqlMgr::LoadGroupSnapshot(int uid, std::vector<GroupChatThread>& groups) {
+    groups.clear();
+    if (uid <= 0) return Error_Json;
+    auto con = pool_->GetConnection();
+    if (!con) return ServerBusy;
+    Defer release([&]() { pool_->ReturnConnection(std::move(con)); });
+    try {
+        auto result = con->sql("SELECT g.thread_id, g.name, g.owner_uid FROM group_chat g "
+            "JOIN group_chat_member m ON m.thread_id=g.thread_id "
+            "WHERE m.user_id=? AND g.active=1 ORDER BY g.thread_id").bind(uid).execute();
+        // fetchAll() 返回引用 SqlResult 的惰性 RowList，遍历期间 result 必须存活。
+        for (const auto& row : result.fetchAll())
+            groups.push_back({row[0].get<std::uint64_t>(), row[1].get<std::string>(), row[2].get<int>(), true});
+        return Success;
+    } catch (const std::exception&) { return ServerBusy; }
+}
+
+// 群操作共用一个锁顺序：group_chat -> member -> message。所有权限判断均为锁后当前读。
+int MysqlMgr::GroupOperation(GroupAction action, int uid, std::uint64_t& threadId,
+    const std::string& name, int targetUid, std::uint64_t after, int limit,
+    const std::vector<std::pair<std::string, std::string>>& texts,
+    GroupChatThread& group, std::vector<GroupChatMember>& members,
+    std::vector<StoredTextMessage>& messages, std::vector<int>& recipients,
+    const std::function<bool()>& authorizedDelivery) {
+    members.clear(); messages.clear(); recipients.clear();
+    if (uid <= 0 || (action != GroupAction::Create && threadId == 0)) return Error_Json;
+    if (action == GroupAction::Create && (name.empty() || name.size() > 255)) return Error_Json;
+    if ((action == GroupAction::Members || action == GroupAction::History) &&
+        (limit <= 0 || limit > 1001)) return Error_Json;
+    if (action == GroupAction::Send) {
+        if (texts.empty()) return Error_Json;
+        for (const auto& text : texts)
+            if (text.first.empty() || text.first.size() > 128 || text.second.empty()) return Error_Json;
+    }
+    auto con = pool_->GetConnection();
+    if (!con) return ServerBusy;
+    Defer release([&]() { pool_->ReturnConnection(std::move(con)); });
+    try {
+        con->startTransaction();
+        bool committed = false;
+        Defer rollback([&]() { if (!committed) { try { con->rollback(); } catch (...) {} } });
+        if (action == GroupAction::Create) {
+            threadId = con->sql("INSERT INTO chat_thread(type) VALUES ('group')").execute().getAutoIncrementValue();
+            con->sql("INSERT INTO group_chat(thread_id,name,owner_uid,active) VALUES (?,?,?,1)")
+                .bind(threadId).bind(name).bind(uid).execute();
+            con->sql("INSERT INTO group_chat_member(thread_id,user_id,role) VALUES (?,?,2)")
+                .bind(threadId).bind(uid).execute();
+        }
+        auto row = con->sql("SELECT name,owner_uid,CAST(active AS UNSIGNED) FROM group_chat "
+            "WHERE thread_id=? FOR UPDATE").bind(threadId).execute().fetchOne();
+        if (!row || row[2].get<int>() != 1) return GroupUnavailable;
+        group = {threadId, row[0].get<std::string>(), row[1].get<int>(), true};
+        if (action != GroupAction::Search && action != GroupAction::Join && action != GroupAction::Create) {
+            auto member = con->sql("SELECT role FROM group_chat_member WHERE thread_id=? AND user_id=? FOR UPDATE")
+                .bind(threadId).bind(uid).execute().fetchOne();
+            if (!member) return GroupNotMember;
+        }
+        if (action == GroupAction::Join)
+            con->sql("INSERT INTO group_chat_member(thread_id,user_id,role) VALUES (?,?,0) "
+                "ON DUPLICATE KEY UPDATE user_id=user_id").bind(threadId).bind(uid).execute();
+        if (action == GroupAction::Kick || action == GroupAction::Dissolve) {
+            if (group.ownerUid != uid || (action == GroupAction::Kick && targetUid == group.ownerUid))
+                return GroupPermissionDenied;
+            if (action == GroupAction::Kick) {
+                if (targetUid <= 0) return Error_Json;
+                auto result = con->sql("DELETE FROM group_chat_member WHERE thread_id=? AND user_id=? AND role=0")
+                    .bind(threadId).bind(targetUid).execute();
+                if (result.getAffectedItemsCount() == 0) return GroupNotMember;
+                recipients.push_back(targetUid);
+            } else {
+                con->sql("UPDATE group_chat SET active=0 WHERE thread_id=?").bind(threadId).execute();
+                group.active = false;
+            }
+        }
+        if (action == GroupAction::Send || action == GroupAction::Dissolve) {
+            auto result = con->sql("SELECT user_id FROM group_chat_member WHERE thread_id=? ORDER BY user_id")
+                .bind(threadId).execute();
+            for (const auto& member : result.fetchAll()) recipients.push_back(member[0].get<int>());
+        }
+        if (action == GroupAction::Members) {
+            auto result = con->sql("SELECT m.user_id, COALESCE(NULLIF(u.nick,''),CAST(m.user_id AS CHAR)), m.role "
+                "FROM group_chat_member m LEFT JOIN user u ON u.uid=m.user_id "
+                "WHERE m.thread_id=? AND m.user_id>? ORDER BY m.user_id LIMIT ?")
+                .bind(threadId).bind(after).bind(limit).execute();
+            for (const auto& member : result.fetchAll())
+                members.push_back({member[0].get<int>(), member[1].get<std::string>(), member[2].get<int>()});
+        }
+        if (action == GroupAction::Send) {
+            for (const auto& text : texts) {
+                con->sql("INSERT INTO chat_message(thread_id,sender_id,recv_id,client_msg_id,message_type,content) "
+                    "VALUES (?,?,0,?,'text',?)").bind(threadId).bind(uid).bind(text.first).bind(text.second).execute();
+                auto saved = con->sql("SELECT message_id,CAST(UNIX_TIMESTAMP(created_at)*1000 AS UNSIGNED), "
+                    "COALESCE((SELECT NULLIF(nick,'') FROM user WHERE uid=?),CAST(? AS CHAR)) "
+                    "FROM chat_message WHERE message_id=LAST_INSERT_ID()").bind(uid).bind(uid).execute().fetchOne();
+                StoredTextMessage message;
+                message.messageId = saved[0].get<std::uint64_t>(); message.threadId = threadId;
+                message.senderId = uid; message.uniqueId = text.first; message.content = text.second;
+                message.createdAtMs = saved[1].get<std::uint64_t>(); message.senderNick = saved[2].get<std::string>();
+                messages.push_back(std::move(message));
+            }
+        }
+        if (action == GroupAction::History) {
+            auto result = con->sql("SELECT cm.message_id,cm.sender_id,COALESCE(cm.client_msg_id,''),cm.content,"
+                "CAST(UNIX_TIMESTAMP(cm.created_at)*1000 AS UNSIGNED),CAST(cm.status AS UNSIGNED),"
+                "COALESCE(NULLIF(u.nick,''),CAST(cm.sender_id AS CHAR)) "
+                "FROM chat_message cm LEFT JOIN user u ON u.uid=cm.sender_id "
+                "WHERE cm.thread_id=? AND cm.message_id>? ORDER BY cm.message_id LIMIT ?")
+                .bind(threadId).bind(after).bind(limit).execute();
+            for (const auto& saved : result.fetchAll()) {
+                StoredTextMessage message;
+                message.messageId=saved[0].get<std::uint64_t>(); message.threadId=threadId;
+                message.senderId=saved[1].get<int>(); message.uniqueId=saved[2].get<std::string>();
+                message.content=saved[3].get<std::string>(); message.createdAtMs=saved[4].get<std::uint64_t>();
+                message.status=saved[5].get<int>(); message.senderNick=saved[6].get<std::string>();
+                messages.push_back(std::move(message));
+            }
+        }
+        // TCP 入队也在授权锁持有期间完成；撤权提交后，迟到广播不能越过此检查。
+        if (authorizedDelivery && (action == GroupAction::Authorize || action == GroupAction::Send) &&
+            !authorizedDelivery()) return action == GroupAction::Send ? MessageTooLarge : ServerBusy;
+        con->commit(); committed = true;
+        return Success;
+    } catch (const std::exception&) { members.clear(); messages.clear(); recipients.clear(); return ServerBusy; }
+}
+
+bool MysqlMgr::IsGroupThread(std::uint64_t threadId) {
+    auto con = pool_->GetConnection();
+    if (!con) return false;
+    Defer release([&]() { pool_->ReturnConnection(std::move(con)); });
+    try {
+        auto row = con->sql("SELECT CAST(type AS CHAR) FROM chat_thread WHERE id=?")
+            .bind(threadId).execute().fetchOne();
+        return row && row[0].get<std::string>() == "group";
+    } catch (...) { return false; }
+}

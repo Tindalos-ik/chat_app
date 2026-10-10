@@ -27,6 +27,9 @@ enum ErrorCode{
     // 单条历史消息连同 1030 响应字段也无法放入一个 TCP JSON 包时返回；
     // 不推进游标，避免客户端静默跳过这条消息或陷入重复分页。
     MessageTooLarge = 1016,
+    GroupUnavailable = 1017, // 群不存在或已逻辑解散
+    GroupNotMember = 1018, // 当前登录用户不是有效群成员
+    GroupPermissionDenied = 1019, // 非群主管理或试图踢群主
 };
 
 //手动定义一个Defer类，里面有一个函数，用于在函数结束时自动执行，比如释放资源，实现类似RAII的功能   这个是go语言中的defer关键字
@@ -99,6 +102,24 @@ enum MSG_IDS {
     ID_FILE_CHAT_MSG_REQ = 1040, // 私聊文件消息请求
     ID_FILE_CHAT_MSG_RSP = 1041, // 文件消息持久化确认
     ID_NOTIFY_FILE_CHAT_MSG_REQ = 1042, // 通知接收方收到文件
+    ID_CREATE_GROUP_REQ = 1043,
+    ID_CREATE_GROUP_RSP = 1044,
+    ID_SEARCH_GROUP_REQ = 1045,
+    ID_SEARCH_GROUP_RSP = 1046,
+    ID_JOIN_GROUP_REQ = 1047,
+    ID_JOIN_GROUP_RSP = 1048,
+    ID_LOAD_GROUP_LIST_REQ = 1049,
+    ID_LOAD_GROUP_LIST_RSP = 1050,
+    ID_LOAD_GROUP_MEMBERS_REQ = 1051,
+    ID_LOAD_GROUP_MEMBERS_RSP = 1052,
+    ID_GROUP_TEXT_MSG_REQ = 1053,
+    ID_GROUP_TEXT_MSG_RSP = 1054,
+    ID_NOTIFY_GROUP_TEXT_MSG = 1055,
+    ID_KICK_GROUP_MEMBER_REQ = 1056,
+    ID_KICK_GROUP_MEMBER_RSP = 1057,
+    ID_DISSOLVE_GROUP_REQ = 1058,
+    ID_DISSOLVE_GROUP_RSP = 1059,
+    ID_NOTIFY_GROUP_STATE = 1060,
 };
 
 #define LOGIN_COUNT "login_count"

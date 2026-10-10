@@ -280,3 +280,19 @@ KickUserRsp ChatGrpcClient::NotifyKickUser(std::string server_ip, const KickUser
 
     return rsp;
 }
+
+message::GroupNotifyRsp ChatGrpcClient::NotifyGroup(const std::string& server,
+                                                   const message::GroupNotifyReq& request) {
+    message::GroupNotifyRsp response;
+    response.set_error(RPCFaild);
+    auto found = _pools.find(server);
+    if (found == _pools.end()) return response;
+    const auto deadline = std::chrono::system_clock::now() + std::chrono::seconds(3);
+    auto stub = found->second->getConnectionUntil(deadline);
+    if (!stub) return response;
+    Defer release([&]() { found->second->returnConnection(std::move(stub)); });
+    ClientContext context;
+    context.set_deadline(deadline);
+    if (!stub->NotifyGroup(&context, request, &response).ok()) response.set_error(RPCFaild);
+    return response;
+}
