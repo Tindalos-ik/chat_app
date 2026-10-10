@@ -7,6 +7,11 @@ UPDATE group_chat g LEFT JOIN (
     FROM group_chat_member GROUP BY thread_id
 ) m ON m.thread_id=g.thread_id
 SET g.owner_uid=COALESCE(m.owner_uid,0), g.active=IF(m.owner_uid IS NULL,0,1);
+-- 旧全量DDL的name已为NOT NULL DEFAULT ''，但空名预留群仍可能存在；
+-- 更早的笔记示例允许NULL。缺名群保留成员/历史但不激活，不编造可搜索群名。
+UPDATE group_chat SET active=0 WHERE name IS NULL OR CHAR_LENGTH(TRIM(name))=0;
+UPDATE group_chat SET name='' WHERE name IS NULL;
+ALTER TABLE group_chat MODIFY name VARCHAR(255) NOT NULL DEFAULT '';
 UPDATE group_chat_member m JOIN group_chat g ON g.thread_id=m.thread_id
 SET m.role=IF(m.user_id=g.owner_uid,2,0);
 ALTER TABLE group_chat DROP FOREIGN KEY fk_group_chat_thread;
