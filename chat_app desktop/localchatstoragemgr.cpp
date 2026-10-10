@@ -24,11 +24,13 @@ LocalChatThread ReadThread(QSqlQuery &query)
     thread.threadType = query.value(1).toString();
     thread.title = query.value(2).toString();
     thread.peerUid = query.value(3).toLongLong();
-    thread.lastMessageId = query.value(4).toLongLong();
-    thread.lastMessagePreview = query.value(5).toString();
-    thread.lastMessageAtMs = query.value(6).toLongLong();
-    thread.unreadCount = query.value(7).toInt();
-    thread.updatedAtMs = query.value(8).toLongLong();
+    thread.ownerUid = query.value(4).toLongLong();
+    thread.active = query.value(5).toInt() != 0;
+    thread.lastMessageId = query.value(6).toLongLong();
+    thread.lastMessagePreview = query.value(7).toString();
+    thread.lastMessageAtMs = query.value(8).toLongLong();
+    thread.unreadCount = query.value(9).toInt();
+    thread.updatedAtMs = query.value(10).toLongLong();
     return thread;
 }
 
@@ -43,10 +45,11 @@ LocalChatMessage ReadMessage(QSqlQuery &query)
     message.content = query.value(5).toString();
     message.createdAtMs = query.value(6).toLongLong();
     message.updatedAtMs = query.value(7).toLongLong();
-    message.serverStatus = query.value(8).toInt();
-    message.sendState = query.value(9).toInt();
-    message.deliveryState = query.value(10).toInt();
-    message.isRead = query.value(11).toInt() != 0;
+    message.senderNick = query.value(8).toString();
+    message.serverStatus = query.value(9).toInt();
+    message.sendState = query.value(10).toInt();
+    message.deliveryState = query.value(11).toInt();
+    message.isRead = query.value(12).toInt() != 0;
     return message;
 }
 } // namespace
@@ -165,25 +168,34 @@ QList<LocalChatThread> LocalChatStorageMgr::CachedThreads() const
 QList<LocalChatThread> LocalChatStorageMgr::LoadThreads(int limit)
 {
     QList<LocalChatThread> threads;
-    if (!IsReady()) {
-        return threads;
-    }
-
+    if (!IsReady()) return threads;
     QSqlQuery query(_database);
     query.prepare(QStringLiteral(
-        "SELECT thread_id, thread_type, title, peer_uid, last_message_id, "
-        "last_message_preview, last_message_at_ms, unread_count, updated_at_ms "
-        "FROM local_chat_thread "
+        "SELECT thread_id, thread_type, title, peer_uid, owner_uid, active, last_message_id, "
+        "last_message_preview, last_message_at_ms, unread_count, updated_at_ms FROM local_chat_thread "
         "ORDER BY last_message_at_ms DESC, thread_id DESC LIMIT ?"));
     query.addBindValue(NormalizeLimit(limit, kDefaultThreadLimit));
     if (!query.exec()) {
         SetError(QStringLiteral("读取本地会话列表失败"));
         return threads;
     }
+    while (query.next()) threads.append(ReadThread(query));
+    return threads;
+}
 
-    while (query.next()) {
-        threads.append(ReadThread(query));
+QList<LocalChatThread> LocalChatStorageMgr::LoadAllThreads()
+{
+    QList<LocalChatThread> threads;
+    if (!IsReady()) return threads;
+    QSqlQuery query(_database);
+    if (!query.exec(QStringLiteral(
+            "SELECT thread_id, thread_type, title, peer_uid, owner_uid, active, last_message_id, "
+            "last_message_preview, last_message_at_ms, unread_count, updated_at_ms "
+            "FROM local_chat_thread ORDER BY thread_id ASC"))) {
+        SetError(QStringLiteral("读取全部本地会话失败"));
+        return threads;
     }
+    while (query.next()) threads.append(ReadThread(query));
     return threads;
 }
 
@@ -192,9 +204,9 @@ QList<LocalChatMessage> LocalChatStorageMgr::LoadRecentMessages(qint64 threadId,
     // 内层倒序取最新 N 条，外层恢复为时间正序，界面可直接从上到下添加气泡。
     return QueryMessages(QStringLiteral(
                              "SELECT message_id, thread_id, sender_id, recv_id, content_type, content, "
-                              "created_at_ms, updated_at_ms, server_status, send_state, delivery_state, is_read "
+                              "created_at_ms, updated_at_ms, sender_nick, server_status, send_state, delivery_state, is_read "
                              "FROM (SELECT message_id, thread_id, sender_id, recv_id, content_type, content, "
-                              "created_at_ms, updated_at_ms, server_status, send_state, delivery_state, is_read "
+                              "created_at_ms, updated_at_ms, sender_nick, server_status, send_state, delivery_state, is_read "
                              "FROM local_chat_message WHERE thread_id = ? "
                              "ORDER BY message_id DESC LIMIT ?) ORDER BY message_id ASC"),
                          threadId, 0, limit);
@@ -210,9 +222,9 @@ QList<LocalChatMessage> LocalChatStorageMgr::LoadMessagesBefore(qint64 threadId,
 
     return QueryMessages(QStringLiteral(
                              "SELECT message_id, thread_id, sender_id, recv_id, content_type, content, "
-                              "created_at_ms, updated_at_ms, server_status, send_state, delivery_state, is_read "
+                              "created_at_ms, updated_at_ms, sender_nick, server_status, send_state, delivery_state, is_read "
                              "FROM (SELECT message_id, thread_id, sender_id, recv_id, content_type, content, "
-                              "created_at_ms, updated_at_ms, server_status, send_state, delivery_state, is_read "
+                              "created_at_ms, updated_at_ms, sender_nick, server_status, send_state, delivery_state, is_read "
                              "FROM local_chat_message "
                              "WHERE thread_id = ? AND message_id < ? "
                              "ORDER BY message_id DESC LIMIT ?) ORDER BY message_id ASC"),
@@ -235,7 +247,8 @@ bool LocalChatStorageMgr::HasMessage(qint64 messageId) const
     return query.next();
 }
 
-bool LocalChatStorageMgr::UpsertThread(const LocalChatThread &thread)
+bool LocalChatStorageMgr::UpsertThread(const LocalChatThread &thread,
+                                       bool authoritativeActivation)
 {
     if (!IsReady() || thread.threadId <= 0
         || (thread.threadType != QStringLiteral("private")
@@ -243,16 +256,72 @@ bool LocalChatStorageMgr::UpsertThread(const LocalChatThread &thread)
         _lastError = QStringLiteral("保存本地会话失败：会话数据无效");
         return false;
     }
-
     if (!_database.transaction()) {
         SetError(QStringLiteral("开启本地会话事务失败"));
         return false;
     }
-    if (!UpsertThreadInTransaction(thread) || !_database.commit()) {
+    if (!UpsertThreadInTransaction(thread, authoritativeActivation) || !_database.commit()) {
         _database.rollback();
-        if (_lastError.isEmpty()) {
-            SetError(QStringLiteral("提交本地会话事务失败"));
+        if (_lastError.isEmpty()) SetError(QStringLiteral("提交本地会话事务失败"));
+        return false;
+    }
+    _cachedThreads = LoadThreads();
+    return true;
+}
+
+bool LocalChatStorageMgr::SetGroupState(qint64 threadId, bool active)
+{
+    if (!IsReady() || threadId <= 0 || active) return false;
+    QSqlQuery query(_database);
+    query.prepare(QStringLiteral(
+        "INSERT INTO local_chat_thread "
+        "(thread_id, thread_type, title, peer_uid, owner_uid, active, updated_at_ms) "
+        "VALUES (?, 'group', '', 0, 0, 0, ?) "
+        "ON CONFLICT(thread_id) DO UPDATE SET active = 0, updated_at_ms = excluded.updated_at_ms "
+        "WHERE local_chat_thread.thread_type = 'group'"));
+    query.addBindValue(threadId);
+    query.addBindValue(QDateTime::currentMSecsSinceEpoch());
+    if (!query.exec() || query.numRowsAffected() == 0) {
+        SetError(QStringLiteral("持久化群失效状态失败"));
+        return false;
+    }
+    _cachedThreads = LoadThreads();
+    return true;
+}
+bool LocalChatStorageMgr::ReconcileGroupSnapshot(const QSet<qint64> &activeThreadIds)
+{
+    if (!IsReady()) return false;
+    if (!_database.transaction()) {
+        SetError(QStringLiteral("开启群列表对账事务失败"));
+        return false;
+    }
+    QSqlQuery query(_database);
+    if (!query.exec(QStringLiteral("SELECT thread_id FROM local_chat_thread "
+                                   "WHERE thread_type = 'group' AND active = 1"))) {
+        _database.rollback();
+        SetError(QStringLiteral("读取本地群列表失败"));
+        return false;
+    }
+    QList<qint64> missing;
+    while (query.next()) {
+        const qint64 threadId = query.value(0).toLongLong();
+        if (!activeThreadIds.contains(threadId)) missing.append(threadId);
+    }
+    QSqlQuery update(_database);
+    update.prepare(QStringLiteral("UPDATE local_chat_thread SET active = 0, updated_at_ms = ? "
+                                  "WHERE thread_id = ? AND thread_type = 'group'"));
+    for (qint64 threadId : missing) {
+        update.bindValue(0, QDateTime::currentMSecsSinceEpoch());
+        update.bindValue(1, threadId);
+        if (!update.exec()) {
+            _database.rollback();
+            SetError(QStringLiteral("标记已退出群聊失败"));
+            return false;
         }
+    }
+    if (!_database.commit()) {
+        _database.rollback();
+        SetError(QStringLiteral("提交群列表对账失败"));
         return false;
     }
     _cachedThreads = LoadThreads();
@@ -278,12 +347,14 @@ bool LocalChatStorageMgr::SaveReceivedMessages(const LocalChatThread &thread,
         success = messageQuery.prepare(QStringLiteral(
             "INSERT INTO local_chat_message "
             "(message_id, thread_id, sender_id, recv_id, content_type, content, created_at_ms, "
-            "updated_at_ms, server_status, send_state, delivery_state, is_read) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "updated_at_ms, sender_nick, server_status, send_state, delivery_state, is_read) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(message_id) DO UPDATE SET "
             "thread_id = excluded.thread_id, sender_id = excluded.sender_id, "
             "recv_id = excluded.recv_id, content_type = excluded.content_type, "
             "content = excluded.content, updated_at_ms = excluded.updated_at_ms, "
+            "sender_nick = CASE WHEN excluded.sender_nick <> '' THEN excluded.sender_nick "
+            "ELSE local_chat_message.sender_nick END, "
             "server_status = MAX(local_chat_message.server_status, excluded.server_status), "
             "send_state = excluded.send_state, "
             "delivery_state = MAX(local_chat_message.delivery_state, excluded.delivery_state), "
@@ -306,16 +377,20 @@ bool LocalChatStorageMgr::SaveReceivedMessages(const LocalChatThread &thread,
         messageQuery.bindValue(1, message.threadId);
         messageQuery.bindValue(2, message.senderId);
         messageQuery.bindValue(3, message.recvId);
-        messageQuery.bindValue(4, message.contentType);
-        messageQuery.bindValue(5, message.content);
+        messageQuery.bindValue(4, message.contentType.isNull()
+                                   ? QStringLiteral("") : message.contentType);
+        messageQuery.bindValue(5, message.content.isNull()
+                                   ? QStringLiteral("") : message.content);
         messageQuery.bindValue(6, message.createdAtMs);
         messageQuery.bindValue(7, message.updatedAtMs > 0 ? message.updatedAtMs : message.createdAtMs);
-        messageQuery.bindValue(8, message.serverStatus);
-        messageQuery.bindValue(9, message.sendState);
-        messageQuery.bindValue(10, message.deliveryState);
-        messageQuery.bindValue(11, message.isRead ? 1 : 0);
+        messageQuery.bindValue(8, message.senderNick.isNull() ? QStringLiteral("") : message.senderNick);
+        messageQuery.bindValue(9, message.serverStatus);
+        messageQuery.bindValue(10, message.sendState);
+        messageQuery.bindValue(11, message.deliveryState);
+        messageQuery.bindValue(12, message.isRead ? 1 : 0);
         if (!messageQuery.exec()) {
-            SetError(QStringLiteral("写入本地消息失败"));
+            _lastError = QStringLiteral("写入本地消息失败：") + messageQuery.lastError().text();
+            qWarning() << _lastError;
             success = false;
         }
     }
@@ -366,6 +441,8 @@ QHash<qint64, qint64> LocalChatStorageMgr::SyncCursors() const
     return cursors;
 }
 
+// This cursor is for the private-thread incremental list only. Group membership is
+// reconciled independently from a complete snapshot beginning at thread ID zero.
 qint64 LocalChatStorageMgr::MaxKnownThreadId() const
 {
     if (!IsReady()) {
@@ -373,7 +450,8 @@ qint64 LocalChatStorageMgr::MaxKnownThreadId() const
     }
 
     QSqlQuery query(_database);
-    if (!query.exec(QStringLiteral("SELECT COALESCE(MAX(thread_id), 0) FROM local_chat_thread"))
+    if (!query.exec(QStringLiteral(
+            "SELECT COALESCE(MAX(thread_id), 0) FROM local_chat_thread WHERE thread_type = 'private'"))
         || !query.next()) {
         const_cast<LocalChatStorageMgr *>(this)->SetError(QStringLiteral("读取最大本地会话 ID 失败"));
         return 0;
@@ -510,6 +588,7 @@ bool LocalChatStorageMgr::CreateSchema()
             "thread_id INTEGER PRIMARY KEY, "
             "thread_type TEXT NOT NULL CHECK (thread_type IN ('private', 'group')), "
             "title TEXT NOT NULL DEFAULT '', peer_uid INTEGER NOT NULL DEFAULT 0, "
+            "owner_uid INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)), "
             "last_message_id INTEGER NOT NULL DEFAULT 0, "
             "last_message_preview TEXT NOT NULL DEFAULT '', "
             "last_message_at_ms INTEGER NOT NULL DEFAULT 0, "
@@ -527,7 +606,7 @@ bool LocalChatStorageMgr::CreateSchema()
             "content_type TEXT NOT NULL DEFAULT 'text' "
             "CHECK (content_type IN ('text', 'image', 'audio', 'file', 'system')), "
             "content TEXT NOT NULL DEFAULT '', created_at_ms INTEGER NOT NULL, "
-            "updated_at_ms INTEGER NOT NULL, "
+            "updated_at_ms INTEGER NOT NULL, sender_nick TEXT NOT NULL DEFAULT '', "
             "server_status INTEGER NOT NULL DEFAULT 0 CHECK (server_status IN (0, 1, 2)), "
             "send_state INTEGER NOT NULL DEFAULT 1 CHECK (send_state IN (0, 1, 2, 3)), "
             "delivery_state INTEGER NOT NULL DEFAULT 1 CHECK (delivery_state IN (1, 2, 3, 4)), "
@@ -553,32 +632,44 @@ bool LocalChatStorageMgr::CreateSchema()
             return false;
         }
     }
-    // 已存在的每账号 SQLite 文件不会重新执行 CREATE TABLE；单独探测并迁移，避免
-    // 1037/1039 到达时因缺字段而丢失回执状态。
     QSqlQuery columns(_database);
     if (!columns.exec(QStringLiteral("PRAGMA table_info(local_chat_message)"))) {
         SetError(QStringLiteral("读取本地消息表结构失败"));
         return false;
     }
     bool hasDeliveryState = false;
+    bool hasSenderNick = false;
     while (columns.next()) {
-        hasDeliveryState = hasDeliveryState || columns.value(1).toString() == QStringLiteral("delivery_state");
+        const QString columnName = columns.value(1).toString();
+        hasDeliveryState = hasDeliveryState || columnName == QStringLiteral("delivery_state");
+        hasSenderNick = hasSenderNick || columnName == QStringLiteral("sender_nick");
     }
     if (!hasDeliveryState && !Execute(QStringLiteral(
             "ALTER TABLE local_chat_message ADD COLUMN delivery_state INTEGER NOT NULL DEFAULT 1 "
-            "CHECK (delivery_state IN (1, 2, 3, 4))"))) {
+            "CHECK (delivery_state IN (1, 2, 3, 4))"))) return false;
+    if (!hasSenderNick && !Execute(QStringLiteral(
+            "ALTER TABLE local_chat_message ADD COLUMN sender_nick TEXT NOT NULL DEFAULT ''"))) return false;
+    QSqlQuery threadColumns(_database);
+    if (!threadColumns.exec(QStringLiteral("PRAGMA table_info(local_chat_thread)"))) {
+        SetError(QStringLiteral("读取本地会话表结构失败"));
         return false;
     }
-    if (schemaVersion < 3) {
-        // 旧客户端曾用实时通知/发送确认的单条 message_id 推进连续同步游标，可能越过
-        // 尚未写入 SQLite 的离线消息。保留全部本地消息，只归零游标触发一次完整补同步；
-        // local_chat_message 主键和 HasMessage 会保证重复历史幂等且不重复增加未读数。
-        if (!Execute(QStringLiteral(
-                "UPDATE local_sync_cursor SET max_message_id = 0, synced_at_ms = 0"))) {
-            return false;
-        }
+    bool hasOwnerUid = false;
+    bool hasActive = false;
+    while (threadColumns.next()) {
+        hasOwnerUid = hasOwnerUid || threadColumns.value(1).toString() == QStringLiteral("owner_uid");
+        hasActive = hasActive || threadColumns.value(1).toString() == QStringLiteral("active");
     }
-    return Execute(QStringLiteral("PRAGMA user_version = 3"));
+    if (!hasOwnerUid && !Execute(QStringLiteral(
+            "ALTER TABLE local_chat_thread ADD COLUMN owner_uid INTEGER NOT NULL DEFAULT 0"))) return false;
+    if (!hasActive && !Execute(QStringLiteral(
+            "ALTER TABLE local_chat_thread ADD COLUMN active INTEGER NOT NULL DEFAULT 1 "
+            "CHECK (active IN (0, 1))"))) return false;
+    if (schemaVersion < 3) {
+        if (!Execute(QStringLiteral(
+                "UPDATE local_sync_cursor SET max_message_id = 0, synced_at_ms = 0"))) return false;
+    }
+    return Execute(QStringLiteral("PRAGMA user_version = 4"));
 }
 
 bool LocalChatStorageMgr::Execute(const QString &sql)
@@ -592,37 +683,48 @@ bool LocalChatStorageMgr::Execute(const QString &sql)
     return false;
 }
 
-bool LocalChatStorageMgr::UpsertThreadInTransaction(const LocalChatThread &thread)
+bool LocalChatStorageMgr::UpsertThreadInTransaction(const LocalChatThread &thread,
+                                                     bool authoritativeActivation)
 {
     if (thread.threadId <= 0 || (thread.threadType != QStringLiteral("private")
                                  && thread.threadType != QStringLiteral("group"))) {
         _lastError = QStringLiteral("保存本地会话失败：会话类型或 ID 无效");
         return false;
     }
-
     QSqlQuery query(_database);
     query.prepare(QStringLiteral(
         "INSERT INTO local_chat_thread "
-        "(thread_id, thread_type, title, peer_uid, last_message_id, last_message_preview, "
-        "last_message_at_ms, unread_count, updated_at_ms) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "(thread_id, thread_type, title, peer_uid, owner_uid, active, last_message_id, "
+        "last_message_preview, last_message_at_ms, unread_count, updated_at_ms) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(thread_id) DO UPDATE SET "
-        "thread_type = excluded.thread_type, title = excluded.title, peer_uid = excluded.peer_uid, "
-        "last_message_id = excluded.last_message_id, "
-        "last_message_preview = excluded.last_message_preview, "
-        "last_message_at_ms = excluded.last_message_at_ms, "
-        "unread_count = excluded.unread_count, updated_at_ms = excluded.updated_at_ms"));
+        "title = CASE WHEN excluded.thread_type = 'group' AND excluded.title = '' "
+        "THEN local_chat_thread.title ELSE excluded.title END, "
+        "peer_uid = excluded.peer_uid, "
+        "owner_uid = CASE WHEN excluded.owner_uid > 0 THEN excluded.owner_uid "
+        "ELSE local_chat_thread.owner_uid END, "
+        "active = CASE WHEN ? = 1 OR local_chat_thread.active = 1 THEN excluded.active ELSE 0 END, "
+        "last_message_id = MAX(local_chat_thread.last_message_id, excluded.last_message_id), "
+        "last_message_preview = CASE WHEN excluded.last_message_id >= local_chat_thread.last_message_id "
+        "THEN excluded.last_message_preview ELSE local_chat_thread.last_message_preview END, "
+        "last_message_at_ms = MAX(local_chat_thread.last_message_at_ms, excluded.last_message_at_ms), "
+        "unread_count = excluded.unread_count, updated_at_ms = excluded.updated_at_ms "
+        "WHERE local_chat_thread.thread_type = excluded.thread_type"));
     query.addBindValue(thread.threadId);
     query.addBindValue(thread.threadType);
-    query.addBindValue(thread.title);
+    query.addBindValue(thread.title.isNull() ? QStringLiteral("") : thread.title);
     query.addBindValue(thread.peerUid);
+    query.addBindValue(thread.ownerUid);
+    query.addBindValue(thread.active ? 1 : 0);
     query.addBindValue(thread.lastMessageId);
-    query.addBindValue(thread.lastMessagePreview);
+    query.addBindValue(thread.lastMessagePreview.isNull()
+                           ? QStringLiteral("") : thread.lastMessagePreview);
     query.addBindValue(thread.lastMessageAtMs);
     query.addBindValue(thread.unreadCount);
     query.addBindValue(thread.updatedAtMs > 0 ? thread.updatedAtMs : QDateTime::currentMSecsSinceEpoch());
-    if (!query.exec()) {
-        SetError(QStringLiteral("保存本地会话失败"));
+    query.addBindValue(authoritativeActivation ? 1 : 0);
+    if (!query.exec() || query.numRowsAffected() == 0) {
+        SetError(QStringLiteral("保存本地会话失败：thread_id 类型不匹配"));
         return false;
     }
     return true;

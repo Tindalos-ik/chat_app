@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS local_chat_thread (
   thread_type          TEXT NOT NULL CHECK (thread_type IN ('private', 'group')),
   title                TEXT NOT NULL DEFAULT '',
   peer_uid             INTEGER NOT NULL DEFAULT 0,
+  owner_uid            INTEGER NOT NULL DEFAULT 0,
+  active               INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
   last_message_id      INTEGER NOT NULL DEFAULT 0,
   last_message_preview TEXT NOT NULL DEFAULT '',
   last_message_at_ms   INTEGER NOT NULL DEFAULT 0,
@@ -46,6 +48,7 @@ CREATE TABLE IF NOT EXISTS local_chat_message (
   content       TEXT NOT NULL DEFAULT '',
   created_at_ms INTEGER NOT NULL,
   updated_at_ms INTEGER NOT NULL,
+  sender_nick   TEXT NOT NULL DEFAULT '',
   server_status INTEGER NOT NULL DEFAULT 0
                 CHECK (server_status IN (0, 1, 2)),
   send_state    INTEGER NOT NULL DEFAULT 1
@@ -82,7 +85,8 @@ CREATE TABLE IF NOT EXISTS local_message_attachment (
 CREATE INDEX IF NOT EXISTS idx_local_attachment_message
   ON local_message_attachment (message_id);
 
--- 写入一批服务端消息时，应置于同一个事务内。示例：
+-- 每个会话的历史同步页只有在完整校验后，才与该页最大 message_id 同事务提交游标。
+-- 实时通知/确认可以用相同 message_id 去重写入缓存，但不得越过尚未同步的历史缺口。
 -- BEGIN;
 -- INSERT OR IGNORE INTO local_chat_message (...)
 -- VALUES (...);

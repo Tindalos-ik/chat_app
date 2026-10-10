@@ -1,16 +1,20 @@
 #include <gtest/gtest.h>
 
 #include <QByteArray>
+#include <QFile>
 #include <QCoreApplication>
 #include <QDir>
 #include <QSqlDatabase>
 #include <QString>
 #include <QTemporaryDir>
 
+#include <algorithm>
+#include <QSet>
 #include <memory>
 
 #include "../chat_app desktop/localchatstoragemgr.h"
 
+#include <QSqlQuery>
 namespace {
 
 class IsolatedQtRuntime {
@@ -168,7 +172,7 @@ TEST_F(LocalChatStorageTest, AccountsUseSeparateDatabaseFilesAndCaches)
     ASSERT_TRUE(storage_->SaveReceivedMessages(
         MakeThread(threadId, QStringLiteral("account A")),
         {MakeMessage(messageId, threadId, uidA, 2002, QStringLiteral("message from A"))},
-        messageId));
+        messageId)) << storage_->LastError().toStdString();
 
     storage_->Close();
     ASSERT_TRUE(Initialize(uidB));
@@ -333,5 +337,216 @@ TEST_F(LocalChatStorageTest, ReopeningDatabaseRestoresThreadsMessagesAndSyncCurs
     EXPECT_EQ(storage_->SyncCursors().value(threadId), messageId + 50);
     EXPECT_EQ(storage_->MaxKnownThreadId(), threadId);
 }
+TEST_F(LocalChatStorageTest, InactiveGroupsStayInactiveUntilConfirmedJoin)
+{
+    ASSERT_TRUE(Initialize(6201));
+    LocalChatThread group = MakeThread(9910000001LL, QStringLiteral("Old group"));
+    group.threadType = QStringLiteral("group");
+    group.peerUid = 0;
+    group.ownerUid = 6201;
+    ASSERT_TRUE(storage_->UpsertThread(group));
+    ASSERT_TRUE(storage_->SetGroupState(group.threadId, false));
+    group.title = QStringLiteral("Late list snapshot");
+    EXPECT_TRUE(storage_->UpsertThread(group));
+    EXPECT_FALSE(storage_->LoadAllThreads().front().active);
+    EXPECT_TRUE(storage_->SetGroupState(group.threadId, false));
+    group.title = QStringLiteral("Explicit rejoin");
+    EXPECT_TRUE(storage_->UpsertThread(group, true));
+    const auto threads = storage_->LoadAllThreads();
+    ASSERT_EQ(threads.size(), 1);
+    EXPECT_TRUE(threads.front().active);
+    EXPECT_EQ(threads.front().peerUid, 0);
+}
+TEST_F(LocalChatStorageTest, CompleteGroupSnapshotReconcilesEveryCachedThread)
+{
 
+    ASSERT_TRUE(Initialize(6204));
+    QSet<qint64> present;
+    for (qint64 id = 1; id <= 135; ++id) {
+        LocalChatThread group = MakeThread(992000 + id, QStringLiteral("group %1").arg(id));
+        group.threadType = QStringLiteral("group");
+        group.peerUid = 0;
+        ASSERT_TRUE(storage_->UpsertThread(group));
+        if (id <= 120) present.insert(group.threadId);
+    }
+    ASSERT_TRUE(storage_->ReconcileGroupSnapshot(present));
+    const auto all = storage_->LoadAllThreads();
+    ASSERT_EQ(all.size(), 135);
+    for (qint64 id = 1; id <= 135; ++id) {
+        const auto iter = std::find_if(all.cbegin(), all.cend(), [id](const LocalChatThread &thread) {
+            return thread.threadId == 992000 + id;
+        });
+        ASSERT_NE(iter, all.cend());
+        EXPECT_EQ(iter->active, present.contains(iter->threadId));
+        EXPECT_EQ(iter->title, QStringLiteral("group %1").arg(id));
+        EXPECT_EQ(iter->threadId, 992000 + id);
+    }
+}
+TEST_F(LocalChatStorageTest, EmptyGroupPreviewAndPrivateSenderNickArePersistedSafely)
+{
+    ASSERT_TRUE(Initialize(6208));
+    LocalChatThread group;
+    group.threadId = 9970000001LL;
+    group.threadType = QStringLiteral("group");
+    group.title = QStringLiteral("new group");
+    group.peerUid = 0;
+    group.ownerUid = 6208;
+    group.lastMessagePreview = QString();
+    ASSERT_TRUE(storage_->UpsertThread(group)) << storage_->LastError().toStdString();
+    const auto newGroup = storage_->LoadAllThreads();
+    ASSERT_EQ(newGroup.size(), 1);
+    EXPECT_TRUE(newGroup.front().lastMessagePreview.isEmpty());
+
+    LocalChatThread privateThread = MakeThread(9970000002LL, QStringLiteral("private"));
+    LocalChatMessage privateMessage = MakeMessage(
+        9971000001LL, privateThread.threadId, 6208, 6210, QStringLiteral("private text"));
+    ASSERT_TRUE(storage_->SaveReceivedMessages(
+        privateThread, {privateMessage}, privateMessage.messageId))
+        << storage_->LastError().toStdString();
+    const auto privateHistory = storage_->LoadRecentMessages(privateThread.threadId);
+    ASSERT_EQ(privateHistory.size(), 1);
+    EXPECT_TRUE(privateHistory.front().senderNick.isEmpty());
+}
+TEST_F(LocalChatStorageTest, PeerZeroGroupsKeepIndependentMessagesAndCursors)
+{
+    ASSERT_TRUE(Initialize(6206));
+    LocalChatThread first = MakeThread(9940000001LL, QStringLiteral("first group"), 0);
+    first.threadType = QStringLiteral("group");
+    first.peerUid = 0;
+    first.ownerUid = 6206;
+    LocalChatThread second = first;
+    second.threadId = 9940000002LL;
+    second.title = QStringLiteral("second group");
+    const LocalChatMessage firstMessage = MakeMessage(
+        9941000001LL, first.threadId, 6207, 0, QStringLiteral("first history"));
+    const LocalChatMessage secondMessage = MakeMessage(
+        9941000002LL, second.threadId, 6208, 0, QStringLiteral("second history"));
+    ASSERT_TRUE(storage_->SaveReceivedMessages(first, {firstMessage}, firstMessage.messageId));
+    ASSERT_TRUE(storage_->SaveReceivedMessages(second, {secondMessage}, secondMessage.messageId));
+    const auto threads = storage_->LoadAllThreads();
+    ASSERT_EQ(threads.size(), 2);
+    EXPECT_EQ(threads[0].peerUid, 0);
+    EXPECT_EQ(threads[1].peerUid, 0);
+    ASSERT_EQ(storage_->LoadRecentMessages(first.threadId).size(), 1);
+    ASSERT_EQ(storage_->LoadRecentMessages(second.threadId).size(), 1);
+    EXPECT_EQ(storage_->LoadRecentMessages(first.threadId).front().content,
+              QStringLiteral("first history"));
+    EXPECT_EQ(storage_->LoadRecentMessages(second.threadId).front().content,
+              QStringLiteral("second history"));
+    EXPECT_EQ(storage_->SyncCursors().value(first.threadId), firstMessage.messageId);
+    EXPECT_EQ(storage_->SyncCursors().value(second.threadId), secondMessage.messageId);
+}
+
+TEST_F(LocalChatStorageTest, GroupIdsDoNotAdvancePrivateThreadDiscoveryCursor)
+{
+    ASSERT_TRUE(Initialize(6207));
+    LocalChatThread privateThread = MakeThread(9950000001LL, QStringLiteral("private"));
+    ASSERT_TRUE(storage_->UpsertThread(privateThread));
+    LocalChatThread group = MakeThread(9960000001LL, QStringLiteral("large group id"));
+    group.threadType = QStringLiteral("group");
+    group.peerUid = 0;
+    ASSERT_TRUE(storage_->UpsertThread(group));
+    EXPECT_EQ(storage_->MaxKnownThreadId(), privateThread.threadId);
+}
+
+TEST_F(LocalChatStorageTest, UnknownGroupStateCreatesPersistentTombstone)
+{
+    ASSERT_TRUE(Initialize(6205));
+    const qint64 threadId = 9930000001LL;
+    ASSERT_TRUE(storage_->SetGroupState(threadId, false));
+    EXPECT_FALSE(storage_->SetGroupState(threadId, true));
+    LocalChatThread lateGroup = MakeThread(threadId, QStringLiteral("late group"));
+    lateGroup.threadType = QStringLiteral("group");
+    lateGroup.peerUid = 0;
+    lateGroup.ownerUid = 6205;
+    lateGroup.title = QStringLiteral("late group");
+    ASSERT_TRUE(storage_->UpsertThread(lateGroup));
+    LocalChatMessage message = MakeMessage(9930000002LL, threadId, 6206, 0,
+                                           QStringLiteral("late group message"));
+    message.senderNick = QStringLiteral("late sender");
+    ASSERT_TRUE(storage_->SaveReceivedMessages(lateGroup, {message}, 0));
+    auto threads = storage_->LoadAllThreads();
+    ASSERT_EQ(threads.size(), 1);
+    EXPECT_FALSE(threads.front().active);
+    EXPECT_EQ(threads.front().title, QStringLiteral("late group"));
+    EXPECT_EQ(threads.front().ownerUid, 6205);
+    EXPECT_EQ(threads.front().peerUid, 0);
+    EXPECT_EQ(storage_->SyncCursors().value(threadId, -1), 0);
+    ASSERT_TRUE(storage_->SaveReceivedMessages(lateGroup, {message}, message.messageId));
+    ASSERT_TRUE(storage_->SaveReceivedMessages(lateGroup, {message}, 0));
+    EXPECT_FALSE(storage_->LoadAllThreads().front().active);
+    storage_->Close();
+    ASSERT_TRUE(Initialize(6205));
+    threads = storage_->LoadAllThreads();
+    ASSERT_EQ(threads.size(), 1);
+    EXPECT_FALSE(threads.front().active);
+    EXPECT_EQ(threads.front().title, QStringLiteral("late group"));
+    const auto restoredMessages = storage_->LoadRecentMessages(threadId);
+    ASSERT_EQ(restoredMessages.size(), 1);
+    EXPECT_EQ(restoredMessages.front().senderNick, QStringLiteral("late sender"));
+    EXPECT_EQ(storage_->SyncCursors().value(threadId), message.messageId);
+    ASSERT_TRUE(storage_->UpsertThread(lateGroup, true));
+    EXPECT_TRUE(storage_->LoadAllThreads().front().active);
+}
+
+TEST_F(LocalChatStorageTest, MigratesVersionThreeDatabaseWithoutLosingHistory)
+{
+    ASSERT_TRUE(Initialize(6202));
+    const QString databasePath = storage_->DatabasePath();
+    storage_->Close();
+    ASSERT_TRUE(QFile::remove(databasePath));
+    const QString connectionName = QStringLiteral("legacy-v3-test");
+    {
+        QSqlDatabase legacy = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connectionName);
+        legacy.setDatabaseName(databasePath);
+        ASSERT_TRUE(legacy.open());
+        QSqlQuery query(legacy);
+        ASSERT_TRUE(query.exec(QStringLiteral(
+            "CREATE TABLE local_chat_thread (thread_id INTEGER PRIMARY KEY, thread_type TEXT NOT NULL, "
+            "title TEXT NOT NULL DEFAULT '', peer_uid INTEGER NOT NULL DEFAULT 0, "
+            "last_message_id INTEGER NOT NULL DEFAULT 0, last_message_preview TEXT NOT NULL DEFAULT '', "
+            "last_message_at_ms INTEGER NOT NULL DEFAULT 0, unread_count INTEGER NOT NULL DEFAULT 0, "
+            "updated_at_ms INTEGER NOT NULL DEFAULT 0)")));
+        ASSERT_TRUE(query.exec(QStringLiteral(
+            "CREATE TABLE local_sync_cursor (thread_id INTEGER PRIMARY KEY, max_message_id INTEGER NOT NULL, "
+            "synced_at_ms INTEGER NOT NULL)")));
+        ASSERT_TRUE(query.exec(QStringLiteral(
+            "CREATE TABLE local_chat_message (message_id INTEGER PRIMARY KEY, thread_id INTEGER NOT NULL, "
+            "sender_id INTEGER NOT NULL, recv_id INTEGER NOT NULL DEFAULT 0, content_type TEXT NOT NULL, "
+            "content TEXT NOT NULL DEFAULT '', created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL, "
+            "server_status INTEGER NOT NULL DEFAULT 0, send_state INTEGER NOT NULL DEFAULT 1, "
+            "delivery_state INTEGER NOT NULL DEFAULT 1, is_read INTEGER NOT NULL DEFAULT 1)")));
+        ASSERT_TRUE(query.exec(QStringLiteral(
+            "CREATE TABLE local_message_attachment (attachment_id INTEGER PRIMARY KEY, message_id INTEGER NOT NULL, "
+            "local_path TEXT NOT NULL DEFAULT '', remote_url TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT '', "
+            "file_size INTEGER NOT NULL DEFAULT 0, download_state INTEGER NOT NULL DEFAULT 0)")));
+        ASSERT_TRUE(query.exec(QStringLiteral(
+            "INSERT INTO local_chat_thread(thread_id,thread_type,title,peer_uid,last_message_id) "
+            "VALUES(991001,'private','legacy',6203,900)")));
+        ASSERT_TRUE(query.exec(QStringLiteral(
+            "INSERT INTO local_sync_cursor(thread_id,max_message_id,synced_at_ms) VALUES(991001,900,1234)")));
+        ASSERT_TRUE(query.exec(QStringLiteral(
+            "INSERT INTO local_chat_message(message_id,thread_id,sender_id,recv_id,content_type,content,"
+            "created_at_ms,updated_at_ms,server_status,send_state,delivery_state,is_read) "
+            "VALUES(900,991001,6202,6203,'text','kept',10,10,0,3,4,1)")));
+        ASSERT_TRUE(query.exec(QStringLiteral("PRAGMA user_version = 3")));
+        legacy.close();
+        legacy = QSqlDatabase();
+        QSqlDatabase::removeDatabase(connectionName);
+    }
+    ASSERT_TRUE(Initialize(6202));
+    const auto threads = storage_->LoadAllThreads();
+    ASSERT_EQ(threads.size(), 1);
+    EXPECT_EQ(threads.front().title, QStringLiteral("legacy"));
+    EXPECT_TRUE(threads.front().active);
+    const auto history = storage_->LoadRecentMessages(991001, 10);
+    ASSERT_EQ(history.size(), 1);
+    EXPECT_EQ(history.front().content, QStringLiteral("kept"));
+    EXPECT_EQ(history.front().senderId, 6202);
+    EXPECT_EQ(history.front().recvId, 6203);
+    EXPECT_EQ(history.front().deliveryState, 4);
+    EXPECT_EQ(history.front().sendState, 3);
+    EXPECT_EQ(history.front().senderNick, QString());
+    EXPECT_EQ(storage_->SyncCursors().value(991001), 900);
+}
 } // namespace
