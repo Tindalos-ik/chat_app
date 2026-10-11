@@ -70,7 +70,7 @@ HTTP 负责注册、登录、验证码和重置密码等短请求。登录拿到
 | `ID_NOTIFY_GROUP_STATE` | `{thread_id,type:'group',active:false,reason,target_member_uid}` | reason kicked/dissolved，只失效本群，不触发账号下线 |
 | `ID_INVITE_GROUP_REQ/RSP` | `{request_id,operation_id,thread_id,target_member_uid}` | 好友邀请准入契约 |
 | `ID_DECIDE_GROUP_INVITE_REQ/RSP` | `{request_id,operation_id,thread_id,invitation_id,accept}` | 被邀请者明确同意/拒绝 |
-| `ID_LOAD_GROUP_REQUESTS_REQ/RSP` | `{request_id,scope,after_id,page_size,thread_id?}` | inbox/results/approvals；全局准入 id 分页 |
+| `ID_LOAD_GROUP_REQUESTS_REQ/RSP` | `{request_id,scope,after_id,page_size,thread_id?}` | inbox/applications/results/approvals；每个scope独立使用全局准入id分页 |
 | `ID_DECIDE_GROUP_APPLICATION_REQ/RSP` | `{request_id,operation_id,thread_id,application_id,approve}` | 管理员/群主审批申请 |
 | `ID_SET_GROUP_ADMIN_REQ/RSP` | `{request_id,operation_id,thread_id,target_member_uid,role,expected_membership_version}` | 群主管理角色0/1，版本指目标 |
 | `ID_TRANSFER_GROUP_OWNER_REQ/RSP` | `{request_id,operation_id,thread_id,target_member_uid,expected_membership_version}` | 群主原子转让，版本指目标 |
@@ -81,6 +81,8 @@ HTTP 负责注册、登录、验证码和重置密码等短请求。登录拿到
 | `ID_NOTIFY_GROUP_EVENT` | event_type inbox/result/metadata/members/invalidated | 非成员信箱/结果不携带有效成员证明 |
 
 群管理 mutation 均要求 operation_id（现有 create/join/kick/dissolve 同样适用）。准入响应 entries 使用 `{kind,id,thread_id,group_name,inviter_uid,applicant_uid,target_uid,status,explanation,created_at_ms,updated_at_ms}`，next_id 为全局准入游标。group包含最新version、审批/公告/头像独立版本与可信元数据，以及接收者专属member/role/membership_version/membership_proof/source；source为mutation/snapshot/event。成员项携带membership_version，成员回包包含完整最新group。
+
+`inbox`返回本人收到的全部邀请（pending及终态）；`applications`返回本人的全部申请（pending及终态）；`results`返回本人是被邀请者/申请者/邀请者的终态记录；`approvals`仅返回该群待审申请并锁内校验当前管理权限。每轮刷新各scope都从after_id=0开始，不能把其他scope的游标混用，也不能只按新id刷新旧记录状态。通知紧凑JSON显式带接收者`uid`和`type="group"`；uid不是操作人。只有新入群者的members事件带membership_granted=true，非成员结果不能授予权限。
 
 membership_proof不等于激活许可：普通metadata/members只能刷新已有有效身份，不能激活未知群或tombstone。仅实际新增/重入收件人得到event_type='members',source='event',membership_granted=true，其他成员无grant。self显式CREATE/JOIN在当前锁定证明member=true时确认grant，包括已经入群与相同键重放；旧JOIN被踢后重放没有grant。接受邀请仅实际新入群响应有grant，pending/离群重放/接受邀请重放无grant；审批者响应不能代替申请者grant。离线激活只能完整成功快照轮，旧版本不能覆盖新身份。
 

@@ -1,4 +1,4 @@
-// 内部群读取：FromRow仅解析元数据；Load按群→成员锁顺序作当前身份读。
+// 文件作用：集中群元数据列映射与锁定身份读取；普通行解析不授予成员权限。
 #pragma once
 #include "MysqlMgr.h"
 namespace group_db
@@ -10,7 +10,8 @@ inline constexpr const char *Columns =
     "TIMESTAMP(g.announcement_updated_at)*1000,0) AS "
     "UNSIGNED),g.avatar_resource_id,g.avatar_mime_type,g.avatar_size,g.avatar_width,g.avatar_"
     "height,g.avatar_version";
-// X Protocol STRING/BYTES尾部的0x00是协议终止符，不是正文；显式长度保留正文中的NUL。
+// Text参数row/column：SQL结果行及STRING/BYTES列序号；返回原始UTF8正文。
+// 前提：列采用X Protocol文本表示（含额外尾0x00）；不持锁、不校验权限，保留正文NUL。
 inline std::string Text(const mysqlx::Row &row, unsigned column)
 {
     const auto bytes = row.getBytes(column);
@@ -18,6 +19,8 @@ inline std::string Text(const mysqlx::Row &row, unsigned column)
         return {};
     return std::string(reinterpret_cast<const char *>(bytes.begin()), bytes.length() - 1);
 }
+// FromRow参数r：按Columns顺序查询的非NULL群行；返回群元数据，不填成员身份。
+// 本函数只解析、不加锁；snapshot调用者必须自行绑定UID并按成员版本/完整轮应用证明。
 inline GroupChatThread FromRow(const mysqlx::Row &r)
 {
     GroupChatThread g;
@@ -39,7 +42,9 @@ inline GroupChatThread FromRow(const mysqlx::Row &r)
     g.avatarVersion = r[15].get<std::uint64_t>();
     return g;
 }
-// 调用者持同一事务至授权操作/提交结束。active=0成员仍返回版本，但不授予role权限。
+// Load参数db：已开始的事务；thread：uint64群号；uid：认证会话用户；g：输出元数据/身份。
+// 返回false仅表示群不存在，true不等于有效成员，必须检查g.active与g.member。
+// 锁顺序群→成员；调用者持事务至授权操作结束。墓碑返回版本，但不返回旧role权限。
 inline bool Load(mysqlx::Session &db, std::uint64_t thread, int uid, GroupChatThread &g)
 {
     auto row = db.sql(std::string("SELECT ") + Columns +

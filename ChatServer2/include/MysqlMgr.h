@@ -332,11 +332,15 @@ public:
     int LoadGroupSnapshot(int uid, std::vector<GroupChatThread>& groups);
     // threadId为正式会话ID；返回是否group，仅用于可靠历史分派，不授予成员权限。
     bool IsGroupThread(std::uint64_t threadId);
-    // 管理 mutation 使用 operation_id 持久化精确输入/结果；身份只取session uid。
-    // verifiedAvatar只允许传ResourceServer可信核验结果；events仅提交成功后投递。
+    // MutateGroup参数uid来自认证session，action为管理请求ID，request含持久operation_id。
+    // expected_membership_version用于目标kick/admin/transfer，leave用于uid自身；旧世代不能作用于重入。
+    // verifiedAvatar只接受ResourceServer可信元数据；response输出当前自身份，events只在Success提交后投递。
+    // 返回业务/依赖错误码；群→成员→准入当前读，失败回滚，重放也先校验当前管理权限。
     int MutateGroup(int uid, short action, const Json::Value& request,
         const Json::Value& verifiedAvatar, Json::Value& response, std::vector<GroupEvent>& events);
-    // inbox/results供非成员恢复；approvals在群锁下确认当前管理员权限。
+    // LoadGroupRequests参数uid为认证用户，request含scope/after_id/page_size，审批还需thread_id。
+    // inbox=本人全部邀请；applications=本人全部申请；results=相关终态；approvals=当前经理待审批。
+    // response输出全局ID页/next_id/load_more与真实UID；返回错误码，不给非成员信箱身份权限。
     int LoadGroupRequests(int uid, const Json::Value& request, Json::Value& response);
 private:
     MysqlMgr();

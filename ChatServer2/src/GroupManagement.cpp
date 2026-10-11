@@ -332,6 +332,24 @@ int MysqlMgr::MutateGroup(int uid, short action, const Json::Value &request,
                 response["membership_granted"] = true;
             else
                 response.removeMember("membership_granted");
+            if (action == ID_JOIN_GROUP_REQ)
+            {
+                // 重放只恢复当前状态，不重建已拒绝申请；历史pending结果不能冒充仍在待审。
+                const bool hadApplication = response.isMember("application") &&
+                                            response["application"].isObject() &&
+                                            response["application"]["id"].isUInt64();
+                if (hadApplication)
+                    response["application"] =
+                        ReadAdmission(*con, response["application"]["id"].asUInt64());
+                if (group.member)
+                    response["admission"] = "joined";
+                else if (hadApplication &&
+                         response["application"]["status"].asString() != "pending")
+                {
+                    response["already_processed"] = true;
+                    response["status_conflict"] = true;
+                }
+            }
             if (action == ID_LEAVE_GROUP_REQ && group.member)
                 response.removeMember("reason");
             return Success;
@@ -697,6 +715,9 @@ int MysqlMgr::MutateGroup(int uid, short action, const Json::Value &request,
             const auto recipientVersion = recipient ? recipient->version : 0;
             Json::Value p;
             p["error"] = Success;
+            // 通知身份是收件人，不是发起者；与Qt账号世代检查及group类型分派一致。
+            p["uid"] = who;
+            p["type"] = "group";
             p["event_type"] = type;
             p["target_uid"] = who;
             p["target_member_uid"] = who;
@@ -797,7 +818,7 @@ int MysqlMgr::LoadGroupRequests(int uid, const Json::Value &request, Json::Value
     int limit = request.get("page_size", 50).asInt();
     if (limit < 1 || limit > 100)
         return Error_Json;
-    if (scope != "inbox" && scope != "results" && scope != "approvals")
+    if (scope != "inbox" && scope != "applications" && scope != "results" && scope != "approvals")
         return Error_Json;
     if (scope == "approvals" && (!Id(request["thread_id"], thread) || !thread))
         return Error_Json;
@@ -830,10 +851,13 @@ int MysqlMgr::LoadGroupRequests(int uid, const Json::Value &request, Json::Value
                 return GroupPermissionDenied;
             response["group"] = BuildGroupJson(g, "snapshot");
         }
+        // 每个UI表面独立按全局准入ID分页；状态更新需从0重新枚举，不能永久记最大ID。
+        // 非成员自己的申请包含pending，不能只在terminal results中恢复。
         const std::string where =
             scope == "approvals" ? "a.thread_id=? AND a.kind='application' AND a.status='pending'"
-            : scope == "inbox"   ? "a.user_id=? AND a.status='pending'"
-                                 : "(a.user_id=? OR a.inviter_uid=?) AND a.status<>'pending'";
+            : scope == "inbox"   ? "a.user_id=? AND a.kind='invitation'"
+            : scope == "applications" ? "a.user_id=? AND a.kind='application'"
+                                      : "(a.user_id=? OR a.inviter_uid=?) AND a.status<>'pending'";
         auto statement =
             con->sql(std::string("SELECT ") + AdmissionColumns +
                      " FROM group_admission a JOIN group_chat g ON g.thread_id=a.thread_id WHERE " +
