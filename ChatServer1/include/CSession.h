@@ -1,3 +1,4 @@
+// 文件作用：单条认证TCP连接的帧收发与UID/session生命周期；群快照绑定连接、UID和连续分页游标。
 #pragma once
 #ifndef CSESSION_H
 #define CSESSION_H
@@ -41,6 +42,7 @@ public:
     void Send(char* msg, short max_length, short msgid); // 发送char*消息
     void Send(std::string msg, short msgid);             // 发送std::string消息
     // 群通知区分成功排队与实时失败；不改变既有私聊 Send 调用约定。
+    // msg为正式JSON包体，msgid为群专用通知类型；仅成功入队返回true，不代表对方已读/落库。
     bool TrySend(const std::string& msg, short msgid);
     // 仅 LogicSystem 线程访问，生命周期随 session；UID 与游标防止跨身份/跳页读取。
     struct GroupListSnapshot {

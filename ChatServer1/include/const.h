@@ -1,3 +1,4 @@
+// 文件作用：聊天服务公共协议、错误码与帧资源界限；群状态与账号下线/重复登录踢人独立。
 #pragma once //防止重复包含
 #ifndef _CONST_H_
 #define _CONST_H_

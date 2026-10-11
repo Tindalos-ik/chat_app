@@ -29,9 +29,9 @@ struct FriendAuthMessage {
     std::string content;
 };
 
-// chat_message 与 TCP JSON 之间的服务端确认消息。messageId/threadId 是客户端
-// SQLite 去重和增量同步使用的游标，uniqueId 用于对应客户端本次发送的 UUID。
-// 文本和图片共用这一结构，保证 ID_LOAD_CHAT_MSG 的同一个游标可以混合读取两类消息。
+// chat_message与TCP JSON之间的服务端确认消息。messageId是正式主键/客户端去重标识，
+// threadId是会话身份，uniqueId用于匹配本账号pending UUID；最新实时ID不是完整同步游标。
+// 只有完整授权history页才能推进连续游标；文本/图片共用结构，历史可混合读取两类消息。
 struct StoredTextMessage {
     std::uint64_t messageId = 0;
     std::uint64_t threadId = 0;
@@ -100,6 +100,7 @@ struct GroupChatThread {
     int ownerUid = 0;
     bool active = true;
 };
+// 成员页数据：uid为成员身份，nick缺资料回退UID字符串，role只允许0成员/2群主。
 struct GroupChatMember {
     int uid = 0;
     std::string nick;
@@ -293,8 +294,9 @@ public:
                                std::uint64_t readThroughMessageId,
                                std::vector<ReadReceipt>& receipts);
 
+    // action选择群事务操作；recipients输出提交时成员UID，供提交后尽力扇出，不能当作后续权限缓存。
     // uid 必须来自登录 session；threadId 为群号（Create 时输出），name 仅用于创建；
-    // targetUid 仅用于踢人，after/limit 用于成员或消息分页。返回协议错误码。
+    // targetUid仅踢普通成员；after为成员UID或历史message_id游标，limit为相应页条数上限。返回协议错误码。
     // texts 是(msgid,content)纯文本批次；Send 仅成功提交后可使用输出recipients/messages扇出。
     // group/members/messages 为对应操作结果；失败结果不应通知客户端为已持久化。
     // authorizedDelivery 在持锁且提交前执行：Authorize用于TCP入队，Send用于实际帧字节门限；
@@ -306,9 +308,10 @@ public:
         GroupChatThread& group, std::vector<GroupChatMember>& members,
         std::vector<StoredTextMessage>& messages, std::vector<int>& recipients,
         const std::function<bool()>& authorizedDelivery = {});
-    // 单次一致性查询完整有效群列表；LogicSystem 绑定 session 保存快照再按字节分页。
+    // uid来自登录session；groups输出单次一致性查询的全量有效群身份。
+    // LogicSystem将结果绑定session UID并按字节分页；快照元数据不授予发送/历史访问权限。
     int LoadGroupSnapshot(int uid, std::vector<GroupChatThread>& groups);
-    // 只读会话类型，用于历史请求可靠分派；不授予成员权限。
+    // threadId为正式会话ID；返回是否group，仅用于可靠历史分派，不授予成员权限。
     bool IsGroupThread(std::uint64_t threadId);
 private:
     MysqlMgr();

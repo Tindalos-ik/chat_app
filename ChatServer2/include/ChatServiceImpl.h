@@ -64,6 +64,8 @@ public:
     //bool GetBaseInfo(std::string base_key, int uid, std::shared_ptr<UserInfo>& userinfo);
     Status NotifyKickUser(ServerContext* context, const KickUserReq* request, KickUserRsp* response) override;
     // 目标服仅转发群信封；文本推送前再次事务检查有效成员，状态通知不关 socket。
+    // context为RPC取消/期限上下文；request为来源服正式群信封；response输出转发错误码。
+    // 不写chat_message，授权与TCP入队位于同一group_chat行锁事务。
     Status NotifyGroup(ServerContext* context, const message::GroupNotifyReq* request,
                        message::GroupNotifyRsp* response) override;
 

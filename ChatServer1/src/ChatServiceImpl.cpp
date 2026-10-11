@@ -332,6 +332,8 @@ Status ChatServiceImpl::NotifyGroup(ServerContext*, const message::GroupNotifyRe
         std::vector<GroupChatMember> members;
         std::vector<StoredTextMessage> messages;
         std::vector<int> recipients;
+        // 目标节点不落库：与kick/dissolve共享群行锁，授权成功的同一临界区内才入TCP队列。
+        // 历史metadata再迟到也不能使已经撤权成员重新接收此广播。
         const int error = MysqlMgr::GetInstance()->GroupOperation(GroupAction::Authorize,
             request->target_member_uid(), thread, "", 0, 0, 0, {}, group, members, messages, recipients,
             [&]() { return session->TrySend(request->payload_json(), ID_NOTIFY_GROUP_TEXT_MSG); });

@@ -1759,6 +1759,8 @@ void LogicSystem::HandleGroup(std::shared_ptr<CSession> session, const short& id
         if (count == 0 && !members.empty()) response["error"]=MessageTooLarge;
     }
     if (action == GroupAction::Send) {
+        // GroupOperation已提交每条单行recv_id=0消息；之后仅按成员UID转发同一正式元数据。
+        // 某成员离线/RPC超时只影响realtime_delivered，不能撤销或重复写入已持久化消息。
         response["textArray"]=Json::Value(Json::arrayValue);
         for (const auto& message : messages) response["textArray"].append(BuildHistoryMessageJson(message));
         response["persisted"]=true;

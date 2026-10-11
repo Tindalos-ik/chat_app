@@ -62,6 +62,8 @@ private:
     // 群 TCP 入口：session 唯一授权来源；msg_id 选择操作，data 为管理或文本 JSON。
     void HandleGroup(std::shared_ptr<CSession> session, const short& msg_id, const std::string& data);
     // 已提交群通知扇出；文本目标投递前再次事务授权，状态通知绝不注销连接。
+    // targetUid为实际接收成员，senderUid为已认证发送者，threadId为群号；
+    // payload为正式JSON，stateChange区分失效事件与文本。返回实时入队结果，不改变持久化成功。
     bool ForwardGroup(int targetUid, int senderUid, std::uint64_t threadId,
                       const std::string& payload, bool stateChange);
 

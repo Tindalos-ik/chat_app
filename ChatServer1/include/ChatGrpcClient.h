@@ -1,3 +1,4 @@
+// 文件作用：ChatServer跨实例通知客户端及stub池；群只转发已提交信封，池等待与RPC共用截止时间。
 #pragma once
 #ifndef CHAT_GRPC_CLIENT_H
 #define CHAT_GRPC_CLIENT_H
@@ -88,6 +89,7 @@ public:
         return context;
     }
 
+    // deadline为本次调用的绝对截止时间；超时/关闭返回空，不延长后续RPC剩余期限。
     std::unique_ptr<ChatService::Stub> getConnectionUntil(
         const std::chrono::system_clock::time_point& deadline){
         std::unique_lock<std::mutex> lock(_mutex);

@@ -274,8 +274,10 @@ message ThreadReadRsp {
     int32 error = 1;
 }
 
-// 群通知专用信封。thread_id 是群号，sender_uid 是发送者，target_member_uid 是
-// 实际接收成员；payload_json 为已提交消息或群状态通知，目标服绝不二次落库。
+// 群通知专用信封：thread_id为群号，sender_uid为发送者，target_member_uid为实际接收成员。
+// payload_json为来源服已提交的正式消息/群状态；目标服永不新增chat_message。
+// 文本按thread_id/target_member_uid再授权并持同一group行锁入TCP队列；
+// state_change仅改变群状态，绝不当作账号踢人。
 message GroupNotifyReq {
     uint64 thread_id = 1;
     int32 sender_uid = 2;

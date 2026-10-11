@@ -1506,6 +1506,8 @@ int MysqlMgr::GroupOperation(GroupAction action, int uid, std::uint64_t& threadI
             con->sql("INSERT INTO group_chat_member(thread_id,user_id,role) VALUES (?,?,2)")
                 .bind(threadId).bind(uid).execute();
         }
+        // 所有加入/踢人/解散/发送/成员历史授权先锁同一群行再读取权限，
+        // 因而撤权事务提交后，另一请求不会按事务开始时旧快照继续成功。
         auto row = con->sql("SELECT name,owner_uid,CAST(active AS UNSIGNED) FROM group_chat "
             "WHERE thread_id=? FOR UPDATE").bind(threadId).execute().fetchOne();
         if (!row || row[2].get<int>() != 1) return GroupUnavailable;
@@ -1578,6 +1580,7 @@ int MysqlMgr::GroupOperation(GroupAction action, int uid, std::uint64_t& threadI
         // TCP 入队也在授权锁持有期间完成；撤权提交后，迟到广播不能越过此检查。
         if (authorizedDelivery && (action == GroupAction::Authorize || action == GroupAction::Send) &&
             !authorizedDelivery()) return action == GroupAction::Send ? MessageTooLarge : ServerBusy;
+        // 只有本事务提交后调用方才能使用正式messages/recipients；异常Defer完整回滚owner创建链。
         con->commit(); committed = true;
         return Success;
     } catch (const std::exception&) { members.clear(); messages.clear(); recipients.clear(); return ServerBusy; }
