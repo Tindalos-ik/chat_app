@@ -1,6 +1,7 @@
 #include "avatarutil.h"
 
 #include <QLabel>
+#include <QImage>
 #include <QCoreApplication>
 #include <QHash>
 #include <QNetworkAccessManager>
@@ -60,6 +61,27 @@ QHash<QString, QPixmap> &AvatarCache()
     return cache;
 }
 
+QPixmap DefaultGroupAvatar()
+{
+    static const QPixmap avatar = [] {
+        QPixmap image(44, 44);
+        image.fill(Qt::transparent);
+        QPainter painter(&image);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(QStringLiteral("#467bc7")));
+        painter.drawEllipse(image.rect());
+        QFont font = painter.font();
+        font.setPixelSize(24);
+        font.setBold(true);
+        painter.setFont(font);
+        painter.setPen(Qt::white);
+        painter.drawText(image.rect(), Qt::AlignCenter, QStringLiteral("群"));
+        return image;
+    }();
+    return avatar;
+}
+
 } // namespace
 
 namespace AvatarUtil {
@@ -116,6 +138,22 @@ void SetRoundAvatar(QLabel *label, int uid, const QString &avatarPath)
         AvatarCache().insert(source, downloaded);
         ApplyRoundedPixmap(guardedLabel, downloaded);
     });
+}
+void SetRoundGroupAvatar(QLabel *label, const QString &cachePath)
+{
+    if (!label) return;
+    label->setProperty("avatar_source", QStringLiteral("group:%1").arg(cachePath));
+    QPixmap image;
+    if (!cachePath.isEmpty()) image.load(cachePath);
+    ApplyRoundedPixmap(label, image.isNull() ? DefaultGroupAvatar() : image);
+}
+
+void SetRoundGroupAvatar(QLabel *label, const QImage &image)
+{
+    if (!label) return;
+    label->setProperty("avatar_source", QStringLiteral("group:preview"));
+    const QPixmap pixmap = image.isNull() ? DefaultGroupAvatar() : QPixmap::fromImage(image);
+    ApplyRoundedPixmap(label, pixmap);
 }
 
 } // namespace AvatarUtil

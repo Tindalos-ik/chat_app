@@ -11,6 +11,7 @@
 #include <QVector>
 #include "statewidget.h"
 #include "userdata.h"
+#include <QJsonObject>
 
 namespace Ui {
 class ChatDialog;
@@ -21,6 +22,10 @@ class ChatItemBase;
 class ChatImageTransferTask;
 class QPushButton;
 struct LocalChatMessage;
+class GroupManagementDialog;
+class GroupAvatarTransfer;
+class QLabel;
+class GroupRequestsDialog;
 struct LocalChatThread;
 
 class ChatDialog : public QDialog
@@ -70,12 +75,12 @@ private slots:
     // threadId指定失效群；active仅接受false；reason解释踢出/解散；targetUid为本账号通知身份。
     // 保留本地历史/账号连接，active=true不是激活证据。
     void slot_group_state(qint64 threadId, bool active, const QString &reason, qint64 targetUid);
-    // requestId关联本账号管理操作；error为协议错误码，不将失败当成已提交。
-    void slot_group_operation_result(const QString &requestId, int error);
-    // threadId/requestId绑定当前信息窗；members为本页(uid/nick/role0或2)，nextUid为下一页游标，
-    // loadMore表示仍有成员。拒绝旧窗口、旧请求或失效群的迟到页。
-    void slot_group_members(qint64 threadId, const QString &requestId,
-                            const QList<GroupMemberInfo> &members, qint64 nextUid, bool loadMore);
+    void slot_group_mutation_result(const QString &requestId, int requestType,
+                                    int error, const QJsonObject &response);
+    // 下载回调身份含账号/登录代次/thread/avatar版本/resource；groupVersion只做“不落后于缓存”检查。
+    void slot_group_avatar_ready(int accountUid, quint64 loginGeneration, qint64 threadId,
+                                 qint64 groupVersion, qint64 avatarVersion,
+                                 const QString &resourceId, const QString &cachePath);
 
 protected:
     // 重写事件过滤器实现根据鼠标位置判断是否隐藏搜索框恢复聊天界面
@@ -101,12 +106,13 @@ private:
     void SetCurrentChatUser(const std::shared_ptr<UserInfo> &chatUser, qint64 threadId = 0);
     // group提供待打开的threadId；身份/active以本账号SQLite重新读取，无好友指针，失效群仅本地历史。
     void SetCurrentGroup(const GroupInfo &group);
-    // thread为本账号完整缓存身份/摘要；按group thread_id维护列表、固定群头像及真实数字未读。
-    void addGroupChatWid(const LocalChatThread &thread);
+    // thread由本账号SQLite缓存转为完整GroupInfo；requestAvatar=false仅用于已经完成的回调重绘。
+    void addGroupChatWid(const LocalChatThread &thread, bool requestAvatar = true);
+    // thread为当前成员缓存；头像缓存路径按账号/thread/resource/version稳定解析，不含登录代次。
+    void SetGroupTitleAvatar(const LocalChatThread &thread);
     // 分页成员与owner管理入口；每次提交复核缓存，UI owner只是预检查，服务端最终鉴权。
     void ShowGroupInfo();
-    // threadId为待操作群号；ownerOnly=true另要求当前UID等于owner。每次重读本账号缓存；
-    // 返回值仅用于UI预检查，不构成服务端成员权限证据。
+    // threadId为目标群；ownerOnly仅限制需要群主的群设置预检查，服务端仍是最终授权方。
     bool CanUseGroup(qint64 threadId, bool ownerOnly = false) const;
     // message为SQLite正式消息；friendInfo仅私聊对端、群传空。调用者保证thread属于当前视图。
     void AppendStoredTextMessage(const LocalChatMessage &message,
@@ -135,13 +141,11 @@ private:
     bool _current_is_group = false;
     GroupInfo _current_group;
     QPointer<QDialog> _group_info_dialog;
-    QPointer<QListWidget> _group_members_list;
-    QString _group_members_request_id;
-    qint64 _group_members_next_uid = 0;
+    QPointer<QDialog> _group_requests_dialog;
     QPushButton *_group_info_button = nullptr;
     qint64 _group_info_thread_id = 0;
-    QPointer<QPushButton> _group_members_more_button;
-    QHash<QString, qint64> _group_kick_requests;
+    QLabel *_group_title_avatar = nullptr;
+    GroupAvatarTransfer *_group_avatar_transfer = nullptr;
 
     std::shared_ptr<UserInfo> _current_chatuser;
     qint64 _current_thread_id = 0;

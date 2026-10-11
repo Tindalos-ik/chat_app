@@ -30,6 +30,8 @@ class TcpMgr : public QObject, public Singleton<TcpMgr>, //继承QObject是为�
 public:
     ~TcpMgr();
     bool IsConnected() const;
+    /** 返回当前 TCP 登录代次；异步群头像回调据此丢弃已切账号/重登的结果。 */
+    quint64 LoginGeneration() const;
     void CloseConnection();
     // 群API返回本次request_id；空串表示参数/连接无效。服务端只信任登录session UID。
     QString CreateGroup(const QString &name);
@@ -85,7 +87,7 @@ private:
     qint64 _groupListPendingAfter = 0;
     quint64 _groupSnapshotGeneration = 0;
     QHash<qint64, quint64> _groupStateEpochs;
-    QHash<QString, quint64> _pendingJoinEpochs;
+    QHash<QString, quint64> _pendingGroupStateEpochs;
     QHash<QString, qint64> _pendingGroupAccounts;
     qint64 _groupListAccountUid = 0;
     quint64 _loginGeneration = 0;
@@ -144,13 +146,14 @@ signals:
     void sig_group_search_result(const GroupInfo &group);
     void sig_group_operation_result(const QString &requestId, int error);
     void sig_group_state(qint64 threadId, bool active, const QString &reason, qint64 targetUid);
-    void sig_group_members(qint64 threadId, const QString &requestId,
+    // Pages carry their server group version so open dialogs can discard pages captured before a role change.
+    void sig_group_members(qint64 threadId, const QString &requestId, qint64 groupVersion,
                            const QList<GroupMemberInfo> &members, qint64 nextUid, bool loadMore);
     void sig_group_mutation_result(const QString &requestId, int requestType,
                                    int error, const QJsonObject &response);
     void sig_group_requests(const QString &requestId, const QString &scope, qint64 threadId,
-                            const QList<GroupAdmissionInfo> &entries,
-                            qint64 nextId, bool loadMore);
+                            int error, qint64 groupVersion,
+                            const QList<GroupAdmissionInfo> &entries, qint64 nextId, bool loadMore);
     void sig_group_event(const QString &eventType, const GroupInfo &group,
                          const GroupAdmissionInfo &entry, qint64 targetUid);
 };

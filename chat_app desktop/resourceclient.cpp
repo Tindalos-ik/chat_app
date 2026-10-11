@@ -2,6 +2,35 @@
 #include "usermgr.h"
 #include <QJsonDocument>
 #include <QJsonObject>
+namespace {
+GroupAvatarRoute GroupAvatarRouteFromJson(const QJsonObject &object)
+{
+    GroupAvatarRoute route;
+    route.purpose = object.value(QStringLiteral("purpose")).toString();
+    route.taskId = object.value(QStringLiteral("task_id")).toString();
+    if (route.taskId.isEmpty())
+        route.taskId = object.value(QStringLiteral("upload_id")).toString();
+    if (route.taskId.isEmpty())
+        route.taskId = object.value(QStringLiteral("resource_id")).toString();
+    route.threadId = object.value(QStringLiteral("thread_id")).toVariant().toLongLong();
+    route.uid = object.value(QStringLiteral("uid")).toVariant().toInt();
+    route.resourceId = object.value(QStringLiteral("resource_id")).toString();
+    return route;
+}
+
+QString GroupAvatarErrorText(int error, const QString &operation)
+{
+    if (error == 1020) return QObject::tr("资源服务器拒绝群头像%1：身份或群/资源绑定无效。").arg(operation);
+    if (error == 1021) return QObject::tr("暂时无法验证群头像%1权限，请稍后重试。").arg(operation);
+    return QObject::tr("群头像%1失败，错误码：%2").arg(operation).arg(error);
+}
+
+bool IsGroupAvatarReply(const QJsonObject &object)
+{
+    return object.value(QStringLiteral("purpose")).toString()
+        == QStringLiteral("group_avatar");
+}
+}
 
 ResourceClient::~ResourceClient()
 {
@@ -13,6 +42,13 @@ bool ResourceClient::IsConnected() const
 {
     return _socket != nullptr &&
            _socket->state() == QAbstractSocket::ConnectedState;
+}
+bool ResourceClient::IsConnecting() const
+{
+    if (!_socket) return false;
+    const auto state = _socket->state();
+    return state == QAbstractSocket::HostLookupState
+        || state == QAbstractSocket::ConnectingState;
 }
 
 ResourceClient::ResourceClient(): _b_recy_pending(false), _message_id(0), _message_len(0){
@@ -69,8 +105,9 @@ ResourceClient::ResourceClient(): _b_recy_pending(false), _message_id(0), _messa
 
 
             //读取消息体，给到回调函数处理
-            QByteArray messageBody = _buffer.mid(0,_message_len);
-            qDebug() << "receive message : " << messageBody << Qt::endl;
+            QByteArray messageBody = _buffer.mid(0, _message_len);
+            qDebug() << "receive resource response id:" << _message_id
+                     << "bytes:" << messageBody.size();
             _buffer = _buffer.mid(_message_len);
             _b_recy_pending = false;
 
@@ -117,6 +154,37 @@ void ResourceClient::initHandlers()
         }
 
         const QJsonObject jsonObj = jsonDoc.object();
+        // Group-avatar replies are routed before legacy private-image errors or chunks.
+        if (IsGroupAvatarReply(jsonObj)) {
+            const GroupAvatarRoute route = GroupAvatarRouteFromJson(jsonObj);
+            const int groupError = jsonObj.value(QStringLiteral("error")).toInt(ErrorCodes::ERR_JSON);
+            if (groupError != ErrorCodes::SUCCESS) {
+                emit sig_group_avatar_error(route, GroupAvatarErrorText(groupError, tr("下载")));
+                return;
+            }
+            bool totalOk = false;
+            bool offsetOk = false;
+            const qint64 totalSize = jsonObj.value(QStringLiteral("total_size"))
+                                         .toVariant().toLongLong(&totalOk);
+            const qint64 offset = jsonObj.value(QStringLiteral("offset"))
+                                      .toVariant().toLongLong(&offsetOk);
+            const QByteArray encodedData = jsonObj.value(QStringLiteral("data"))
+                                               .toString().toLatin1();
+            const QByteArray decodedData = QByteArray::fromBase64(
+                encodedData, QByteArray::AbortOnBase64DecodingErrors);
+            const bool isLast = jsonObj.value(QStringLiteral("is_last")).toBool();
+            if (route.taskId.isEmpty() || route.threadId <= 0 || route.uid <= 0
+                || route.resourceId.isEmpty() || !totalOk || !offsetOk
+                || totalSize <= 0 || totalSize > 2 * 1024 * 1024
+                || offset < 0 || offset >= totalSize || decodedData.isEmpty()
+                || decodedData.size() > totalSize - offset
+                || isLast != (offset + decodedData.size() == totalSize)) {
+                emit sig_group_avatar_error(route, tr("群头像下载分片或关联身份无效。"));
+                return;
+            }
+            emit sig_group_avatar_download_chunk(route, totalSize, offset, decodedData, isLast);
+            return;
+        }
         const int error = jsonObj.value("error").toInt(ErrorCodes::ERR_JSON);
         if (error != ErrorCodes::SUCCESS) {
             if (error == 1020) {
@@ -161,6 +229,29 @@ void ResourceClient::initHandlers()
         }
 
         const QJsonObject jsonObj = jsonDoc.object();
+        if (IsGroupAvatarReply(jsonObj)) {
+            const GroupAvatarRoute route = GroupAvatarRouteFromJson(jsonObj);
+            const int error = jsonObj.value(QStringLiteral("error")).toInt(ErrorCodes::ERR_JSON);
+            if (error != ErrorCodes::SUCCESS) {
+                emit sig_group_avatar_error(route, GroupAvatarErrorText(error, tr("上传同步")));
+                return;
+            }
+            bool offsetOk = false;
+            bool totalOk = false;
+            const qint64 offset = jsonObj.value(QStringLiteral("confirmed_offset"))
+                                      .toVariant().toLongLong(&offsetOk);
+            const qint64 total = jsonObj.value(QStringLiteral("total_size"))
+                                     .toVariant().toLongLong(&totalOk);
+            if (route.taskId.isEmpty() || route.threadId <= 0 || route.uid <= 0
+                || route.resourceId.isEmpty() || !offsetOk || !totalOk
+                || total <= 0 || total > 2 * 1024 * 1024 || offset < 0 || offset > total) {
+                emit sig_group_avatar_error(route, tr("群头像上传同步响应或关联身份无效。"));
+                return;
+            }
+            emit sig_group_avatar_sync(route, offset, total,
+                                       jsonObj.value(QStringLiteral("completed")).toBool());
+            return;
+        }
         if (jsonObj["error"].toInt(ErrorCodes::ERR_JSON) != ErrorCodes::SUCCESS) {
             emit sig_upload_error(tr("同步上传任务失败，错误码：%1")
                                       .arg(jsonObj["error"].toInt()),
@@ -178,7 +269,6 @@ void ResourceClient::initHandlers()
     // 文件上传回包，服务端写入文件成功后才会回包。
     _handler.insert(ResourceReqId::ID_UPLOAD_FILE_RSP, [this](quint16 id, int len, QByteArray data) {
         Q_UNUSED(len);
-        qDebug() << "handle id is " << id << "data is " << data;
 
         //将字节流转换为json文档
         QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
@@ -191,6 +281,29 @@ void ResourceClient::initHandlers()
 
         //将json文档转换为json对象
         QJsonObject json_obj = jsonDoc.object();
+        if (IsGroupAvatarReply(json_obj)) {
+            const GroupAvatarRoute route = GroupAvatarRouteFromJson(json_obj);
+            const int error = json_obj.value(QStringLiteral("error")).toInt(ErrorCodes::ERR_JSON);
+            if (error != ErrorCodes::SUCCESS) {
+                emit sig_group_avatar_error(route, GroupAvatarErrorText(error, tr("上传")));
+                return;
+            }
+            bool offsetOk = false;
+            bool totalOk = false;
+            const qint64 offset = json_obj.value(QStringLiteral("confirmed_offset"))
+                                      .toVariant().toLongLong(&offsetOk);
+            const qint64 total = json_obj.value(QStringLiteral("total_size"))
+                                     .toVariant().toLongLong(&totalOk);
+            if (route.taskId.isEmpty() || route.threadId <= 0 || route.uid <= 0
+                || route.resourceId.isEmpty() || !offsetOk || !totalOk
+                || total <= 0 || total > 2 * 1024 * 1024 || offset < 0 || offset > total) {
+                emit sig_group_avatar_error(route, tr("群头像上传回包或关联身份无效。"));
+                return;
+            }
+            emit sig_group_avatar_upload_progress(
+                route, offset, total, json_obj.value(QStringLiteral("completed")).toBool());
+            return;
+        }
 
         //正常回包必须有error字段，用来判断服务端是否成功写入该分片
         if(!json_obj.contains("error")){
@@ -285,6 +398,100 @@ void ResourceClient::requestDownload(const QString& resourceId, qint64 threadId,
     request["offset"] = static_cast<double>(offset);
     request["chunk_size"] = chunkSize;
     sendMsg(ResourceReqId::ID_DOWNLOAD_FILE_REQ,
+            QJsonDocument(request).toJson(QJsonDocument::Compact));
+}
+
+void ResourceClient::requestGroupAvatarDownload(const QString &taskId, const QString &resourceId,
+                                                qint64 threadId, int uid, qint64 offset,
+                                                qint32 chunkSize)
+{
+    const QString token = UserMgr::GetInstance()->GetToken();
+    if (taskId.isEmpty() || resourceId.isEmpty() || threadId <= 0 || uid <= 0
+        || UserMgr::GetInstance()->GetUid() != uid || token.isEmpty()
+        || offset < 0 || chunkSize <= 0 || chunkSize > 2048) {
+        emit sig_group_avatar_error(
+            GroupAvatarRoute{QStringLiteral("group_avatar"), taskId, threadId, uid, resourceId},
+            tr("群头像下载请求参数无效。"));
+        return;
+    }
+    const QJsonObject request{
+        {QStringLiteral("purpose"), QStringLiteral("group_avatar")},
+        {QStringLiteral("task_id"), taskId},
+        {QStringLiteral("uid"), uid},
+        {QStringLiteral("token"), token},
+        {QStringLiteral("thread_id"), QString::number(threadId)},
+        {QStringLiteral("resource_id"), resourceId},
+        {QStringLiteral("offset"), static_cast<double>(offset)},
+        {QStringLiteral("chunk_size"), chunkSize}
+    };
+    sendMsg(ResourceReqId::ID_DOWNLOAD_FILE_REQ,
+            QJsonDocument(request).toJson(QJsonDocument::Compact));
+}
+
+void ResourceClient::syncGroupAvatarUpload(const QString &taskId, qint64 threadId, int uid,
+                                           const QString &md5, const QString &name,
+                                           qint64 totalSize, qint32 chunkSize)
+{
+    const QString token = UserMgr::GetInstance()->GetToken();
+    if (taskId.isEmpty() || threadId <= 0 || uid <= 0
+        || UserMgr::GetInstance()->GetUid() != uid || token.isEmpty()
+        || md5.size() != 32 || name.isEmpty() || totalSize <= 0
+        || totalSize > 2 * 1024 * 1024 || chunkSize <= 0 || chunkSize > 2048) {
+        emit sig_group_avatar_error(
+            GroupAvatarRoute{QStringLiteral("group_avatar"), taskId, threadId, uid, taskId},
+            tr("群头像上传同步请求参数无效。"));
+        return;
+    }
+    const QJsonObject request{
+        {QStringLiteral("purpose"), QStringLiteral("group_avatar")},
+        {QStringLiteral("task_id"), taskId},
+        {QStringLiteral("uid"), uid},
+        {QStringLiteral("token"), token},
+        {QStringLiteral("thread_id"), QString::number(threadId)},
+        {QStringLiteral("resource_id"), taskId},
+        {QStringLiteral("upload_id"), taskId},
+        {QStringLiteral("md5"), md5},
+        {QStringLiteral("name"), name},
+        {QStringLiteral("total_size"), static_cast<double>(totalSize)},
+        {QStringLiteral("chunk_size"), chunkSize}
+    };
+    sendMsg(ResourceReqId::ID_SYNC_FILE_REQ,
+            QJsonDocument(request).toJson(QJsonDocument::Compact));
+}
+
+void ResourceClient::uploadGroupAvatarChunk(const QString &taskId, qint64 threadId, int uid,
+                                            const QString &md5, const QString &name,
+                                            qint64 totalSize, qint64 offset,
+                                            const QByteArray &chunk, bool isLast)
+{
+    const QString token = UserMgr::GetInstance()->GetToken();
+    if (taskId.isEmpty() || threadId <= 0 || uid <= 0
+        || UserMgr::GetInstance()->GetUid() != uid || token.isEmpty()
+        || md5.size() != 32 || name.isEmpty() || totalSize <= 0
+        || totalSize > 2 * 1024 * 1024 || offset < 0
+        || chunk.isEmpty() || chunk.size() > totalSize - offset
+        || isLast != (offset + chunk.size() == totalSize)) {
+        emit sig_group_avatar_error(
+            GroupAvatarRoute{QStringLiteral("group_avatar"), taskId, threadId, uid, taskId},
+            tr("群头像上传分片参数无效。"));
+        return;
+    }
+    const QJsonObject request{
+        {QStringLiteral("purpose"), QStringLiteral("group_avatar")},
+        {QStringLiteral("task_id"), taskId},
+        {QStringLiteral("uid"), uid},
+        {QStringLiteral("token"), token},
+        {QStringLiteral("thread_id"), QString::number(threadId)},
+        {QStringLiteral("resource_id"), taskId},
+        {QStringLiteral("upload_id"), taskId},
+        {QStringLiteral("md5"), md5},
+        {QStringLiteral("name"), name},
+        {QStringLiteral("total_size"), static_cast<double>(totalSize)},
+        {QStringLiteral("offset"), static_cast<double>(offset)},
+        {QStringLiteral("data"), QString::fromLatin1(chunk.toBase64())},
+        {QStringLiteral("is_last"), isLast}
+    };
+    sendMsg(ResourceReqId::ID_UPLOAD_FILE_REQ,
             QJsonDocument(request).toJson(QJsonDocument::Compact));
 }
 

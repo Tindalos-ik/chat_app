@@ -38,8 +38,8 @@ public:
     qint64 GetThreadId() const;
     QString GetName() const; // 取联系人名字（点击条目后聊天标题用）
     QString GetIcon() const; // 取头像路径
-    // group为正式群元数据，不构造UID为0的好友；active只控制群的UI可用状态。
-    void SetGroupInfo(const GroupInfo &group);
+    // group为正式群元数据；avatarPath仅为当前账号线程/资源版本缓存，空串显示稳定群默认图标。
+    void SetGroupInfo(const GroupInfo &group, const QString &avatarPath = {});
     void SetGroupUnreadCount(int count); // count为本账号未读条数(负值归0)；仅群显示数字，私聊仍原红点。
     bool IsGroup() const;
     GroupInfo GetGroupInfo() const;

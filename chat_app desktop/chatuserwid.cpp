@@ -2,7 +2,6 @@
 #include "ui_chatuserwid.h"
 #include "avatarutil.h"
 #include <QLabel>
-#include <QPainter>
 #include <QFontMetrics>
 
 ChatUserWid::ChatUserWid(QWidget *parent)
@@ -103,31 +102,17 @@ QString ChatUserWid::GetIcon() const
 {
     return _icon;
 }
-void ChatUserWid::SetGroupInfo(const GroupInfo &group)
+void ChatUserWid::SetGroupInfo(const GroupInfo &group, const QString &avatarPath)
 {
     _userInfo.reset();
     _groupInfo = group;
     _isGroup = true;
+    _groupUnreadCount = 0;
+    _groupUnreadBadge->hide();
     _threadId = group.threadId;
     SetUserName(group.name);
-    _icon.clear(); // 群列表头像固定，不按个人UID/昵称推导，也没有上传入口。
-    static const QPixmap groupAvatar = [] {
-        QPixmap avatar(44, 44);
-        avatar.fill(Qt::transparent);
-        QPainter painter(&avatar);
-        painter.setRenderHint(QPainter::Antialiasing);
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(QColor(QStringLiteral("#467bc7")));
-        painter.drawEllipse(avatar.rect());
-        QFont font = painter.font();
-        font.setPixelSize(24);
-        font.setBold(true);
-        painter.setFont(font);
-        painter.setPen(Qt::white);
-        painter.drawText(avatar.rect(), Qt::AlignCenter, QStringLiteral("群"));
-        return avatar;
-    }();
-    ui->icon_lb->setPixmap(groupAvatar);
+    _icon = avatarPath;
+    AvatarUtil::SetRoundGroupAvatar(ui->icon_lb, avatarPath);
     ui->red_point->hide();
 }
 

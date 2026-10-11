@@ -60,6 +60,9 @@ qt_add_executable(chat_app
     chatimagetransfer.cpp
     localchatstoragemgr.h
     localchatstoragemgr.cpp
+    groupmanagementdialog.h groupmanagementdialog.cpp
+    grouprequestsdlg.h grouprequestsdlg.cpp
+    groupavatartransfer.h groupavatartransfer.cpp
     #ini、ui、qrc直接加入可执行文件
 )
 

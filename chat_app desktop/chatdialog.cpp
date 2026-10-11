@@ -23,6 +23,10 @@
 #include "tcpmgr.h"
 #include "usermgr.h"
 #include "localchatstoragemgr.h"
+#include "groupmanagementdialog.h"
+#include "grouprequestsdlg.h"
+#include "groupavatartransfer.h"
+#include "avatarutil.h"
 #include "settingdialog.h"
 #include "chatimagetransfer.h"
 #include <algorithm>
@@ -56,6 +60,39 @@ void ClearListItems(QListWidget *list, int firstIndex)
         delete list->takeItem(index);
     }
 }
+GroupInfo GroupInfoFromCache(const LocalChatThread &thread)
+{
+    GroupInfo group;
+    group.threadId = thread.threadId;
+    group.name = thread.title;
+    group.ownerUid = thread.ownerUid;
+    group.active = thread.active;
+    group.version = thread.version;
+    group.approvalRequired = thread.approvalRequired;
+    group.announcement = thread.announcement;
+    group.announcementVersion = thread.announcementVersion;
+    group.announcementUpdatedAtMs = thread.announcementUpdatedAtMs;
+    group.announcementAuthorUid = thread.announcementAuthorUid;
+    group.avatarResourceId = thread.avatarResourceId;
+    group.avatarVersion = thread.avatarVersion;
+    group.avatarMimeType = thread.avatarMimeType;
+    group.avatarSize = thread.avatarSize;
+    group.avatarWidth = thread.avatarWidth;
+    group.avatarHeight = thread.avatarHeight;
+    group.member = thread.active;
+    group.role = thread.role;
+    group.membershipVersion = thread.membershipVersion;
+    group.source = QStringLiteral("cache");
+    return group;
+}
+QString GroupInactiveLabel(const QString &reason)
+{
+    if (reason == QStringLiteral("left")) return QObject::tr("已退出");
+    if (reason == QStringLiteral("kicked")) return QObject::tr("已被移出");
+    if (reason == QStringLiteral("dissolved")) return QObject::tr("已解散");
+    if (reason == QStringLiteral("not_in_snapshot")) return QObject::tr("已不在群聊中");
+    return QObject::tr("已失效");
+}
 }
 
 ChatDialog::ChatDialog(QWidget *parent)
@@ -75,6 +112,10 @@ ChatDialog::ChatDialog(QWidget *parent)
     // 聊天图片任务集中复用 ResourceClient。任务内部会串行分片，UI 只关心上传完成、
     // 发送确认和最终原子落盘后的图片路径。
     _image_transfer = new ChatImageTransferTask(this);
+    // 群头像分片有独立 ResourceClient 路由；登录会话代次在 RefreshLoginData 捕获。
+    _group_avatar_transfer = new GroupAvatarTransfer(this);
+    connect(_group_avatar_transfer, &GroupAvatarTransfer::sig_avatar_ready,
+            this, &ChatDialog::slot_group_avatar_ready);
     connect(_image_transfer, &ChatImageTransferTask::uploadFinished, this,
             [this](const ImageChatData &image) {
         // 上传开始时已捕获私聊from/to；用户后来切群不能把完成回调绑定当前group thread。
@@ -244,6 +285,7 @@ ChatDialog::ChatDialog(QWidget *parent)
     auto *groupMenu = new QMenu(groupButton);
     QAction *createGroupAction = groupMenu->addAction(tr("创建群聊"));
     QAction *searchGroupAction = groupMenu->addAction(tr("按群号搜索"));
+    QAction *groupRequestsAction = groupMenu->addAction(tr("群邀请与我的申请"));
     connect(groupButton, &QPushButton::clicked, groupButton, [groupButton, groupMenu] {
         groupMenu->exec(groupButton->mapToGlobal(QPoint(0, groupButton->height())));
     });
@@ -269,8 +311,26 @@ ChatDialog::ChatDialog(QWidget *parent)
         if (TcpMgr::GetInstance()->SearchGroup(static_cast<qint64>(unsignedId)).isEmpty())
             QMessageBox::warning(this, tr("搜索失败"), tr("无法提交群搜索请求。"));
     });
+    connect(groupRequestsAction, &QAction::triggered, this, [this] {
+        if (_group_requests_dialog) {
+            _group_requests_dialog->raise();
+            return;
+        }
+        auto *dialog = new GroupRequestsDialog(this);
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        _group_requests_dialog = dialog;
+        connect(dialog, &QObject::destroyed, this, [this] { _group_requests_dialog = nullptr; });
+        dialog->show();
+    });
     auto *titleLayout = ui->chat_title_wid->findChild<QHBoxLayout *>(QStringLiteral("chat_title_layout"));
     if (titleLayout) {
+        _group_title_avatar = new QLabel(ui->chat_title_wid);
+        _group_title_avatar->setObjectName(QStringLiteral("group_title_avatar"));
+        _group_title_avatar->setFixedSize(32, 32);
+        _group_title_avatar->setAlignment(Qt::AlignCenter);
+        AvatarUtil::SetRoundGroupAvatar(_group_title_avatar, QString());
+        _group_title_avatar->hide();
+        titleLayout->insertWidget(0, _group_title_avatar);
         _group_info_button = new QPushButton(tr("群信息"), ui->chat_title_wid);
         _group_info_button->setObjectName(QStringLiteral("group_info_button"));
         _group_info_button->setVisible(false);
@@ -374,10 +434,8 @@ ChatDialog::ChatDialog(QWidget *parent)
             this, &ChatDialog::slot_group_search_result);
     connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_group_state,
             this, &ChatDialog::slot_group_state);
-    connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_group_operation_result,
-            this, &ChatDialog::slot_group_operation_result);
-    connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_group_members,
-            this, &ChatDialog::slot_group_members);
+    connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_group_mutation_result,
+            this, &ChatDialog::slot_group_mutation_result);
     connect(ui->chat_data, &ChatView::sig_reach_top,
             this, &ChatDialog::slot_load_older_local_messages);
 
@@ -402,18 +460,17 @@ void ChatDialog::UpdateUserTitle()
 
 void ChatDialog::RefreshLoginData()
 {
+    const auto avatarSessionUser = UserMgr::GetInstance()->GetUserInfo();
+    _group_avatar_transfer->SetSession(avatarSessionUser ? avatarSessionUser->_uid : 0,
+                                       TcpMgr::GetInstance()->LoginGeneration());
     _current_chatuser.reset();
     _current_thread_id = 0;
     _current_is_group = false;
     _current_group = {};
     if (_group_info_dialog) _group_info_dialog->close();
+    if (_group_requests_dialog) _group_requests_dialog->close();
     _group_info_dialog = nullptr;
-    _group_members_list = nullptr;
-    _group_members_more_button = nullptr;
-    _group_info_thread_id = 0;
-    _group_members_request_id.clear();
-    _group_members_next_uid = 0;
-    _group_kick_requests.clear();
+    _group_requests_dialog = nullptr;
     _pending_text_items.clear();
     _outgoing_text_items.clear();
     _pending_image_items.clear();
@@ -439,6 +496,7 @@ void ChatDialog::RefreshLoginData()
     ui->input_edit->setReadOnly(true);
     ui->send_btn->setEnabled(false);
     if (_group_info_button) _group_info_button->hide();
+    if (_group_title_avatar) _group_title_avatar->hide();
     ui->chat_title_label->clear();
     UpdateUserTitle();
     ClearListItems(ui->session_list, 0);
@@ -508,10 +566,12 @@ void ChatDialog::addChatUserWid(QListWidget *list, const std::shared_ptr<UserInf
     list->setItemWidget(item, wid);
 }
 
-void ChatDialog::addGroupChatWid(const LocalChatThread &thread)
+void ChatDialog::addGroupChatWid(const LocalChatThread &thread, bool requestAvatar)
 {
     if (thread.threadId <= 0 || thread.threadType != QStringLiteral("group")) return;
-    GroupInfo group{thread.threadId, thread.title, thread.ownerUid, thread.active};
+    const GroupInfo group = GroupInfoFromCache(thread);
+    const QString avatarPath = _group_avatar_transfer
+        ? _group_avatar_transfer->VerifiedCachePath(group) : QString();
     ChatUserWid *widget = nullptr;
     QListWidgetItem *item = nullptr;
     for (int index = 0; index < ui->session_list->count(); ++index) {
@@ -529,13 +589,29 @@ void ChatDialog::addGroupChatWid(const LocalChatThread &thread)
         ui->session_list->addItem(item);
         ui->session_list->setItemWidget(item, widget);
     }
-    widget->SetGroupInfo(group);
-    widget->SetChatMsg(thread.lastMessagePreview);
+    widget->SetGroupInfo(group, avatarPath);
+    QString preview = thread.lastMessagePreview;
+    if (!thread.active) {
+        const QString status = GroupInactiveLabel(thread.invalidReason);
+        preview = preview.isEmpty() ? status : tr("%1 · %2").arg(status, preview);
+    }
+    widget->SetChatMsg(preview);
     widget->SetTime(thread.lastMessageAtMs > 0
         ? QDateTime::fromMSecsSinceEpoch(thread.lastMessageAtMs).toString(QStringLiteral("HH:mm"))
         : QString());
     widget->SetGroupUnreadCount(thread.unreadCount);
     item->setSizeHint(widget->sizeHint());
+    if (requestAvatar && group.active) _group_avatar_transfer->RequestAvatar(group);
+}
+
+void ChatDialog::SetGroupTitleAvatar(const LocalChatThread &thread)
+{
+    if (!_group_title_avatar) return;
+    const GroupInfo group = GroupInfoFromCache(thread);
+    const QString path = _group_avatar_transfer
+        ? _group_avatar_transfer->VerifiedCachePath(group) : QString();
+    AvatarUtil::SetRoundGroupAvatar(_group_title_avatar, path);
+    _group_title_avatar->setVisible(_current_is_group);
 }
 
 bool ChatDialog::CanUseGroup(qint64 threadId, bool ownerOnly) const
@@ -568,13 +644,16 @@ void ChatDialog::SetCurrentGroup(const GroupInfo &group)
     _current_is_group = true;
     _current_chatuser.reset();
     _current_thread_id = thread.threadId;
-    _current_group = GroupInfo{thread.threadId, thread.title, thread.ownerUid, thread.active};
+    _current_group = GroupInfoFromCache(thread);
+    SetGroupTitleAvatar(thread);
     ui->input_edit->SetAttachmentsEnabled(false);
     ui->input_edit->setReadOnly(!thread.active);
     ui->send_btn->setEnabled(thread.active);
     if (_group_info_button) _group_info_button->show();
+    const QString membershipStatus = thread.active ? QString()
+        : tr("（%1，只读）").arg(GroupInactiveLabel(thread.invalidReason));
     ui->chat_title_label->setText(tr("%1（群号：%2）%3").arg(thread.title,
-        QString::number(thread.threadId), thread.active ? QString() : tr("（已失效，只读）")));
+        QString::number(thread.threadId), membershipStatus));
     ui->chat_stack->setCurrentWidget(ui->chat_page);
     _oldest_local_message_id = 0;
     _has_more_local_history = false;
@@ -602,25 +681,70 @@ void ChatDialog::slot_group_info(const GroupInfo &group, bool confirmedMembershi
     const auto storage = LocalChatStorageMgr::GetInstance();
     for (const LocalChatThread &thread : storage->LoadAllThreads()) {
         if (thread.threadId != group.threadId || thread.threadType != QStringLiteral("group")) continue;
-        addGroupChatWid(thread); // 读缓存active；迟到列表包不能覆盖tombstone。
+        const GroupInfo current = GroupInfoFromCache(thread);
+        addGroupChatWid(thread);
+        if (_group_info_dialog && _group_info_thread_id == group.threadId) {
+            if (auto *dialog = qobject_cast<GroupManagementDialog *>(_group_info_dialog.data()))
+                dialog->UpdateGroup(current);
+        }
         if (confirmedMembership || (_current_is_group && _current_thread_id == group.threadId))
-            SetCurrentGroup(GroupInfo{thread.threadId, thread.title, thread.ownerUid, thread.active});
+            SetCurrentGroup(current);
+        return;
+    }
+}
+void ChatDialog::slot_group_avatar_ready(int accountUid, quint64 loginGeneration,
+                                         qint64 threadId, qint64 groupVersion,
+                                         qint64 avatarVersion, const QString &resourceId,
+                                         const QString &cachePath)
+{
+    const auto user = UserMgr::GetInstance()->GetUserInfo();
+    const auto storage = LocalChatStorageMgr::GetInstance();
+    if (!user || user->_uid != accountUid || accountUid <= 0
+        || TcpMgr::GetInstance()->LoginGeneration() != loginGeneration
+        || !storage->IsReady() || storage->CurrentUid() != accountUid) return;
+    for (const LocalChatThread &thread : storage->LoadAllThreads()) {
+        if (thread.threadType != QStringLiteral("group") || thread.threadId != threadId) continue;
+        const GroupInfo group = GroupInfoFromCache(thread);
+        const QString expectedPath = GroupAvatarTransfer::CachePath(accountUid, group);
+        // groupVersion 仅排除缓存落后于任务起点；普通成员/公告版本变化不能作头像身份失配。
+        if (!thread.active || thread.membershipVersion <= 0 || thread.version < groupVersion
+            || thread.avatarVersion != avatarVersion || thread.avatarResourceId != resourceId
+            || expectedPath.isEmpty() || expectedPath != cachePath) return;
+        addGroupChatWid(thread, false);
+        if (_current_is_group && _current_thread_id == threadId) SetGroupTitleAvatar(thread);
         return;
     }
 }
 
 void ChatDialog::slot_group_search_result(const GroupInfo &group)
 {
+    if (group.member && group.membershipProof && group.active) {
+        for (const LocalChatThread &thread : LocalChatStorageMgr::GetInstance()->LoadAllThreads()) {
+            if (thread.threadType == QStringLiteral("group") && thread.threadId == group.threadId
+                && thread.active) {
+                SetCurrentGroup(GroupInfoFromCache(thread));
+                return;
+            }
+        }
+    }
     QMessageBox prompt(QMessageBox::Question, tr("搜索群聊"),
         tr("群名称：%1\n群号：%2").arg(group.name, QString::number(group.threadId)),
         QMessageBox::NoButton, this);
-    auto *join = prompt.addButton(tr("加入群"), QMessageBox::AcceptRole);
+    auto *join = prompt.addButton(tr("申请加入群"), QMessageBox::AcceptRole);
     prompt.addButton(QMessageBox::Cancel);
     prompt.exec();
-    if (prompt.clickedButton() == join && TcpMgr::GetInstance()->JoinGroup(group.threadId).isEmpty())
-        QMessageBox::warning(this, tr("加入失败"), tr("连接不可用，请重新登录。"));
+    if (prompt.clickedButton() != join) return;
+    bool accepted = false;
+    const QString explanation = QInputDialog::getMultiLineText(
+        this, tr("入群申请"), tr("申请说明（最多 256 UTF-8 字节）"), {}, &accepted);
+    if (!accepted) return;
+    if (explanation.toUtf8().size() > 256) {
+        QMessageBox::warning(this, tr("入群申请"), tr("申请说明不能超过 256 UTF-8 字节，未截断内容。"));
+        return;
+    }
+    if (TcpMgr::GetInstance()->JoinGroup(group.threadId, explanation).isEmpty())
+        QMessageBox::warning(this, tr("加入失败"), tr("连接不可用，或申请说明超过协议限制。"));
 }
-
 void ChatDialog::slot_group_state(qint64 threadId, bool active, const QString &, qint64)
 {
     if (active) return; // 非权威普通通知不能激活群。
@@ -630,138 +754,60 @@ void ChatDialog::slot_group_state(qint64 threadId, bool active, const QString &,
         if (thread.threadId != threadId || thread.threadType != QStringLiteral("group")) continue;
         addGroupChatWid(thread);
         if (_current_is_group && _current_thread_id == threadId)
-            SetCurrentGroup(GroupInfo{thread.threadId, thread.title, thread.ownerUid, thread.active});
+            SetCurrentGroup(GroupInfoFromCache(thread));
         return;
     }
 }
 
-void ChatDialog::slot_group_operation_result(const QString &requestId, int error)
+void ChatDialog::slot_group_mutation_result(const QString &requestId, int requestType,
+                                           int error, const QJsonObject &response)
 {
-    const qint64 kickedThread = _group_kick_requests.take(requestId);
+    Q_UNUSED(requestId);
+    if (requestType != ID_JOIN_GROUP_REQ) return;
     if (error != ErrorCodes::SUCCESS) {
-        if (_group_members_request_id == requestId) {
-            _group_members_request_id.clear();
-            if (_group_members_more_button) _group_members_more_button->setEnabled(false);
-        }
-        const QString reason = error == ErrorCodes::GroupUnavailable ? tr("群已解散或不可用。")
-            : error == ErrorCodes::GroupNotMember ? tr("你不是此群的有效成员。")
-            : error == ErrorCodes::GroupPermissionDenied ? tr("仅群主可管理普通成员或解散群。")
-            : tr("群操作失败（%1），请重试。").arg(error);
-        QMessageBox::warning(this, tr("群操作失败"), reason);
-    } else if (kickedThread > 0 && _group_info_dialog && _group_info_thread_id == kickedThread
-               && CanUseGroup(kickedThread, true)) {
-        _group_members_list->clear();
-        _group_members_next_uid = 0;
-        if (_group_members_more_button) _group_members_more_button->setEnabled(false);
-        _group_members_request_id = TcpMgr::GetInstance()->LoadGroupMembers(kickedThread);
+        QMessageBox::warning(this, tr("加入群聊"), tr("加入失败（%1）。").arg(error));
+        return;
     }
-}
-
-void ChatDialog::slot_group_members(qint64 threadId, const QString &requestId,
-                                   const QList<GroupMemberInfo> &members, qint64 nextUid, bool loadMore)
-{
-    if (!_group_info_dialog || !_group_members_list || threadId != _group_info_thread_id
-        || requestId != _group_members_request_id || !CanUseGroup(threadId)) return;
-    _group_members_request_id.clear();
-    qint64 lastUid = _group_members_next_uid;
-    for (const GroupMemberInfo &member : members) {
-        if (member.uid <= lastUid || member.role < 0 || member.role > 2
-            || member.membershipVersion <= 0) return;
-        lastUid = member.uid;
-        const QString roleName = member.role == 2 ? tr("群主")
-            : member.role == 1 ? tr("管理员") : tr("成员");
-        auto *item = new QListWidgetItem(
-            tr("%1（UID %2，%3）").arg(member.nick.isEmpty() ? QString::number(member.uid) : member.nick,
-                QString::number(member.uid), roleName), _group_members_list);
-        item->setData(Qt::UserRole, member.uid);
-        item->setData(Qt::UserRole + 1, member.role);
-        item->setData(Qt::UserRole + 2, member.membershipVersion);
+    if (response.value("status_conflict").toBool()
+        || response.value("already_processed").toBool()) {
+        QMessageBox::information(this, tr("加入群聊"),
+            tr("群申请状态已更新：%1。").arg(response.value("status").toString()));
+        return;
     }
-    const bool validMore = loadMore && !members.isEmpty() && nextUid == lastUid;
-    _group_members_next_uid = validMore ? nextUid : lastUid;
-    if (_group_members_more_button) _group_members_more_button->setEnabled(validMore);
+    if (response.value("admission").toString() == QStringLiteral("pending")) {
+        QMessageBox::information(this, tr("入群申请"), tr("申请已提交，可在“群邀请与我的申请”查看进度。"));
+    }
 }
 
 void ChatDialog::ShowGroupInfo()
 {
     if (!_current_is_group || _current_thread_id <= 0) return;
     if (_group_info_dialog) { _group_info_dialog->raise(); return; }
-    const qint64 threadId = _current_thread_id;
-    if (!CanUseGroup(threadId)) {
+    LocalChatThread thread;
+    bool found = false;
+    for (const LocalChatThread &cached : LocalChatStorageMgr::GetInstance()->LoadAllThreads()) {
+        if (cached.threadType == QStringLiteral("group") && cached.threadId == _current_thread_id) {
+            thread = cached;
+            found = true;
+            break;
+        }
+    }
+    if (!found) return;
+    if (!thread.active) {
         QMessageBox::information(this, tr("群信息"),
-            tr("群号：%1\n此群已失效，仅可查看本地历史。").arg(QString::number(threadId)));
+            tr("群号：%1\n此群已失效，仅可查看本地历史。").arg(QString::number(thread.threadId)));
         return;
     }
-    auto *dialog = new QDialog(this);
+    auto *dialog = new GroupManagementDialog(GroupInfoFromCache(thread), _group_avatar_transfer, this);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
-    dialog->setWindowTitle(tr("群信息"));
-    dialog->setObjectName(QStringLiteral("group_info_dialog"));
-    dialog->resize(450, 380);
     _group_info_dialog = dialog;
-    _group_info_thread_id = threadId;
-    auto *layout = new QVBoxLayout(dialog);
-    auto *info = new QLabel(tr("%1\n群号：%2\n群主UID：%3").arg(
-        _current_group.name, QString::number(threadId), QString::number(_current_group.ownerUid)), dialog);
-    info->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    layout->addWidget(info);
-    auto *copy = new QPushButton(tr("复制群号"), dialog);
-    layout->addWidget(copy);
-    connect(copy, &QPushButton::clicked, dialog, [threadId] {
-        QApplication::clipboard()->setText(QString::number(threadId));
-    });
-    _group_members_list = new QListWidget(dialog);
-    _group_members_list->setObjectName(QStringLiteral("group_members_list"));
-    layout->addWidget(_group_members_list);
-    auto *more = new QPushButton(tr("加载更多成员"), dialog);
-    more->setObjectName(QStringLiteral("group_members_more_button"));
-    more->setEnabled(false);
-    _group_members_more_button = more;
-    layout->addWidget(more);
-    connect(more, &QPushButton::clicked, dialog, [this, threadId] {
-        if (_group_members_request_id.isEmpty() && CanUseGroup(threadId)) {
-            _group_members_request_id = TcpMgr::GetInstance()->LoadGroupMembers(
-                threadId, _group_members_next_uid);
-            if (_group_members_more_button) _group_members_more_button->setEnabled(false);
+    _group_info_thread_id = thread.threadId;
+    connect(dialog, &QObject::destroyed, this, [this, threadId = thread.threadId] {
+        if (_group_info_thread_id == threadId) {
+            _group_info_dialog = nullptr;
+            _group_info_thread_id = 0;
         }
     });
-    if (CanUseGroup(threadId, true)) {
-        auto *kick = new QPushButton(tr("踢出选中成员"), dialog);
-        kick->setObjectName(QStringLiteral("group_kick_button"));
-        layout->addWidget(kick);
-        connect(kick, &QPushButton::clicked, dialog, [this, threadId] {
-            if (_current_thread_id != threadId || !CanUseGroup(threadId, true) || !_group_members_list) return;
-            const auto *selected = _group_members_list->currentItem();
-            if (!selected || selected->data(Qt::UserRole + 1).toInt() != 0) return;
-            const qint64 targetUid = selected->data(Qt::UserRole).toLongLong();
-            if (QMessageBox::question(this, tr("踢出群成员"),
-                tr("确定将UID %1移出此群？").arg(QString::number(targetUid))) != QMessageBox::Yes) return;
-            if (!_current_is_group || _current_thread_id != threadId
-                || !CanUseGroup(threadId, true) || !_group_members_list) return;
-            qint64 targetMembershipVersion = 0;
-            for (int index = 0; index < _group_members_list->count(); ++index) {
-                const auto *member = _group_members_list->item(index);
-                if (member->data(Qt::UserRole).toLongLong() == targetUid
-                    && member->data(Qt::UserRole + 1).toInt() == 0)
-                    targetMembershipVersion = member->data(Qt::UserRole + 2).toLongLong();
-            }
-            if (targetMembershipVersion <= 0) return;
-            const QString requestId = TcpMgr::GetInstance()->KickGroupMember(
-                threadId, targetUid, targetMembershipVersion);
-            if (!requestId.isEmpty()) _group_kick_requests.insert(requestId, threadId);
-        });
-        auto *dissolve = new QPushButton(tr("解散群聊"), dialog);
-        dissolve->setObjectName(QStringLiteral("group_dissolve_button"));
-        layout->addWidget(dissolve);
-        connect(dissolve, &QPushButton::clicked, dialog, [this, threadId] {
-            if (_current_thread_id != threadId || !CanUseGroup(threadId, true)) return;
-            if (QMessageBox::question(this, tr("解散群聊"), tr("解散后所有成员仅可查看本地缓存，确定？"))
-                == QMessageBox::Yes && _current_is_group && _current_thread_id == threadId
-                && CanUseGroup(threadId, true))
-                TcpMgr::GetInstance()->DissolveGroup(threadId);
-        });
-    }
-    _group_members_next_uid = 0;
-    _group_members_request_id = TcpMgr::GetInstance()->LoadGroupMembers(threadId);
     dialog->show();
 }
 void ChatDialog::addConUserWid(QListWidget *list, int uid, const QString &name, const QString &icon)
@@ -2231,6 +2277,7 @@ void ChatDialog::SetCurrentChatUser(const std::shared_ptr<UserInfo> &chatUser, q
     ui->input_edit->setReadOnly(false);
     ui->send_btn->setEnabled(true);
     if (_group_info_button) _group_info_button->hide();
+    if (_group_title_avatar) _group_title_avatar->hide();
     if (_group_info_dialog) _group_info_dialog->close();
     _current_chatuser = chatUser;
     _current_thread_id = threadId;
