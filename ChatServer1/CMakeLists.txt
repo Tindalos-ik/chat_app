@@ -20,6 +20,7 @@ set(SOURCE_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ConfigMgr.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/AsioIOServicePool.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/MysqlMgr.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/GroupManagement.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/RedisMgr.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/StatusGrpcClient.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/CSession.cpp

@@ -78,6 +78,23 @@ foreach ($relativePath in $relativeFiles) {
     }
 }
 
+# Synchronize the shared source list only; preserve destination project/configuration.
+$sourceCmake = Get-Content -LiteralPath (Join-Path $sourceRoot 'CMakeLists.txt') -Raw
+$destinationCmakePath = Join-Path $destinationRoot 'CMakeLists.txt'
+$destinationCmake = Get-Content -LiteralPath $destinationCmakePath -Raw
+$sourceListPattern = '(?ms)^set\(SOURCE_FILES\s.*?^\)'
+$sharedList = [regex]::Match($sourceCmake, $sourceListPattern)
+if (-not $sharedList.Success) { throw 'Shared CMake SOURCE_FILES block not found.' }
+$updatedCmake = [regex]::Replace($destinationCmake, $sourceListPattern,
+    [System.Text.RegularExpressions.MatchEvaluator]{ param($match) $sharedList.Value })
+if ($updatedCmake -ne $destinationCmake) {
+    if ($Apply) {
+        [System.IO.File]::WriteAllText($destinationCmakePath, $updatedCmake,
+            [System.Text.UTF8Encoding]::new($false))
+        Write-Host 'Copied shared CMake source list (project/config retained)'
+    } else { Write-Host 'Would copy shared CMake source list' }
+}
+
 $mode = if ($Apply) { 'applied' } else { 'dry-run' }
 Write-Host "Sync $Source -> $Destination ($mode): $changed changed, $unchanged unchanged."
 if (-not $Apply) {

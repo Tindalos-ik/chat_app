@@ -1,4 +1,4 @@
--- 已部署 role0/1/2 群库增量升级：停写备份后在目标 schema 执行一次。
+-- 已部署v1（默认role0/2，兼容已扩展role1）群库增量升级：停写备份后在目标schema执行一次。
 -- 不执行 chat_group_migration.sql，不重写任何现有角色、成员或消息。
 ALTER TABLE group_chat
   ADD COLUMN version BIGINT UNSIGNED NOT NULL DEFAULT 1,

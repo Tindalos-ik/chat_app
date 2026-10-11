@@ -18,6 +18,8 @@ public:
     message::ResourceVerifyRsp VerifyImages(const message::ResourceVerifyReq& request);
     // 核验已发布普通文件。request 为待核验资源 ID 列表，响应含权威名称/MIME/字节数。
     message::ResourceFileVerifyRsp VerifyFiles(const message::ResourceFileVerifyReq& request);
+    // 新群头像核验必须带实际服务凭据，不把insecure gRPC误作已认证边界。
+    message::GroupAvatarVerifyRsp VerifyGroupAvatar(const message::GroupAvatarVerifyReq& request);
 
 private:
     ResourceGrpcClient();
@@ -68,6 +70,21 @@ inline message::ResourceFileVerifyRsp ResourceGrpcClient::VerifyFiles(
                   << ", message=" << status.error_message() << std::endl;
         response.Clear();
         response.set_error(ErrorCode::RPCFaild);
+    }
+    return response;
+}
+
+inline message::GroupAvatarVerifyRsp ResourceGrpcClient::VerifyGroupAvatar(
+    const message::GroupAvatarVerifyReq& request) {
+    message::GroupAvatarVerifyRsp response;
+    response.set_error(ErrorCode::RPCFaild);
+    const std::string key = ConfigMgr::Inst()["ResourceServer"]["service_key"];
+    if (!stub_ || key.empty()) return response;
+    grpc::ClientContext context;
+    context.AddMetadata("x-resource-service-key", key);
+    context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(3));
+    if (!stub_->VerifyGroupAvatar(&context, request, &response).ok()) {
+        response.Clear(); response.set_error(ErrorCode::RPCFaild);
     }
     return response;
 }

@@ -58,15 +58,15 @@ HTTP 负责注册、登录、验证码和重置密码等短请求。登录拿到
 | `ID_FILE_CHAT_MSG_REQ` (`1040`) | TCP `{fromuid,touid,fileArray}` 私聊文件请求 | ChatServer 以 session UID 鉴权，并调用 ResourceServer 核验已完成的普通文件 |
 | `ID_FILE_CHAT_MSG_RSP` (`1041`) | 文件发送确认 | 成功表示可信元数据已持久化；实时推送失败时仍由 1030 历史补齐 |
 | `ID_NOTIFY_FILE_CHAT_MSG_REQ` (`1042`) | 收到私聊文件通知 | 只传资源元数据；Qt 保存到 SQLite 并显示可点击卡片，不自动下载 |
-| `ID_CREATE_GROUP_REQ/RSP` | `{request_id,name}` | 事务创建群thread/群/role2群主，返回group对象 |
+| `ID_CREATE_GROUP_REQ/RSP` | `{request_id,operation_id,name}` | 事务创建群/群主，持久业务重放 |
 | `ID_SEARCH_GROUP_REQ/RSP` | `{request_id,thread_id}` | 精确搜索有效群号，返回group对象 |
-| `ID_JOIN_GROUP_REQ/RSP` | `{request_id,thread_id}` | 直接加入，重复保持一行，返回group对象 |
+| `ID_JOIN_GROUP_REQ/RSP` | `{request_id,operation_id,thread_id,explanation?}` | joined或pending；现有邀请转明确同意，已有申请仍待审批 |
 | `ID_LOAD_GROUP_LIST_REQ/RSP` | `{request_id,after_thread_id,page_size}` | 从0建立session UID快照，groups/next_thread_id/load_more，4KiB分页；整轮成功才客户端失效对账 |
-| `ID_LOAD_GROUP_MEMBERS_REQ/RSP` | `{request_id,thread_id,after_uid,page_size}` | 有效成员才能查，members[{uid,nick,role}]/next_uid/load_more |
+| `ID_LOAD_GROUP_MEMBERS_REQ/RSP` | `{request_id,thread_id,after_uid,page_size}` | 当前有效成员，最新完整group/self proof及members[{uid,nick,role,membership_version}] |
 | `ID_GROUP_TEXT_MSG_REQ/RSP` | `{thread_id,textArray:[{msgid,content}]}` | 当前成员单份消息事务，正式元数据及sender_nick，persisted与实时结果分离 |
 | `ID_NOTIFY_GROUP_TEXT_MSG` | 群文本正式元数据+target_member_uid | 提交后按成员扇出，同服/跨服目标锁内授权并排队，不再落库 |
-| `ID_KICK_GROUP_MEMBER_REQ/RSP` | `{request_id,thread_id,target_member_uid}` | 仅群主踢普通成员，不踢群主 |
-| `ID_DISSOLVE_GROUP_REQ/RSP` | `{request_id,thread_id}` | 仅群主active=0逻辑解散，保留全部历史 |
+| `ID_KICK_GROUP_MEMBER_REQ/RSP` | `{request_id,operation_id,thread_id,target_member_uid,expected_membership_version}` | 群主踢非owner，管理员仅踢role0，版本指目标 |
+| `ID_DISSOLVE_GROUP_REQ/RSP` | `{request_id,operation_id,thread_id}` | owner逻辑解散/成员失效版本，保留历史 |
 | `ID_NOTIFY_GROUP_STATE` | `{thread_id,type:'group',active:false,reason,target_member_uid}` | reason kicked/dissolved，只失效本群，不触发账号下线 |
 | `ID_INVITE_GROUP_REQ/RSP` | `{request_id,operation_id,thread_id,target_member_uid}` | 好友邀请准入契约 |
 | `ID_DECIDE_GROUP_INVITE_REQ/RSP` | `{request_id,operation_id,thread_id,invitation_id,accept}` | 被邀请者明确同意/拒绝 |

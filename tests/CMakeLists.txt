@@ -20,6 +20,7 @@ find_library(CHAT_TEST_HIREDIS_LIBRARY NAMES hiredis REQUIRED)
 
 add_library(chat_mysql_test_support STATIC
     ${CMAKE_SOURCE_DIR}/ChatServer1/src/MysqlMgr.cpp
+    ${CMAKE_SOURCE_DIR}/ChatServer1/src/GroupManagement.cpp
     ${CMAKE_SOURCE_DIR}/ChatServer1/src/ConfigMgr.cpp
     ${CMAKE_SOURCE_DIR}/ChatServer1/src/RedisMgr.cpp
     ${CMAKE_SOURCE_DIR}/ChatServer1/src/DistLock.cpp

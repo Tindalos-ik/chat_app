@@ -17,6 +17,7 @@
 #include "singleton.h"
 #include "data.h"
 #include <functional>
+#include <json.h>
 
 // 好友认证成功时随通知下发的初始会话消息。
 // 这里使用独立的数据结构，避免数据访问层依赖 protobuf 生成头文件；
@@ -99,15 +100,36 @@ struct GroupChatThread {
     std::string name;
     int ownerUid = 0;
     bool active = true;
+    std::uint64_t version = 1;
+    bool approvalRequired = false;
+    std::string announcement;
+    std::uint64_t announcementVersion = 0;
+    int announcementAuthorUid = 0;
+    std::uint64_t announcementUpdatedAtMs = 0;
+    std::string avatarResourceId, avatarMimeType;
+    std::uint64_t avatarSize = 0, avatarVersion = 0;
+    std::uint32_t avatarWidth = 0, avatarHeight = 0;
+    bool member = false;
+    int role = 0;
+    std::uint64_t membershipVersion = 0;
 };
-// 成员页数据：uid为成员身份，nick缺资料回退UID字符串，role只允许0成员/2群主。
+// 当前有效成员页：昵称缺资料回退UID，role为0成员/1管理员/2群主，携带身份版本。
 struct GroupChatMember {
     int uid = 0;
     std::string nick;
     int role = 0;
+    std::uint64_t membershipVersion = 0;
 };
 // 所有群权限读取与修改都在事务内锁同一 group_chat 行，防止撤权后的旧权限成功。
-enum class GroupAction { Create, Search, Join, Members, Send, Kick, Dissolve, History, Authorize };
+enum class GroupAction { Search, Members, Send, History, Authorize };
+// 接收者专属事件；提交前建立正式proof与版本，提交后只能尽力投递。
+struct GroupEvent {
+    int targetUid = 0;
+    std::string type;
+    Json::Value payload;
+};
+// 统一群 JSON，source 显式区分 mutation/snapshot/event，避免搜索元数据授予身份。
+Json::Value BuildGroupJson(const GroupChatThread& group, const char* source);
 /**
  * @class MySqlPool
  * @brief MySQL 连接池类，继承自 Singleton 单例模板
@@ -294,16 +316,13 @@ public:
                                std::uint64_t readThroughMessageId,
                                std::vector<ReadReceipt>& receipts);
 
-    // action选择群事务操作；recipients输出提交时成员UID，供提交后尽力扇出，不能当作后续权限缓存。
-    // uid 必须来自登录 session；threadId 为群号（Create 时输出），name 仅用于创建；
-    // targetUid仅踢普通成员；after为成员UID或历史message_id游标，limit为相应页条数上限。返回协议错误码。
-    // texts 是(msgid,content)纯文本批次；Send 仅成功提交后可使用输出recipients/messages扇出。
-    // group/members/messages 为对应操作结果；失败结果不应通知客户端为已持久化。
-    // authorizedDelivery 在持锁且提交前执行：Authorize用于TCP入队，Send用于实际帧字节门限；
-    // 返回false会回滚并分别返回ServerBusy/MessageTooLarge，回调不能再次获取数据库连接。
-    // Authorize仅核对有效成员，不写消息；Kick/Dissolve仅群主，禁止踢群主。
+    // 只读授权/成员/历史或纯文本写入；uid必须来自登录session，threadId为正式群号。
+    // after为成员UID或历史message_id游标，limit控制分页。
+    // texts是(msgid,content)纯文本批次；Send提交后才允许使用messages/recipients。
+    // authorizedDelivery在持群锁期间执行；Authorize用于TCP入队，Send用于帧预算，
+    // 不允许回调再次获取数据库连接，拒绝分别返回ServerBusy/MessageTooLarge。
     int GroupOperation(GroupAction action, int uid, std::uint64_t& threadId,
-        const std::string& name, int targetUid, std::uint64_t after, int limit,
+        std::uint64_t after, int limit,
         const std::vector<std::pair<std::string, std::string>>& texts,
         GroupChatThread& group, std::vector<GroupChatMember>& members,
         std::vector<StoredTextMessage>& messages, std::vector<int>& recipients,
@@ -313,6 +332,12 @@ public:
     int LoadGroupSnapshot(int uid, std::vector<GroupChatThread>& groups);
     // threadId为正式会话ID；返回是否group，仅用于可靠历史分派，不授予成员权限。
     bool IsGroupThread(std::uint64_t threadId);
+    // 管理 mutation 使用 operation_id 持久化精确输入/结果；身份只取session uid。
+    // verifiedAvatar只允许传ResourceServer可信核验结果；events仅提交成功后投递。
+    int MutateGroup(int uid, short action, const Json::Value& request,
+        const Json::Value& verifiedAvatar, Json::Value& response, std::vector<GroupEvent>& events);
+    // inbox/results供非成员恢复；approvals在群锁下确认当前管理员权限。
+    int LoadGroupRequests(int uid, const Json::Value& request, Json::Value& response);
 private:
     MysqlMgr();
 

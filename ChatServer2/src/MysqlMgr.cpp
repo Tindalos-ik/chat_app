@@ -9,6 +9,7 @@
 #include "ConfigMgr.h"
 #include "const.h"
 #include "RedisMgr.h"
+#include "GroupDatabase.h"
 
 // 把 UserInfo 序列化成 JSON 对象，字段与登录缓存的 ubaseinfo_<uid> 保持一致
 static void FillUserJson(const UserInfo &info, Json::Value &obj)
@@ -1465,26 +1466,29 @@ int MysqlMgr::LoadGroupSnapshot(int uid, std::vector<GroupChatThread>& groups) {
     if (!con) return ServerBusy;
     Defer release([&]() { pool_->ReturnConnection(std::move(con)); });
     try {
-        auto result = con->sql("SELECT g.thread_id, g.name, g.owner_uid FROM group_chat g "
+        auto result = con->sql(std::string("SELECT ")+group_db::Columns+
+            ",m.role,m.membership_version FROM group_chat g "
             "JOIN group_chat_member m ON m.thread_id=g.thread_id "
-            "WHERE m.user_id=? AND g.active=1 ORDER BY g.thread_id").bind(uid).execute();
-        // fetchAll() 返回引用 SqlResult 的惰性 RowList，遍历期间 result 必须存活。
-        for (const auto& row : result.fetchAll())
-            groups.push_back({row[0].get<std::uint64_t>(), row[1].get<std::string>(), row[2].get<int>(), true});
+            "WHERE m.user_id=? AND m.active=1 AND g.active=1 ORDER BY g.thread_id").bind(uid).execute();
+        for (const auto& row : result.fetchAll()) {
+            auto g=group_db::FromRow(row);g.member=true;g.role=row[16].get<int>();
+            g.membershipVersion=row[17].get<std::uint64_t>();groups.push_back(std::move(g));
+        }
         return Success;
     } catch (const std::exception&) { return ServerBusy; }
 }
 
 // 群操作共用一个锁顺序：group_chat -> member -> message。所有权限判断均为锁后当前读。
 int MysqlMgr::GroupOperation(GroupAction action, int uid, std::uint64_t& threadId,
-    const std::string& name, int targetUid, std::uint64_t after, int limit,
+    std::uint64_t after, int limit,
     const std::vector<std::pair<std::string, std::string>>& texts,
     GroupChatThread& group, std::vector<GroupChatMember>& members,
     std::vector<StoredTextMessage>& messages, std::vector<int>& recipients,
     const std::function<bool()>& authorizedDelivery) {
     members.clear(); messages.clear(); recipients.clear();
-    if (uid <= 0 || (action != GroupAction::Create && threadId == 0)) return Error_Json;
-    if (action == GroupAction::Create && (name.empty() || name.size() > 255)) return Error_Json;
+    if (uid <= 0 || threadId == 0) return Error_Json;
+    if (action != GroupAction::Search && action != GroupAction::Members &&
+        action != GroupAction::Send && action != GroupAction::History && action != GroupAction::Authorize) return Error_Json;
     if ((action == GroupAction::Members || action == GroupAction::History) &&
         (limit <= 0 || limit > 1001)) return Error_Json;
     if (action == GroupAction::Send) {
@@ -1499,53 +1503,20 @@ int MysqlMgr::GroupOperation(GroupAction action, int uid, std::uint64_t& threadI
         con->startTransaction();
         bool committed = false;
         Defer rollback([&]() { if (!committed) { try { con->rollback(); } catch (...) {} } });
-        if (action == GroupAction::Create) {
-            threadId = con->sql("INSERT INTO chat_thread(type) VALUES ('group')").execute().getAutoIncrementValue();
-            con->sql("INSERT INTO group_chat(thread_id,name,owner_uid,active) VALUES (?,?,?,1)")
-                .bind(threadId).bind(name).bind(uid).execute();
-            con->sql("INSERT INTO group_chat_member(thread_id,user_id,role) VALUES (?,?,2)")
-                .bind(threadId).bind(uid).execute();
-        }
-        // 所有加入/踢人/解散/发送/成员历史授权先锁同一群行再读取权限，
-        // 因而撤权事务提交后，另一请求不会按事务开始时旧快照继续成功。
-        auto row = con->sql("SELECT name,owner_uid,CAST(active AS UNSIGNED) FROM group_chat "
-            "WHERE thread_id=? FOR UPDATE").bind(threadId).execute().fetchOne();
-        if (!row || row[2].get<int>() != 1) return GroupUnavailable;
-        group = {threadId, row[0].get<std::string>(), row[1].get<int>(), true};
-        if (action != GroupAction::Search && action != GroupAction::Join && action != GroupAction::Create) {
-            auto member = con->sql("SELECT role FROM group_chat_member WHERE thread_id=? AND user_id=? FOR UPDATE")
-                .bind(threadId).bind(uid).execute().fetchOne();
-            if (!member) return GroupNotMember;
-        }
-        if (action == GroupAction::Join)
-            con->sql("INSERT INTO group_chat_member(thread_id,user_id,role) VALUES (?,?,0) "
-                "ON DUPLICATE KEY UPDATE user_id=user_id").bind(threadId).bind(uid).execute();
-        if (action == GroupAction::Kick || action == GroupAction::Dissolve) {
-            if (group.ownerUid != uid || (action == GroupAction::Kick && targetUid == group.ownerUid))
-                return GroupPermissionDenied;
-            if (action == GroupAction::Kick) {
-                if (targetUid <= 0) return Error_Json;
-                auto result = con->sql("DELETE FROM group_chat_member WHERE thread_id=? AND user_id=? AND role=0")
-                    .bind(threadId).bind(targetUid).execute();
-                if (result.getAffectedItemsCount() == 0) return GroupNotMember;
-                recipients.push_back(targetUid);
-            } else {
-                con->sql("UPDATE group_chat SET active=0 WHERE thread_id=?").bind(threadId).execute();
-                group.active = false;
-            }
-        }
-        if (action == GroupAction::Send || action == GroupAction::Dissolve) {
-            auto result = con->sql("SELECT user_id FROM group_chat_member WHERE thread_id=? ORDER BY user_id")
+        if (!group_db::Load(*con,threadId,uid,group) || !group.active) return GroupUnavailable;
+        if (action != GroupAction::Search && !group.member) return GroupNotMember;
+        if (action == GroupAction::Send) {
+            auto result = con->sql("SELECT user_id FROM group_chat_member WHERE thread_id=? AND active=1 ORDER BY user_id")
                 .bind(threadId).execute();
             for (const auto& member : result.fetchAll()) recipients.push_back(member[0].get<int>());
         }
         if (action == GroupAction::Members) {
-            auto result = con->sql("SELECT m.user_id, COALESCE(NULLIF(u.nick,''),CAST(m.user_id AS CHAR)), m.role "
+            auto result = con->sql("SELECT m.user_id, COALESCE(NULLIF(u.nick,''),CAST(m.user_id AS CHAR)), m.role,m.membership_version "
                 "FROM group_chat_member m LEFT JOIN user u ON u.uid=m.user_id "
-                "WHERE m.thread_id=? AND m.user_id>? ORDER BY m.user_id LIMIT ?")
+                "WHERE m.thread_id=? AND m.active=1 AND m.user_id>? ORDER BY m.user_id LIMIT ?")
                 .bind(threadId).bind(after).bind(limit).execute();
             for (const auto& member : result.fetchAll())
-                members.push_back({member[0].get<int>(), member[1].get<std::string>(), member[2].get<int>()});
+                members.push_back({member[0].get<int>(), member[1].get<std::string>(), member[2].get<int>(),member[3].get<std::uint64_t>()});
         }
         if (action == GroupAction::Send) {
             for (const auto& text : texts) {

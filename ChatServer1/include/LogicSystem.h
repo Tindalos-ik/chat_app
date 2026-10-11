@@ -63,9 +63,9 @@ private:
     void HandleGroup(std::shared_ptr<CSession> session, const short& msg_id, const std::string& data);
     // 已提交群通知扇出；文本目标投递前再次事务授权，状态通知绝不注销连接。
     // targetUid为实际接收成员，senderUid为已认证发送者，threadId为群号；
-    // payload为正式JSON，stateChange区分失效事件与文本。返回实时入队结果，不改变持久化成功。
+    // eventType区分文本/信箱/结果/元数据/成员/失效；元数据和文本当前成员锁内入队。
     bool ForwardGroup(int targetUid, int senderUid, std::uint64_t threadId,
-                      const std::string& payload, bool stateChange);
+                      const std::string& payload, message::GroupEventType eventType);
 
     bool GetBaseInfo(std::string base_key, int uid, std::shared_ptr<UserInfo>& userinfo);
 

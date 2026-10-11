@@ -326,7 +326,8 @@ Status ChatServiceImpl::NotifyGroup(ServerContext*, const message::GroupNotifyRe
     auto session = UserMgr::GetInstance()->GetSession(request->target_member_uid());
     response->set_error(UidInvalid);
     if (!session) return Status::OK;
-    if (request->event_type() == message::GROUP_EVENT_TEXT) {
+    if (request->event_type() == message::GROUP_EVENT_TEXT ||
+        request->event_type() == message::GROUP_EVENT_METADATA || request->event_type() == message::GROUP_EVENT_MEMBERS) {
         auto thread = request->thread_id();
         GroupChatThread group;
         std::vector<GroupChatMember> members;
@@ -335,8 +336,9 @@ Status ChatServiceImpl::NotifyGroup(ServerContext*, const message::GroupNotifyRe
         // 目标节点不落库：与kick/dissolve共享群行锁，授权成功的同一临界区内才入TCP队列。
         // 历史metadata再迟到也不能使已经撤权成员重新接收此广播。
         const int error = MysqlMgr::GetInstance()->GroupOperation(GroupAction::Authorize,
-            request->target_member_uid(), thread, "", 0, 0, 0, {}, group, members, messages, recipients,
-            [&]() { return session->TrySend(request->payload_json(), ID_NOTIFY_GROUP_TEXT_MSG); });
+            request->target_member_uid(), thread, 0, 0, {}, group, members, messages, recipients,
+            [&]() { return session->TrySend(request->payload_json(), request->event_type() == message::GROUP_EVENT_TEXT ?
+                ID_NOTIFY_GROUP_TEXT_MSG : ID_NOTIFY_GROUP_EVENT); });
         if (error != Success) { response->set_error(error); return Status::OK; }
         response->set_error(Success);
         return Status::OK;
