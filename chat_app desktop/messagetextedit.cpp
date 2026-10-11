@@ -76,20 +76,31 @@ QVector<MsgInfo> MessageTextEdit::getMsgList()
     return mGetMsgList;
 }
 
-// 拖拽进入：只接受"从外部拖进来的"；从本控件内部拖出（选中文字拖走）忽略
+// 拖拽只接受文件/图片是在私聊允许时；群聊仍保留普通文本拖放。
 void MessageTextEdit::dragEnterEvent(QDragEnterEvent *event)
 {
-    if(event->source()==this)
+    if (event->source() == this) {
         event->ignore();
-    else
-        event->accept();
+        return;
+    }
+    const QMimeData *mime = event->mimeData();
+    if (!_attachmentsEnabled && (mime->hasImage() || mime->hasUrls())) {
+        event->ignore();
+        return;
+    }
+    if (mime->hasText()) event->acceptProposedAction();
+    else event->ignore();
 }
 
-// 拖放落下：把 mime 里的文件路径解析出来并插入编辑框
 void MessageTextEdit::dropEvent(QDropEvent *event)
 {
-    insertFromMimeData(event->mimeData());
-    event->accept();
+    const QMimeData *mime = event->mimeData();
+    if (!_attachmentsEnabled && (mime->hasImage() || mime->hasUrls())) {
+        event->ignore();
+        return;
+    }
+    insertFromMimeData(mime);
+    event->acceptProposedAction();
 }
 
 // 回车发送：不带 Shift 的回车 = 发送；带 Shift 的回车 = 换行（走默认行为）
@@ -106,8 +117,7 @@ void MessageTextEdit::keyPressEvent(QKeyEvent *e)
 // 外部直接传入本地路径列表（不一定是拖拽），逐条按类型插入
 void MessageTextEdit::insertFileFromUrl(const QStringList &urls)
 {
-    if(urls.isEmpty())
-        return;
+    if (!_attachmentsEnabled || urls.isEmpty()) return;
 
     foreach (QString url, urls){
         if(isImage(url))
@@ -116,10 +126,28 @@ void MessageTextEdit::insertFileFromUrl(const QStringList &urls)
             insertTextFile(url);
     }
 }
+void MessageTextEdit::SetAttachmentsEnabled(bool enabled)
+{
+    if (_attachmentsEnabled == enabled) return;
+    _attachmentsEnabled = enabled;
+    if (!enabled) {
+        mMsgList.clear();
+        mGetMsgList.clear();
+        clear();
+    }
+}
+
+void MessageTextEdit::ResetComposer()
+{
+    mMsgList.clear();
+    mGetMsgList.clear();
+    clear();
+}
 
 // 插入图片：超过 120x80 按比例缩小（宽图按宽、高图按高），插入文档并记入 mMsgList
 void MessageTextEdit::insertImages(const QString &url)
 {
+    if (!_attachmentsEnabled || isReadOnly()) return;
     QImage image(url);
     // 按比例缩放图片
     if(image.width()>120||image.height()>80)
@@ -143,6 +171,7 @@ void MessageTextEdit::insertImages(const QString &url)
 // 插入文件：非图片一律按文件处理
 void MessageTextEdit::insertTextFile(const QString &url)
 {
+    if (!_attachmentsEnabled || isReadOnly()) return;
     QFileInfo fileInfo(url);
     if(fileInfo.isDir())
     {
@@ -166,12 +195,18 @@ void MessageTextEdit::insertTextFile(const QString &url)
 // 重写 mime 插入判定：图片、文件、普通文本都允许插入
 bool MessageTextEdit::canInsertFromMimeData(const QMimeData *source) const
 {
+    if (!_attachmentsEnabled && (source->hasImage() || source->hasUrls())) return false;
     return source->hasImage() || source->hasUrls() || source->hasText();
 }
 
 // 粘贴/拖入的统一入口：优先处理图片数据，其次处理文件，最后普通文本交给 QTextEdit
 void MessageTextEdit::insertFromMimeData(const QMimeData *source)
 {
+    if (!_attachmentsEnabled) {
+        if (source->hasImage() || source->hasUrls()) return;
+        QTextEdit::insertFromMimeData(source);
+        return;
+    }
     // 1. 剪贴板里是图片数据（截图、复制网页图片）：存到临时文件后按图片插入
     if (source->hasImage()) {
         QImage image = qvariant_cast<QImage>(source->imageData());

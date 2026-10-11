@@ -1,6 +1,7 @@
 #pragma once
 #ifndef GLOBAL_H
 #define GLOBAL_H
+// 文件作用：客户端公共协议/错误码与UI类型声明；群使用独立请求和通知，不复用账号下线消息。
 //放一些要用到的头文件
 #include <QWidget>
 #include <functional>
@@ -65,7 +66,25 @@ enum ReqId{
     ID_NOTIFY_THREAD_READ = 1039,       // 服务端通知发送端：对端已读游标
     ID_FILE_CHAT_MSG_REQ = 1040,        // 文件消息请求：fromuid/touid/fileArray
     ID_FILE_CHAT_MSG_RSP = 1041,        // 文件消息发送确认
-    ID_NOTIFY_FILE_CHAT_MSG_REQ = 1042  // 对端文件消息通知
+    ID_NOTIFY_FILE_CHAT_MSG_REQ = 1042, // 对端文件消息通知
+    ID_CREATE_GROUP_REQ = 1043,
+    ID_CREATE_GROUP_RSP = 1044,
+    ID_SEARCH_GROUP_REQ = 1045,
+    ID_SEARCH_GROUP_RSP = 1046,
+    ID_JOIN_GROUP_REQ = 1047,
+    ID_JOIN_GROUP_RSP = 1048,
+    ID_LOAD_GROUP_LIST_REQ = 1049,
+    ID_LOAD_GROUP_LIST_RSP = 1050,
+    ID_LOAD_GROUP_MEMBERS_REQ = 1051,
+    ID_LOAD_GROUP_MEMBERS_RSP = 1052,
+    ID_GROUP_TEXT_MSG_REQ = 1053,
+    ID_GROUP_TEXT_MSG_RSP = 1054,
+    ID_NOTIFY_GROUP_TEXT_MSG = 1055,
+    ID_KICK_GROUP_MEMBER_REQ = 1056,
+    ID_KICK_GROUP_MEMBER_RSP = 1057,
+    ID_DISSOLVE_GROUP_REQ = 1058,
+    ID_DISSOLVE_GROUP_RSP = 1059,
+    ID_NOTIFY_GROUP_STATE = 1060
 };
 
 // ResourceServer 使用独立 TCP 连接和 2+4 字节包头；这里的 ID 属于另一套协议，
@@ -102,6 +121,9 @@ enum ErrorCodes{
     Error_UserNotMatchEamil = 1010, //用户名和邮箱不匹配
     UidInvalid = 1011, //用户id无效
     TokenInvalid = 1012, //token无效
+    GroupUnavailable = 1017, // 有效群不可用，不代表账号离线
+    GroupNotMember = 1018, // 当前登录账号不是有效群成员
+    GroupPermissionDenied = 1019, // 群主专属操作被拒绝
 };
 
 extern QString gate_url_prefix;

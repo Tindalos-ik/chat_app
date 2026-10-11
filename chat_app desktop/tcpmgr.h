@@ -4,7 +4,7 @@
 /******************************************************************************
  *
  * @file       tcpmgr.h
- * @brief      在客户端实现一个tcp连接管理者
+ * @brief      管理当前登录账号TCP帧、群请求关联、完整快照与连续历史游标；不以客户端UID授予权限。
  *
  * @author     klein
  *****************************************************************************/
@@ -16,6 +16,7 @@
 #include <QElapsedTimer>
 #include <QTimer>
 #include <QList>
+#include <QSet>
 #include "global.h"
 #include "userdata.h"
 
@@ -27,8 +28,20 @@ class TcpMgr : public QObject, public Singleton<TcpMgr>, //继承QObject是为�
 public:
     ~TcpMgr();
     bool IsConnected() const;
-
-    void CloseConnection(); //客户端下线时候调用
+    void CloseConnection();
+    // 群API返回本次request_id；空串表示参数/连接无效。服务端只信任登录session UID。
+    // name为UTF-8群名；创建成功后才确认本地成员身份。
+    QString CreateGroup(const QString &name);
+    // threadId为精确群号，搜索仅查询有效群、不申请好友。
+    QString SearchGroup(qint64 threadId);
+    // threadId为有效群号，直接幂等加入；匹配当前账号/失效epoch的成功回包才允许激活缓存。
+    QString JoinGroup(qint64 threadId);
+    // threadId为群号；afterUid为成员分页游标(首轮0)，回包按request_id/thread绑定信息窗。
+    QString LoadGroupMembers(qint64 threadId, qint64 afterUid = 0);
+    // threadId为群号；targetUid仅指定普通成员。UI owner检查不能代替服务端事务鉴权。
+    QString KickGroupMember(qint64 threadId, qint64 targetUid);
+    // threadId为群号；逻辑解散后保留本地历史，不退出整个账号连接。
+    QString DissolveGroup(qint64 threadId);
     // 应用准备退出时调用：先停止异步回调，保证析构阶段不再触发界面逻辑。
     void PrepareForShutdown();
 
@@ -40,6 +53,28 @@ private:
     void StartHeartbeat(); // TCP 登录成功后开始周期性发送 1023
     void StopHeartbeat();  // 断开或主动关闭时停止定时器并清空等待状态
     void SendHeartbeat();  // 定时器回调：检测上次 1024，随后发送新的 1023
+    // 从0发起本账号完整群快照；不使用私聊MaxKnownThreadId，失败/断轮不按半页失效。
+    void RequestGroupList();
+    // threadId为已知有效群，按该群连续message_id历史游标补拉，实时notify/ACK不推进游标。
+    void RequestGroupMessages(qint64 threadId);
+    // afterThreadId为上一页服务端游标(首轮0)；每页request_id与当前账号/轮次绑定。
+    void SendGroupListPage(qint64 afterThreadId);
+    // successful仅完整分页成功为true；据全量身份对账，并保护轮内新confirmed create/join。
+    void FinishGroupList(bool successful);
+    QHash<QString, int> _pendingGroupRequests;
+    QHash<QString, qint64> _pendingGroupThreads;
+    QSet<qint64> _groupSnapshotIds;
+    // 本轮快照开始后create/join的权威确认不能被旧快照缺失项误判为失效。
+    QSet<qint64> _groupSnapshotConfirmedIds;
+    bool _groupListInProgress = false;
+    bool _groupListRefreshQueued = false;
+    qint64 _groupSnapshotCursor = 0;
+    QString _groupListPendingRequestId;
+    qint64 _groupListPendingAfter = 0;
+    QHash<qint64, quint64> _groupStateEpochs;
+    QHash<QString, quint64> _pendingJoinEpochs;
+    QHash<QString, qint64> _pendingGroupAccounts;
+    qint64 _groupListAccountUid = 0;
     QMap<ReqId, std::function<void(ReqId id, int len, QByteArray data)>> _handler; //消息id对应的回调函数
 
     QTcpSocket* _socket; //客户端这边只需要一个socket就可以了，很简单
@@ -64,6 +99,7 @@ signals:
     void sig_send_data(ReqId reqId, QByteArray data);
     void sig_switch_chatdlg(); // 发送给mainwindow
     void sig_login_failed(int); // 发送给logindialog
+    void sig_update_profile_result(int error); // 保留既有个人资料更新响应，与群管理独立。
     void sig_user_search(std::shared_ptr<SearchInfo>& si); // 发送给searchlist，用于显示搜索结果
     void sig_friend_apply(std::shared_ptr<AddFriendApply>& si); // 发送给chatdialog
     // 认证成功的好友资料及附加初始消息（含服务端 thread_id/message_id）。
@@ -88,7 +124,12 @@ signals:
     void sig_off_line();
     void sig_connection_lost(); // 已登录连接被服务端关闭，但未完整收到踢人通知
     void sig_heartbeat_timeout(); // 60 秒未收到有效心跳回复，交给主窗口显示专用提示
-    void sig_update_profile_result(int error); // 当前用户资料更新结果
+    void sig_group_info(const GroupInfo &group, bool confirmedMembership);
+    void sig_group_search_result(const GroupInfo &group);
+    void sig_group_operation_result(const QString &requestId, int error);
+    void sig_group_state(qint64 threadId, bool active, const QString &reason, qint64 targetUid);
+    void sig_group_members(qint64 threadId, const QString &requestId,
+                           const QList<GroupMemberInfo> &members, qint64 nextUid, bool loadMore);
 };
 
 #endif // TCPMGR_H

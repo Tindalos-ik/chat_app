@@ -50,11 +50,11 @@ UserInfo::UserInfo(int uid, QString name, QString nick, QString desc, int sex, Q
 
 }
 
-TextChatData::TextChatData(QString msg_id, QString msg_content, int from_uid, int to_uid):
-    ChatDataBase(msg_id, 0, ChatFormType::Private, ChatMsgType::Text, msg_content, from_uid),
+TextChatData::TextChatData(QString msg_id, QString msg_content, int from_uid, int to_uid,
+                           ChatFormType formType):
+    ChatDataBase(msg_id, 0, formType, ChatMsgType::Text, msg_content, from_uid),
     _msg_id(msg_id), _msg_content(msg_content), _from_uid(from_uid), _to_uid(to_uid)
 {
-
 }
 
 ChatDataBase::ChatDataBase(qint64 messageId, qint64 threadId, ChatFormType formType,
@@ -95,15 +95,15 @@ void ChatDataBase::SetStatus(int status) { _status = status; }
 
 TextChatData::TextChatData(qint64 messageId, QString uniqueId, qint64 threadId,
                            QString content, qint64 senderId, qint64 recvId, int status,
-                           qint64 createdAtMs)
-    : ChatDataBase(std::move(uniqueId), threadId, ChatFormType::Private,
-                   ChatMsgType::Text, content, senderId)
+                           qint64 createdAtMs, ChatFormType formType)
+    : ChatDataBase(std::move(uniqueId), threadId, formType, ChatMsgType::Text, content, senderId)
     , _msg_id(GetUniqueId())
     , _msg_content(std::move(content))
     , _from_uid(static_cast<int>(senderId))
     , _to_uid(static_cast<int>(recvId))
 {
     SetMessageId(messageId);
+    SetThreadId(threadId);
     SetStatus(status);
     SetCreatedAtMs(createdAtMs);
 }

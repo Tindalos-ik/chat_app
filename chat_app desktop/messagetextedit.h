@@ -1,3 +1,4 @@
+// 文件作用：真实消息编辑器的文字/私聊附件输入与发送事件；群仅文字，禁用所有mime附件入口。
 #ifndef MESSAGETEXTEDIT_H
 #define MESSAGETEXTEDIT_H
 
@@ -32,9 +33,12 @@ public:
 
     ~MessageTextEdit();
 
-    QVector<MsgInfo> getMsgList();                    // 解析文档，按顺序取出 文本/图片/文件 消息
-
-    void insertFileFromUrl(const QStringList &urls);  // 从本地路径列表插入 图片/文件
+    QVector<MsgInfo> getMsgList();
+    // urls为本机file:///路径列表；仍先检查附件开关/只读，不能借此给群插入图片或文件。
+    void insertFileFromUrl(const QStringList &urls);
+    // enabled=false用于群：清理附件草稿并禁粘贴/拖放/直接插入；true恢复既有私聊能力。
+    void SetAttachmentsEnabled(bool enabled);
+    void ResetComposer(); // 切换账号清文档与附件索引，避免旧账号残留关联新输入。
 signals:
     void send(); // 回车时发出，外层连接后执行"发送"
 
@@ -44,8 +48,8 @@ protected:
     void keyPressEvent(QKeyEvent *e);            // 拦截回车：无 Shift 回车 = 发送
 
 private:
-    void insertImages(const QString &url);                         // 插入图片（超 120x80 按比例缩放）
-    void insertTextFile(const QString &url);                       // 插入文件（图标+文件名+大小拼成卡片图）
+    void insertImages(const QString &url); // url为本机图片路径；禁附件/只读时拒绝，否则原样记录并缩放预览。
+    void insertTextFile(const QString &url); // url为本机文件路径；禁附件/只读时拒绝，否则记录文件卡片。
     bool canInsertFromMimeData(const QMimeData *source) const;     // 粘贴/拖入的 mime 是否允许插入
     void insertFromMimeData(const QMimeData *source);              // 把 mime 里的文件路径插入编辑框
 
@@ -61,6 +65,7 @@ private slots:
     void textEditChanged(); // 预留：文本变化时的处理（目前没连接）
 
 private:
+    bool _attachmentsEnabled = true;
     QVector<MsgInfo> mMsgList;    // 已插入的非文本内容（图片/文件），顺序与文档里的替换符一一对应
     QVector<MsgInfo> mGetMsgList; // getMsgList 的返回缓冲：按文档顺序拼好的完整消息列表
 };

@@ -1,3 +1,4 @@
+// 文件作用：客户端用户、正式消息及群元数据DTO；thread/sender/target身份分开，DTO不授予服务端权限。
 #ifndef USERDATA_H
 #define USERDATA_H
 
@@ -15,6 +16,20 @@ struct UserInfo {
     QString _desc;
     int _sex = 0;
     QString _icon;
+};
+// 服务端群元数据/本地展示身份：threadId共用chat_thread全局ID，owner/active不是客户端权限证明。
+struct GroupInfo {
+    qint64 threadId = 0;
+    QString name;
+    qint64 ownerUid = 0;
+    bool active = true;
+};
+
+// 成员页条目：role仅0普通成员或2群主；nick缺资料回退UID，不伪造好友对象。
+struct GroupMemberInfo {
+    qint64 uid = 0;
+    QString nick;
+    int role = 0;
 };
 
 // 搜索结果：搜索 uid/name 后服务器返回的用户信息
@@ -70,8 +85,8 @@ struct FriendInfo{
     int _sex;
 };
 
-// 会话形式和消息类型与服务端的 thread/type 设计保持一致，后续扩展群聊、图片和文件时
-// 不必再替换消息容器的类型。
+// 会话形式与服务端thread/type一致：当前支持Private/Group文本，私聊另支持图片和文件。
+// 群recvId=0且不承载附件；保留公共容器与私聊接口，不把群身份映射成好友UID。
 enum class ChatFormType : quint8 {
     Private = 0,
     Group = 1
@@ -124,20 +139,28 @@ private:
     int _status = 0;
 };
 
-// 文本消息保留旧字段和旧构造函数，现有 TcpMgr/ChatDialog 的文本收发无需改动。
-// 新同步协议接入后可使用第二个构造函数保存服务端 messageId 和 threadId。
+// Private/Group文本公共模型：UUID构造用于本账号发送前的pending消息；
+// 正式元数据构造用于ACK/notify/history持久化与渲染，正式messageId是去重标识。
 class TextChatData : public ChatDataBase {
 public:
-    TextChatData(QString msgId, QString content, int fromUid, int toUid);
+    // msgId为客户端UUID，content为文本，fromUid/toUid为发送/接收UID；
+    // formType区分private/group（群toUid=0），UUID不是群消息正式去重键。
+    TextChatData(QString msgId, QString content, int fromUid, int toUid,
+                 ChatFormType formType = ChatFormType::Private);
+    // messageId为正式去重/历史游标ID，uniqueId为客户端UUID，threadId为会话ID，
+    // content为文本，senderId为实际发送UID，recvId私聊为对端/群为0，status为服务端状态，
+    // createdAtMs为服务端毫秒时间，formType区分独立群/私聊渲染，群不解释私聊已读状态。
     TextChatData(qint64 messageId, QString uniqueId, qint64 threadId,
                  QString content, qint64 senderId, qint64 recvId,
-                 int status = 0, qint64 createdAtMs = 0);
+                 int status = 0, qint64 createdAtMs = 0,
+                 ChatFormType formType = ChatFormType::Private);
 
     // 兼容层：旧文本收发链路直接访问这些字段；新代码优先使用 ChatDataBase getter。
     QString _msg_id;
     QString _msg_content;
     int _from_uid = 0;
     int _to_uid = 0;
+    QString _sender_nick;
 };
 
 // 图片聊天协议的单项元数据。resourceId 是 ResourceServer 的 upload_id，而不是

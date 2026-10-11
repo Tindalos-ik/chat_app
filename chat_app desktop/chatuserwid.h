@@ -1,3 +1,4 @@
+// 文件作用：私聊联系人/群会话列表项；群以thread_id独立身份显示固定群图标和本账号数字未读。
 #ifndef CHATUSERWID_H
 #define CHATUSERWID_H
 
@@ -11,6 +12,7 @@
 namespace Ui {
 class ChatUserWid;
 }
+class QLabel;
 
 // 聊天/好友/搜索列表的列表项控件
 // 用法：new 一个 ChatUserWid，setItemWidget 到 QListWidget 的 item 上
@@ -36,6 +38,11 @@ public:
     qint64 GetThreadId() const;
     QString GetName() const; // 取联系人名字（点击条目后聊天标题用）
     QString GetIcon() const; // 取头像路径
+    // group为正式群元数据，不构造UID为0的好友；active只控制群的UI可用状态。
+    void SetGroupInfo(const GroupInfo &group);
+    void SetGroupUnreadCount(int count); // count为本账号未读条数(负值归0)；仅群显示数字，私聊仍原红点。
+    bool IsGroup() const;
+    GroupInfo GetGroupInfo() const;
 
 private:
     Ui::ChatUserWid *ui;
@@ -43,6 +50,10 @@ private:
     QString _name; // 联系人名字
     QString _icon; // 头像资源路径
     qint64 _threadId = 0;
-};
+    bool _isGroup = false;
+    GroupInfo _groupInfo;
+    QLabel *_groupUnreadBadge = nullptr;
+    int _groupUnreadCount = 0;
 
+};
 #endif // CHATUSERWID_H

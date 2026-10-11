@@ -1,3 +1,5 @@
+// 文件作用：登录账号的聊天页与群管理UI；身份按正式thread/type区分，缓存只作UI预检查。
+// 群不依赖好友资料，失效仅保留本地历史；最终成员/owner权限由服务端事务判定。
 #ifndef CHATDIALOG_H
 #define CHATDIALOG_H
 
@@ -17,7 +19,9 @@ class ChatDialog;
 class SettingDialog;
 class ChatItemBase;
 class ChatImageTransferTask;
+class QPushButton;
 struct LocalChatMessage;
+struct LocalChatThread;
 
 class ChatDialog : public QDialog
 {
@@ -29,6 +33,7 @@ public:
 
     // 登录完成后刷新当前账号显示；ChatDialog 本身早于登录界面创建。
     void UpdateUserTitle();
+    // RefreshLoginData在每次登录后清空上一账号选择、群信息窗、请求关联和附件草稿，再加载本账号缓存。
     void RefreshLoginData();
     void initChatUserList();
     void initConUserList();
@@ -58,6 +63,19 @@ private slots:
                                        int deliveryState);
     void slot_thread_read_cursor(qint64 threadId, qint64 readerUid,
                                  qint64 readThroughMessageId);
+    // group为服务端群元数据；confirmedMembership仅新create/join的匹配确认，列表不能激活tombstone。
+    void slot_group_info(const GroupInfo &group, bool confirmedMembership);
+    // 搜索结果group包含精确群号/名称；只展示“加入群”，不创建伪造好友身份。
+    void slot_group_search_result(const GroupInfo &group);
+    // threadId指定失效群；active仅接受false；reason解释踢出/解散；targetUid为本账号通知身份。
+    // 保留本地历史/账号连接，active=true不是激活证据。
+    void slot_group_state(qint64 threadId, bool active, const QString &reason, qint64 targetUid);
+    // requestId关联本账号管理操作；error为协议错误码，不将失败当成已提交。
+    void slot_group_operation_result(const QString &requestId, int error);
+    // threadId/requestId绑定当前信息窗；members为本页(uid/nick/role0或2)，nextUid为下一页游标，
+    // loadMore表示仍有成员。拒绝旧窗口、旧请求或失效群的迟到页。
+    void slot_group_members(qint64 threadId, const QString &requestId,
+                            const QList<GroupMemberInfo> &members, qint64 nextUid, bool loadMore);
 
 protected:
     // 重写事件过滤器实现根据鼠标位置判断是否隐藏搜索框恢复聊天界面
@@ -81,7 +99,16 @@ private:
     void AddLBGroup(StateWidget *lb);            // 把侧边栏按钮加入互斥组
     void ClearLabelState(StateWidget *lb);       // 清除除 lb 之外所有按钮的选中态
     void SetCurrentChatUser(const std::shared_ptr<UserInfo> &chatUser, qint64 threadId = 0);
-    // 把 SQLite 读取出的已确认消息渲染为气泡；调用方已保证消息属于当前会话。
+    // group提供待打开的threadId；身份/active以本账号SQLite重新读取，无好友指针，失效群仅本地历史。
+    void SetCurrentGroup(const GroupInfo &group);
+    // thread为本账号完整缓存身份/摘要；按group thread_id维护列表、固定群头像及真实数字未读。
+    void addGroupChatWid(const LocalChatThread &thread);
+    // 分页成员与owner管理入口；每次提交复核缓存，UI owner只是预检查，服务端最终鉴权。
+    void ShowGroupInfo();
+    // threadId为待操作群号；ownerOnly=true另要求当前UID等于owner。每次重读本账号缓存；
+    // 返回值仅用于UI预检查，不构成服务端成员权限证据。
+    bool CanUseGroup(qint64 threadId, bool ownerOnly = false) const;
+    // message为SQLite正式消息；friendInfo仅私聊对端、群传空。调用者保证thread属于当前视图。
     void AppendStoredTextMessage(const LocalChatMessage &message,
                                  const std::shared_ptr<UserInfo> &friendInfo);
     ChatItemBase *CreateStoredTextChatItem(const LocalChatMessage &message,
@@ -105,6 +132,16 @@ private:
     void SendReadReceipt(qint64 threadId, qint64 readThroughMessageId);
     // 当前页还有未完成的入站图片时暂缓 1038，避免发送端在接收端尚未看到图片时显示已读。
     void TrySendCurrentReadReceipt();
+    bool _current_is_group = false;
+    GroupInfo _current_group;
+    QPointer<QDialog> _group_info_dialog;
+    QPointer<QListWidget> _group_members_list;
+    QString _group_members_request_id;
+    qint64 _group_members_next_uid = 0;
+    QPushButton *_group_info_button = nullptr;
+    qint64 _group_info_thread_id = 0;
+    QPointer<QPushButton> _group_members_more_button;
+    QHash<QString, qint64> _group_kick_requests;
 
     std::shared_ptr<UserInfo> _current_chatuser;
     qint64 _current_thread_id = 0;
