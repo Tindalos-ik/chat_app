@@ -128,9 +128,10 @@ struct GroupEvent {
     std::string type;
     Json::Value payload;
 };
-// group为调用者已读取的群元数据/接收者身份，source为服务端mutation/snapshot/event来源。
-// 返回统一JSON；本函数只序列化，不读取数据库或替代锁内授权，搜索资料不能据此授予身份。
-Json::Value BuildGroupJson(const GroupChatThread& group, const char* source);
+// group为已读取的群元数据/身份，source为服务端mutation/snapshot/event来源。
+// announcementVisible必须取认证接收者的有效成员身份（广播不可用发起者身份替代）。
+// 返回统一JSON；隐藏公告时保留空/0字段与可见性标志，不改变成员证明或替代锁内授权。
+Json::Value BuildGroupJson(const GroupChatThread& group, const char* source, bool announcementVisible);
 /**
  * @class MySqlPool
  * @brief MySQL 连接池类，继承自 Singleton 单例模板

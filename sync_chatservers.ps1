@@ -71,6 +71,9 @@ foreach ($relativePath in $relativeFiles) {
         $destinationDirectory = Split-Path -Parent $destinationPath
         New-Item -ItemType Directory -Path $destinationDirectory -Force | Out-Null
         Copy-Item -LiteralPath $sourcePath -Destination $destinationPath -Force
+        # Copy-Item保留源文件旧mtime；目标obj可能较新，MSBuild会漏编实际已变化的源码。
+        # 只刷新真正发生内容变化的目标文件，不触碰实例配置或未变化的用户文件。
+        [System.IO.File]::SetLastWriteTimeUtc($destinationPath, [DateTime]::UtcNow)
         Write-Host "Copied $relativePath"
     }
     else {

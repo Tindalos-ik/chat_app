@@ -3,7 +3,7 @@ Run with --runtime-dir pointing at the prepared private fixture directory. Crede
 are read privately from its configs; output contains assertion labels, never credentials.
 Requires grpcio/grpcio-tools, Pillow, and an explicit MySQL client binary.
 """
-import argparse, base64, configparser, hashlib, io, json, os, secrets, socket, struct, subprocess, sys, time, uuid
+import argparse, base64, configparser, hashlib, io, json, os, random, secrets, socket, struct, subprocess, sys, time, uuid, zlib
 from pathlib import Path
 from urllib.request import Request, urlopen
 from PIL import Image
@@ -291,6 +291,118 @@ class Smoke:
         require(rows[offline_id]['resource_id'] == image_resource and rows[offline_id]['msgid'] == offline_uuid,'private offline image recovered without live delivery')
         print('PASS actual private image/file cross-server send, trusted metadata, six-byte authenticated complete download, display/read receipts and offline relogin history')
 
+    def negative_avatar_api(self):
+        """Send real invalid encoded inputs; every failure preserves published metadata."""
+        self.seed()
+        group=self.create('a','Actual negative avatar API')
+        require(self.mutate('b',1047,group).get('error') == 0,'negative fixture member joins')
+        image=Image.new('RGB',(16,16),(40,100,180));output=io.BytesIO();image.save(output,format='PNG')
+        valid=output.getvalue()
+        original,_=self.upload('a',group,valid)
+        require(self.mutate('a',1079,group,resource_id=original).get('error') == 0,'original avatar genuinely published')
+
+        def metadata():
+            reply=self.members('a',group)
+            require(reply.get('error') == 0,'authoritative avatar metadata snapshot')
+            current=reply['group']
+            return tuple(current[key] for key in ['avatar_resource_id','avatar_version','avatar_mime_type','avatar_size','avatar_width','avatar_height'])
+
+        original_metadata=metadata()
+        def chunk(kind,data):
+            return struct.pack('!I',len(data))+kind+data+struct.pack('!I',zlib.crc32(kind+data)&0xffffffff)
+        fake=(b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('!IIBBBBB',16,16,8,2,0,0,0))+
+              chunk(b'IDAT',zlib.compress(b'\x00'))+chunk(b'IEND',b''))
+        output=io.BytesIO();image.save(output,format='GIF');gif=output.getvalue()
+        output=io.BytesIO();Image.new('RGB',(1025,1),(20,50,70)).save(output,format='PNG');dimensions=output.getvalue()
+        pixels=random.Random(847).randbytes(1024*1024*3)
+        output=io.BytesIO();Image.frombytes('RGB',(1024,1024),pixels).save(output,format='PNG');oversize=output.getvalue()
+        require(len(oversize)>2*1024*1024,'actual valid encoded PNG exceeds 2MiB')
+        for encoded in [gif,dimensions,oversize]:
+            decoded=Image.open(io.BytesIO(encoded));decoded.load()
+        cases=[('valid_container_invalid_pixels',fake),('unsupported_gif',gif),('valid_png_1025x1',dimensions),('valid_png_1024x1024_over_2MiB',oversize)]
+        inputs=self.directory/'negative-avatar-inputs';inputs.mkdir(exist_ok=True)
+        for label,data in cases:
+            (inputs/(label+'.bin')).write_bytes(data)
+            identity=str(uuid.uuid4());self.resources.append(identity)
+            request=self.upload_request('a',group,identity,data)
+            sync=self.resource(1005,request)
+            stage='sync';error=sync.get('error')
+            if error == 0:
+                stage='final_chunk'
+                for offset in range(0,len(data),512):
+                    part=data[offset:offset+512]
+                    reply=self.resource(1003,{**request,'offset':offset,'data':base64.b64encode(part).decode(),'is_last':offset+len(part)==len(data)})
+                    error=reply.get('error')
+                    if error != 0:
+                        break
+            verified=self.verify('a',group,identity)
+            published=self.mutate('a',1079,group,resource_id=identity)
+            require(error != 0 or verified.error != 0,'invalid actual file rejected by upload or full RPC decoder')
+            require(verified.error != 0 and published.get('error') != 0,'invalid actual resource cannot verify or publish')
+            require(metadata() == original_metadata,'invalid resource leaves original avatar ID/version/metadata unchanged')
+            print(f"PASS actual negative {label} bytes={len(data)} reject_stage={stage} upload_error={error} rpc_error={verified.error} publish_error={published.get('error')} original_unchanged=true")
+
+        denied=str(uuid.uuid4())
+        require(self.resource(1005,self.upload_request('b',group,denied,valid)).get('error') != 0,'nonmanager actual upload denied')
+        require(self.mutate('b',1079,group,resource_id=original).get('error') != 0,'nonmanager actual publication denied')
+        require(metadata() == original_metadata,'nonmanager does not clear or replace original avatar')
+        require(self.mutate('a',1069,group,target_member_uid=self.actors['b']['uid'],role=1,expected_membership_version=str(self.version('a','b',group))).get('error') == 0,'fixture manager appointed')
+        admin_resource,_=self.upload('b',group,valid)
+        require(self.verify('b',group,admin_resource).error == 0,'actual full verification before revocation')
+        publish_operation=uuid.uuid4().hex
+        require(self.mutate('b',1079,group,resource_id=admin_resource,operation_id=publish_operation).get('error') == 0,'actual manager published own task')
+        require(self.mutate('a',1069,group,target_member_uid=self.actors['b']['uid'],role=0,expected_membership_version=str(self.version('a','b',group))).get('error') == 0,'actual manager revoked')
+        before_rejected_publish=metadata()
+        for fields in [{},{'operation_id':publish_operation}]:
+            require(self.mutate('b',1079,group,resource_id=admin_resource,**fields).get('error') != 0,'revoked manager fresh/old successful publication rejected')
+            require(metadata() == before_rejected_publish,'revoked failed publication preserves current avatar ID/version/metadata')
+        require(self.download('a',group,admin_resource).get('error') == 0,'current publication readable by other member, no uploader-only fallback')
+        print('PASS actual nonmanager and revoked fresh/cached publication preserve avatar ID/version/metadata without fallback')
+
+    def announcement_privacy_api(self):
+        """Only current members receive body/editor/time/version, including replay/events."""
+        self.seed()
+        group=self.create('a','Actual member-only announcement')
+        join_operation=uuid.uuid4().hex
+        require(self.mutate('b',1047,group,operation_id=join_operation).get('error') == 0,'privacy fixture member joins')
+        body='Member-only 公告😀\n正文不得出现在公开搜索或待审回包'
+        announcement=self.mutate('a',1077,group,announcement=body,expected_announcement_version='0')
+        require(announcement.get('error') == 0,'member-only announcement stored')
+
+        def visible(value):
+            require(value.get('member') and value.get('announcement_visible'),'current member announcement visible')
+            require(value['announcement'] == body and value['announcement_version'] == 1,'current member full announcement body/version')
+            require(value['announcement_author_uid'] == self.actors['a']['uid'] and value['announcement_updated_at_ms'] > 0,'current member full editor/time')
+
+        def hidden(value):
+            require(not value.get('member') and not value.get('membership_proof'),'nonmember never gains authority from redaction')
+            require(value.get('announcement_visible') is False,'public announcement explicit redacted marker')
+            require(value['announcement'] == '' and value['announcement_version'] == 0,'nonmember body/version default placeholders')
+            require(value['announcement_author_uid'] == 0 and value['announcement_updated_at_ms'] == 0,'nonmember editor/time redacted')
+            require(body not in json.dumps(value,ensure_ascii=False),'nonmember JSON contains no current announcement')
+            require(int(value['thread_id']) == group and value['name'] == 'Actual member-only announcement' and value['owner_uid'] == self.actors['a']['uid'] and value['active'],'public group lookup retained')
+
+        member=self.actors['b']['connection'].exchange(1045,{'thread_id':str(group)})
+        require(member.get('error') == 0,'current member exact search')
+        visible(member['group']);visible(self.members('b',group)['group'])
+        public=self.actors['f']['connection'].exchange(1045,{'thread_id':str(group)})
+        require(public.get('error') == 0,'public exact search still available')
+        hidden(public['group'])
+        require(self.mutate('a',1075,group,approval_required=True).get('error') == 0,'privacy fixture approval enable')
+        pending=self.mutate('d',1047,group,explanation='Pending cannot read member announcement')
+        require(pending.get('admission') == 'pending','privacy fixture pending application')
+        hidden(pending['group'])
+        old_member_version=self.version('a','b',group)
+        require(self.mutate('a',1056,group,target_member_uid=self.actors['b']['uid'],expected_membership_version=str(old_member_version)).get('error') == 0,'privacy fixture member kicked')
+        invalidated=self.actors['b']['connection'].notification(1060,lambda value:int(value.get('thread_id',0)) == group and value.get('event_type') == 'invalidated')
+        require(invalidated.get('uid') == self.actors['b']['uid'] and invalidated.get('type') == 'group','actual invalidation recipient envelope')
+        require(int(invalidated['membership_version']) > int(old_member_version),'invalidation retains newer negative membership version')
+        hidden(invalidated['group'])
+        replay=self.mutate('b',1047,group,operation_id=join_operation)
+        require(replay.get('replayed') and not replay.get('membership_granted'),'old JOIN replay cannot grant after kick')
+        hidden(replay['group']);visible(self.members('a',group)['group'])
+        print('PASS actual member-only announcement full current member search/roster; redacted public search, pending, kicked old JOIN replay and recipient-specific invalidation with unchanged proof boundaries')
+
     def run(self):
         self.seed()
         group = self.create('a', 'Actual dual service group')
@@ -429,10 +541,17 @@ class Smoke:
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--runtime-dir',type=Path,required=True);parser.add_argument('--mysql-client',required=True)
     parser.add_argument('--management-only', action='store_true')
+    parser.add_argument('--negative-avatar-only', action='store_true')
+    parser.add_argument('--announcement-privacy-only', action='store_true')
     options=parser.parse_args();smoke=Smoke(options.runtime_dir,options.mysql_client)
     smoke.management_only = options.management_only
     try:
-        smoke.run()
+        if options.announcement_privacy_only:
+            smoke.announcement_privacy_api()
+        elif options.negative_avatar_only:
+            smoke.negative_avatar_api()
+        else:
+            smoke.run()
     finally:
         smoke.cleanup()
 

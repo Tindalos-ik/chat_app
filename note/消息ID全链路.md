@@ -82,6 +82,8 @@ HTTP 负责注册、登录、验证码和重置密码等短请求。登录拿到
 
 群管理 mutation 均要求 operation_id（现有 create/join/kick/dissolve 同样适用）。准入响应 entries 使用 `{kind,id,thread_id,group_name,inviter_uid,applicant_uid,target_uid,status,explanation,created_at_ms,updated_at_ms}`，next_id 为全局准入游标。group包含最新version、审批/公告/头像独立版本与可信元数据，以及接收者专属member/role/membership_version/membership_proof/source；source为mutation/snapshot/event。成员项携带membership_version，成员回包包含完整最新group。
 
+公告仅有效成员查看。group.member=false的精确搜索、pending准入、旧JOIN重放和本人失效事件将announcement置空、announcement_version/announcement_author_uid/announcement_updated_at_ms置0，announcement_visible=false；当前有效成员visible=true且字段完整。公开name/thread_id/owner_uid/active/approval_required仍可读；公告占位0不是“清空公告”或新公告版本。客户端不得把非成员group资料合并到缓存，失效事件只推进成员负向版本/active，不用这些占位字段覆盖缓存公告。广播可见性按实际接收者，而不是操作人的权限。
+
 `inbox`返回本人收到的全部邀请（pending及终态）；`applications`返回本人的全部申请（pending及终态）；`results`返回本人是被邀请者/申请者/邀请者的终态记录；`approvals`仅返回该群待审申请并锁内校验当前管理权限。每轮刷新各scope都从after_id=0开始，不能把其他scope的游标混用，也不能只按新id刷新旧记录状态。通知紧凑JSON显式带接收者`uid`和`type="group"`；uid不是操作人。只有新入群者的members事件带membership_granted=true，非成员结果不能授予权限。
 
 membership_proof不等于激活许可：普通metadata/members只能刷新已有有效身份，不能激活未知群或tombstone。仅实际新增/重入收件人得到event_type='members',source='event',membership_granted=true，其他成员无grant。self显式CREATE/JOIN在当前锁定证明member=true时确认grant，包括已经入群与相同键重放；旧JOIN被踢后重放没有grant。接受邀请仅实际新入群响应有grant，pending/离群重放/接受邀请重放无grant；审批者响应不能代替申请者grant。离线激活只能完整成功快照轮，旧版本不能覆盖新身份。

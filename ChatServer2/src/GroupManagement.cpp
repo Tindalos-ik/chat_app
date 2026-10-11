@@ -108,7 +108,7 @@ Json::Value ReadAdmission(mysqlx::Session &db, std::uint64_t id)
 }
 } // namespace
 
-Json::Value BuildGroupJson(const GroupChatThread &g, const char *source)
+Json::Value BuildGroupJson(const GroupChatThread &g, const char *source, bool announcementVisible)
 {
     Json::Value v;
     v["thread_id"] = Json::UInt64(g.threadId);
@@ -118,10 +118,16 @@ Json::Value BuildGroupJson(const GroupChatThread &g, const char *source)
     v["active"] = g.active;
     v["version"] = Json::UInt64(g.version);
     v["approval_required"] = g.approvalRequired;
-    v["announcement"] = g.announcement;
-    v["announcement_version"] = Json::UInt64(g.announcementVersion);
-    v["announcement_author_uid"] = g.announcementAuthorUid;
-    v["announcement_updated_at_ms"] = Json::UInt64(g.announcementUpdatedAtMs);
+    // 精确搜索与待审回包仍可公开群号/名称，但公告仅认证后的有效成员可读。
+    // 广播按接收者判定，踢出/离群/解散的失效事件不能泄露发起者可见的正文。
+    v["announcement_visible"] = announcementVisible;
+    if (announcementVisible)
+        v["announcement"] = g.announcement;
+    else
+        v["announcement"] = "";
+    v["announcement_version"] = Json::UInt64(announcementVisible ? g.announcementVersion : 0);
+    v["announcement_author_uid"] = announcementVisible ? g.announcementAuthorUid : 0;
+    v["announcement_updated_at_ms"] = Json::UInt64(announcementVisible ? g.announcementUpdatedAtMs : 0);
     v["avatar_resource_id"] = g.avatarResourceId;
     v["avatar_mime_type"] = g.avatarMimeType;
     v["avatar_size"] = Json::UInt64(g.avatarSize);
@@ -327,7 +333,7 @@ int MysqlMgr::MutateGroup(int uid, short action, const Json::Value &request,
             if (action == ID_CREATE_GROUP_REQ && response["thread_id"].asUInt64() != thread)
                 return ServerBusy;
             response["replayed"] = true;
-            response["group"] = BuildGroupJson(group, "mutation");
+            response["group"] = BuildGroupJson(group, "mutation", group.member);
             if (group.member && (action == ID_CREATE_GROUP_REQ || action == ID_JOIN_GROUP_REQ))
                 response["membership_granted"] = true;
             else
@@ -699,7 +705,7 @@ int MysqlMgr::MutateGroup(int uid, short action, const Json::Value &request,
         response["type"] = "group";
         response["thread_id"] = Json::UInt64(thread);
         response["operation_id"] = operation;
-        response["group"] = BuildGroupJson(group, "mutation");
+        response["group"] = BuildGroupJson(group, "mutation", group.member);
         if (grantedUid == uid || (action == ID_JOIN_GROUP_REQ && group.member))
             response["membership_granted"] = true;
         if (invalidUid)
@@ -738,7 +744,7 @@ int MysqlMgr::MutateGroup(int uid, short action, const Json::Value &request,
             }
             if (type == "metadata" || type == "members" || type == "invalidated")
             {
-                p["group"] = BuildGroupJson(group, "event");
+                p["group"] = BuildGroupJson(group, "event", activeRecipient);
                 p["group"]["member"] = activeRecipient;
                 p["group"]["membership_proof"] = activeRecipient;
                 p["group"]["role"] = activeRecipient ? recipient->role : -1;
@@ -849,7 +855,7 @@ int MysqlMgr::LoadGroupRequests(int uid, const Json::Value &request, Json::Value
                 return GroupNotMember;
             if (g.role < 1)
                 return GroupPermissionDenied;
-            response["group"] = BuildGroupJson(g, "snapshot");
+            response["group"] = BuildGroupJson(g, "snapshot", g.member);
         }
         // 每个UI表面独立按全局准入ID分页；状态更新需从0重新枚举，不能永久记最大ID。
         // 非成员自己的申请包含pending，不能只在terminal results中恢复。

@@ -1756,7 +1756,7 @@ void LogicSystem::HandleGroup(std::shared_ptr<CSession> session, const short& id
             [](std::uint64_t value, const GroupChatThread& group) { return value < group.threadId; });
         while (pos != snapshot.groups.end() && count < static_cast<size_t>(page)) {
             Json::Value candidate = response;
-            candidate["groups"].append(BuildGroupJson(*pos,"snapshot"));
+            candidate["groups"].append(BuildGroupJson(*pos,"snapshot",pos->member));
             candidate["next_thread_id"] = static_cast<Json::UInt64>(pos->threadId);
             if (SerializeCompactJson(candidate).size() > kMaxHistoryResponseJsonBytes) break;
             response = std::move(candidate); next = pos->threadId; ++pos; ++count;
@@ -1798,7 +1798,7 @@ void LogicSystem::HandleGroup(std::shared_ptr<CSession> session, const short& id
     if (response["error"].asInt() != Success) return;
     response["thread_id"] = static_cast<Json::UInt64>(thread);
     if (action == GroupAction::Search || action == GroupAction::Members)
-        response["group"] = BuildGroupJson(group,"snapshot");
+        response["group"] = BuildGroupJson(group,"snapshot",group.member);
     if (action == GroupAction::Members) {
         response["members"] = Json::Value(Json::arrayValue); response["load_more"] = false;
         int next = static_cast<int>(after); size_t count = 0;

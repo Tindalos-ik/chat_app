@@ -344,4 +344,46 @@ TEST_F(GroupTransactionTest, RequestScopesPreservePendingTerminalKindsAndGlobalP
     }while(p["load_more"].asBool());
     EXPECT_EQ(terminals,3u);EXPECT_EQ(after,secondApplication);
 }
+
+TEST_F(GroupTransactionTest, AnnouncementDisclosureRequiresCurrentRecipientMembership) {
+    Create();
+    const auto originalJoin=Request();
+    ASSERT_EQ(Mutate(ID_JOIN_GROUP_REQ,member,originalJoin),Success);
+    auto edit=Request();edit["announcement"]="Only current members may read this announcement";
+    edit["expected_announcement_version"]=Json::UInt64(0);
+    ASSERT_EQ(Mutate(ID_UPDATE_GROUP_ANNOUNCEMENT_REQ,owner,edit),Success);
+    EXPECT_TRUE(result["group"]["announcement_visible"].asBool());
+    EXPECT_EQ(result["group"]["announcement"],edit["announcement"]);
+    auto hidden=[](const Json::Value& value) {
+        EXPECT_FALSE(value["member"].asBool());EXPECT_FALSE(value["membership_proof"].asBool());
+        EXPECT_FALSE(value["announcement_visible"].asBool());
+        EXPECT_EQ(value["announcement"].asString(),"");
+        EXPECT_EQ(value["announcement_version"].asUInt64(),0u);
+        EXPECT_EQ(value["announcement_author_uid"].asInt(),0);
+        EXPECT_EQ(value["announcement_updated_at_ms"].asUInt64(),0u);
+    };
+    ASSERT_EQ(Op(GroupAction::Search,stranger),Success);
+    hidden(BuildGroupJson(group,"snapshot",group.member));
+    Approval(true);
+    ASSERT_EQ(Mutate(ID_JOIN_GROUP_REQ,stranger),Success);
+    EXPECT_EQ(result["admission"].asString(),"pending");hidden(result["group"]);
+    const auto beforeKick=Version(member);
+    ASSERT_EQ(Mutate(ID_KICK_GROUP_MEMBER_REQ,owner,Json::Value(),member),Success);
+    bool invalidation=false;
+    for(const auto& event:events)if(event.targetUid==member&&event.type=="invalidated") {
+        invalidation=true;hidden(event.payload["group"]);
+        EXPECT_GT(event.payload["membership_version"].asUInt64(),beforeKick);
+    }
+    EXPECT_TRUE(invalidation);
+    ASSERT_EQ(Mutate(ID_JOIN_GROUP_REQ,member,originalJoin),Success);
+    EXPECT_TRUE(result["replayed"].asBool());EXPECT_FALSE(result["membership_granted"].asBool());
+    hidden(result["group"]);
+    ASSERT_EQ(Op(GroupAction::Search,owner),Success);
+    const auto current=BuildGroupJson(group,"snapshot",group.member);
+    EXPECT_TRUE(current["announcement_visible"].asBool());
+    EXPECT_EQ(current["announcement"],edit["announcement"]);
+    EXPECT_EQ(current["announcement_version"].asUInt64(),1u);
+    EXPECT_EQ(current["announcement_author_uid"].asInt(),owner);
+    EXPECT_GT(current["announcement_updated_at_ms"].asUInt64(),0u);
+}
 } // namespace
