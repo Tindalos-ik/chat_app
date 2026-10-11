@@ -181,7 +181,7 @@ cmake --build --preset debug
 
 提示时输入 `y` 运行、回车跳过。也可以用 `-Tests tcp,sqlite` 直接指定测试；可选项为 `tcp`、`friend`、`message`、`sqlite` 和 `capacity`。连接容量测试需要 ChatServer 正在运行。好友和消息用例只在显式配置独立测试库时执行；未配置时会跳过，避免修改开发数据。SQLite 用例使用 Qt 6.5+ Core、Sql、Widgets 和 QSQLITE 插件；Windows 上根构建会从桌面构建缓存读取 Qt kit 与编译器，并在默认构建过程中完成独立子构建，避免混用 MSVC 和 MinGW。CI 使用独立 MySQL schema 运行数据库用例。具体覆盖范围、测试库配置及容量测试方式见 [测试笔记](note/测试.md)。
 
-群事务测试为 `group_transaction_test`，随CMake注册编译；从显式隔离config.ini工作目录运行，并设置 `CHAT_GROUP_TEST_SCHEMA=chat_app_test_*` 与 `CHAT_GROUP_TEST_CONFIRM_ISOLATED=YES`，不使用开发库。真实双实例验证应另建仓库外运行目录、独立MySQL schema/Redis端口与运行配置，再实际HTTP/TCP登录；数据库2/3/1项回归与双服TCP smoke的命令、脚本、输出及初失败修复保存在交付报告，Qt界面验证单独记录。详见测试笔记。
+群事务测试为 `group_transaction_test`，随CMake注册编译；从显式隔离config.ini工作目录运行，并设置 `CHAT_GROUP_TEST_SCHEMA=chat_app_test_*` 与 `CHAT_GROUP_TEST_CONFIRM_ISOLATED=YES`，不使用开发库。隔离双实例实际验证分三层记录：数据库好友/私聊/群事务用例1+3+2；真实HTTP/TCP/gRPC群链路；Qt生产Widgets实际登录、菜单/确认窗与群页面操作。Qt已观察创建/精确搜索/幂等加入、非好友跨服文本、成员分页、离线历史、踢人/解散只读、旧群号发现、超过100身份完整对账、未读摘要保留及同进程切账号；外部可复现脚本、stdout、实际窗口PNG和包序/SQLite读出见交付报告。SQLite匹配Qt kit的独立子构建实际11/11通过；不据此声称根CTest全套或客户端半包测试通过。详见测试笔记。
 
 
 ## 启动
@@ -276,3 +276,4 @@ curl http://127.0.0.1:8080/get_test
 - [聊天信息存储方案](note/聊天信息存储方案.md)：服务端会话/消息模型、客户端 SQLite 缓存和增量同步边界。
 - [资源服务](note/资源服务.md)：资源上传、资源 ID、gRPC 图片核验与 TCP 分片下载协议。
 - [文件传输](note/文件传输.md)：私聊文件消息、手动下载和资源归属鉴权。
+- [视频通话技术方案与学习路径](note/视频通话技术.md)：拟接入的一对一音视频方案、Qt kit 约束、信令鉴权、coturn 与分阶段验收；不代表当前已支持通话。

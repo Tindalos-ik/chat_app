@@ -4,6 +4,9 @@
 
 `group_transaction_test` 是真实 MySQL 群事务/权限用例，链接生产 MysqlMgr；只在工作目录 config.ini 与 `CHAT_GROUP_TEST_SCHEMA=chat_app_test_*` 一致且 `CHAT_GROUP_TEST_CONFIRM_ISOLATED=YES` 时运行。无隔离配置跳过，显式连接失败报失败；不访问开发库。它验证重复加入、角色权限、单行消息、加入前/离线历史、撤权行锁、实际插入后回滚和带历史逻辑解散。构建该目标后可从独立配置工作目录运行其exe，或者为CTest提供同一隔离工作目录配置；run_tests.ps1现有菜单未增加group选项。
 
+本次匹配Qt kit的SQLite直接子构建实际11/11通过，根wrapper旧GoogleTest源码cache失效不混作根全套通过。仓库外Qt生产Widgets driver与真实隔离服务另外验证群创建/精确加入/跨服文本/分页管理、离线与列表race，以及私聊图片/文件上传下载/回执；其stdout、窗口PNG、真实包序与文件hash为独立证据，不冒充这些CTest目标的覆盖。
+
+
 
 ## 连接容量测试
 

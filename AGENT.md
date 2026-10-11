@@ -59,7 +59,7 @@
 | [连接池.md](note/连接池.md) | 项目中 4 类连接池 |
 | [grpc.md](note/grpc.md) | gRPC 应用 |
 | [服务部署.md](note/服务部署.md) | Windows/Linux 部署 |
-| [测试.md](note/测试.md) | CTest TCP/好友/私聊/群事务与权限回归、SQLite缓存、真实双实例隔离验证边界及CI |
+| [测试.md](note/测试.md) | CTest好友/私聊/群事务、SQLite直接子构建11项、真实QtWidgets群/私聊资源与完整快照race隔离验证及CI边界 |
 | [数据库设计.md](note/数据库设计.md) | MySQL 用户、社交、会话与消息表，以及客户端 SQLite 缓存设计 |
 | [聊天信息存储方案.md](note/聊天信息存储方案.md) | 服务端会话/消息表、客户端 SQLite 缓存管理器与增量同步设计 |
 | [聊天可靠性与资源安全提升.md](note/聊天可靠性与资源安全提升.md) | 消息 ACK、已读与未读、历史分包、图片下载鉴权和故障恢复边界 |
