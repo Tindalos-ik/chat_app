@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <limits>
 
 namespace {
 
@@ -37,6 +38,48 @@ bool IsNonNegativeInteger(const Json::Value& value) {
     return value.isUInt() || value.isUInt64() ||
            (value.isInt() && value.asInt() >= 0) ||
            (value.isInt64() && value.asInt64() >= 0);
+}
+
+bool ThreadId(const Json::Value& value,std::uint64_t& id) {
+    if(IsNonNegativeInteger(value)){id=value.asUInt64();return true;}
+    if(!value.isString()||value.asString().empty())return false;
+    id=0;for(unsigned char c:value.asString()) {
+        if(c<'0'||c>'9'||id>(std::numeric_limits<std::uint64_t>::max()-(c-'0'))/10)return false;
+        id=id*10+c-'0';
+    }return true;
+}
+// 每个受保护分块都重新认证；租约由处理函数持有到Defer发送响应后销毁。
+ErrorCodes GroupRoute(const Json::Value& request,bool& group,std::uint64_t& thread,
+    bool published,std::unique_ptr<GroupResourceLease>& lease) {
+    group=request["purpose"].isString()&&request["purpose"].asString()=="group_avatar";
+    if(request.isMember("purpose")&&!group)return ResourceAccessDenied;
+    if(!group)return Success;
+    if(!request["uid"].isInt()||!request["token"].isString()||!request["resource_id"].isString()||
+       !ThreadId(request["thread_id"],thread)||!thread||!IsSafeUploadId(request["resource_id"].asString())||
+       (!published&&request["resource_id"]!=request["upload_id"]))return ResourceAccessDenied;
+    auto access=ResourceAccessAuthorizer::Instance().AcquireGroupAccess(request["uid"].asInt(),
+        request["token"].asString(),thread,request["resource_id"].asString(),published,lease);
+    return access==ResourceAccessResult::Authorized?Success:
+        access==ResourceAccessResult::Denied?ResourceAccessDenied:ResourceAuthorizationUnavailable;
+}
+bool TaskBinding(const Json::Value& meta,const Json::Value& request,bool group,std::uint64_t thread) {
+    // 判断必须基于已保存的任务，而不是客户端路由；去掉purpose不能降级为匿名上传。
+    const bool protectedTask=meta["purpose"].asString()=="group_avatar";
+    if(protectedTask!=group)return false;
+    return !group||(meta["owner_uid"].isInt()&&meta["owner_uid"]==request["uid"]&&
+        meta["thread_id"].isUInt64()&&meta["thread_id"].asUInt64()==thread);
+}
+
+// 仅回传任务关联字段，绝不回传token；认证失败也让Qt准确结束任务，回传不是授权证明。
+void EchoGroupTask(const Json::Value& request, Json::Value& response) {
+    if (!request["purpose"].isString() || request["purpose"].asString() != "group_avatar") return;
+    response["purpose"] = "group_avatar";
+    for (const char* key : {"uid", "thread_id", "resource_id", "upload_id", "task_id"}) {
+        if (request.isMember(key)) response[key] = request[key];
+    }
+    if (!response.isMember("task_id")) {
+        response["task_id"] = request.isMember("upload_id") ? request["upload_id"] : request["resource_id"];
+    }
 }
 
 bool ReadJsonFile(const std::filesystem::path& path, Json::Value& value) {
@@ -200,7 +243,9 @@ void LogicWorker::HandleSyncFile(std::shared_ptr<CSession> session, const short 
     std::istringstream input(msg_data);
     std::string errors;
     Json::Value response;
-    Defer defer([session, &response]() {
+    std::unique_ptr<GroupResourceLease> lease;
+    Defer defer([session, &response, &root]() {
+        EchoGroupTask(root, response);
         session->Send(response.toStyledString(), ID_SYNC_FILE_RSP);
     });
 
@@ -208,6 +253,9 @@ void LogicWorker::HandleSyncFile(std::shared_ptr<CSession> session, const short 
         response["error"] = ErrorCodes::Error_Json;
         return;
     }
+    bool group=false;std::uint64_t thread=0;
+    const auto authorization=GroupRoute(root,group,thread,false,lease);
+    if(authorization!=Success){response["error"]=authorization;return;}
 
     const std::string upload_id = root["upload_id"].asString();
     const std::string md5 = root["md5"].asString();
@@ -224,7 +272,7 @@ void LogicWorker::HandleSyncFile(std::shared_ptr<CSession> session, const short 
     }
 
     // 先于目录创建、meta.json 写入和续传文件检查拒绝过大声明，防止原始 TCP 客户端绕过 Qt 限制。
-    if (total_size > kMaxUploadFileSize) {
+    if (total_size > (group ? 2ULL*1024*1024 : kMaxUploadFileSize) || (group&&total_size==0)) {
         FillUploadResponse(response, UploadFileTooLarge, upload_id, total_size, 0, false);
         return;
     }
@@ -243,8 +291,10 @@ void LogicWorker::HandleSyncFile(std::shared_ptr<CSession> session, const short 
 
     Json::Value meta;
     if (std::filesystem::exists(meta_path)) {
-        if (!ReadJsonFile(meta_path, meta) || !IsSameTask(meta, md5, name, total_size) ||
-            meta["chunk_size"].asUInt64() != chunk_size) {
+        if (!ReadJsonFile(meta_path, meta) || !TaskBinding(meta,root,group,thread)) {
+            FillUploadResponse(response, ResourceAccessDenied, upload_id,total_size,0,false);return;
+        }
+        if (!IsSameTask(meta, md5, name, total_size) || meta["chunk_size"].asUInt64() != chunk_size) {
             FillUploadResponse(response, UploadTaskConflict, upload_id, total_size, 0, false);
             return;
         }
@@ -256,6 +306,7 @@ void LogicWorker::HandleSyncFile(std::shared_ptr<CSession> session, const short 
         meta["total_size"] = total_size;
         meta["chunk_size"] = chunk_size;
         meta["completed"] = false;
+        if(group){meta["purpose"]="group_avatar";meta["owner_uid"]=root["uid"];meta["thread_id"]=Json::UInt64(thread);}
         if (!WriteJsonFile(meta_path, meta)) {
             FillUploadResponse(response, UploadFileError, upload_id, total_size, 0, false);
             return;
@@ -266,7 +317,8 @@ void LogicWorker::HandleSyncFile(std::shared_ptr<CSession> session, const short 
         const auto final_size = std::filesystem::file_size(final_path, ec);
         if (!ec && final_size == total_size) {
             FillUploadResponse(response, Success, upload_id, total_size, total_size, true);
-            response["resource_url"] = BuildResourceUrl(final_path);
+            if(group)response["resource_id"]=upload_id;
+            else response["resource_url"] = BuildResourceUrl(final_path);
             return;
         }
         FillUploadResponse(response, UploadTaskConflict, upload_id, total_size, 0, false);
@@ -293,15 +345,19 @@ void LogicWorker::HandleUploadFile(std::shared_ptr<CSession> session, const shor
     bool parse_success = Json::parseFromStream(reader, ss, &root, &errs);
     if (!parse_success) {
         std::cout << "Failed to parse JSON data" << std::endl;
-        std::cout << errs << std::endl;
         return;
     }
 
     Json::Value rtvalue;
-    Defer defer([this, session, &rtvalue]() {
+    std::unique_ptr<GroupResourceLease> lease;
+    Defer defer([this, session, &rtvalue, &root]() {
+        EchoGroupTask(root, rtvalue);
         std::string return_str = rtvalue.toStyledString();
         session->Send(return_str, ID_UPLOAD_FILE_RSP);
     });
+    bool group=false;std::uint64_t thread=0;
+    const auto authorization=GroupRoute(root,group,thread,false,lease);
+    if(authorization!=Success){rtvalue["error"]=authorization;return;}
 
     std::string data = root["data"].asString();
     // 客户端上传的是 Base64 文本，保存前必须还原为原始二进制字节。
@@ -329,7 +385,7 @@ void LogicWorker::HandleUploadFile(std::shared_ptr<CSession> session, const shor
 
     // 每个分片请求都独立检查总大小，不能只依赖此前的 1005 同步请求。
     // 拒绝发生在持锁、读写任务元数据及打开 .part 文件之前。
-    if (total_size > kMaxUploadFileSize) {
+    if (total_size > (group ? 2ULL*1024*1024 : kMaxUploadFileSize) || (group&&total_size==0)) {
         FillUploadResponse(rtvalue, UploadFileTooLarge, upload_id, total_size, 0, false);
         return;
     }
@@ -341,7 +397,10 @@ void LogicWorker::HandleUploadFile(std::shared_ptr<CSession> session, const shor
     const std::filesystem::path final_path = task_dir / file_name;
     Json::Value meta;
     std::error_code ec;
-    if (!ReadJsonFile(meta_path, meta) || !IsSameTask(meta, md5, name, total_size)) {
+    if (!ReadJsonFile(meta_path, meta) || !TaskBinding(meta,root,group,thread)) {
+        FillUploadResponse(rtvalue,ResourceAccessDenied,upload_id,total_size,0,false);return;
+    }
+    if (!IsSameTask(meta, md5, name, total_size)) {
         FillUploadResponse(rtvalue, UploadTaskConflict, upload_id, total_size, 0, false);
         return;
     }
@@ -351,7 +410,8 @@ void LogicWorker::HandleUploadFile(std::shared_ptr<CSession> session, const shor
         const auto final_size = std::filesystem::file_size(final_path, ec);
         if (!ec && final_size == total_size) {
             FillUploadResponse(rtvalue, Success, upload_id, total_size, total_size, true);
-            rtvalue["resource_url"] = BuildResourceUrl(final_path);
+            if(group)rtvalue["resource_id"]=upload_id;
+            else rtvalue["resource_url"] = BuildResourceUrl(final_path);
             return;
         }
         FillUploadResponse(rtvalue, UploadTaskConflict, upload_id, total_size, 0, false);
@@ -391,6 +451,10 @@ void LogicWorker::HandleUploadFile(std::shared_ptr<CSession> session, const shor
 
     confirmed_offset += decoded_data.size();
     if (is_last) {
+        if(group) {
+            VerifiedImageResource image;const auto error=DecodeGroupAvatarFile(part_path,image);
+            if(error!=Success){FillUploadResponse(rtvalue,error,upload_id,total_size,confirmed_offset,false);return;}
+        }
         // rename 只会在全部字节落盘后执行，外部使用者不会读到半成品文件。
         std::filesystem::rename(part_path, final_path, ec);
         if (ec) {
@@ -406,7 +470,8 @@ void LogicWorker::HandleUploadFile(std::shared_ptr<CSession> session, const shor
 
     FillUploadResponse(rtvalue, Success, upload_id, total_size, confirmed_offset, is_last);
     if (is_last) {
-        rtvalue["resource_url"] = BuildResourceUrl(final_path);
+        if(group)rtvalue["resource_id"]=upload_id;
+        else rtvalue["resource_url"] = BuildResourceUrl(final_path);
     }
 }
 
@@ -428,7 +493,9 @@ void LogicWorker::HandleDownloadFile(std::shared_ptr<CSession> session, const sh
     std::istringstream input(msg_data);
     std::string errors;
     Json::Value response;
-    Defer defer([session, &response]() {
+    std::unique_ptr<GroupResourceLease> lease;
+    Defer defer([session, &response, &request]() {
+        EchoGroupTask(request, response);
         session->Send(response.toStyledString(), ID_DOWNLOAD_FILE_RSP);
     });
 
@@ -436,17 +503,20 @@ void LogicWorker::HandleDownloadFile(std::shared_ptr<CSession> session, const sh
         response["error"] = ErrorCodes::Error_Json;
         return;
     }
+    bool group=false;std::uint64_t groupThread=0;
+    const auto authorization=GroupRoute(request,group,groupThread,true,lease);
+    if(authorization!=Success){response["error"]=authorization;return;}
 
     const std::string resource_id = request["resource_id"].asString();
     if (!IsNonNegativeInteger(request["offset"]) || !IsNonNegativeInteger(request["chunk_size"]) ||
-        !IsNonNegativeInteger(request["thread_id"]) || !request["uid"].isInt() ||
+        (!group&&!IsNonNegativeInteger(request["thread_id"])) || !request["uid"].isInt() ||
         !IsSafeUploadId(resource_id)) {
         response["error"] = ErrorCodes::Error_Json;
         return;
     }
     const Json::UInt64 offset = request["offset"].asUInt64();
     const Json::UInt64 requested_chunk_size = request["chunk_size"].asUInt64();
-    const Json::UInt64 thread_id = request["thread_id"].asUInt64();
+    const Json::UInt64 thread_id = group ? groupThread : request["thread_id"].asUInt64();
     const int uid = request["uid"].asInt();
     const std::string token = request["token"].asString();
     if (requested_chunk_size == 0 || requested_chunk_size > kMaxDownloadChunkSize) {
@@ -457,8 +527,8 @@ void LogicWorker::HandleDownloadFile(std::shared_ptr<CSession> session, const sh
     // 在拿文件锁、触及文件系统前先完成身份与会话资源归属校验。每个 1007 都携带
     // 当前登录 token，SQL 同时限定 thread_id、resource_id、image/file 类型和私聊成员。
     // 不能把一次通过的连接当作永久授权。
-    const ResourceAccessResult access = ResourceAccessAuthorizer::Instance()
-        .AuthorizePrivateDownload(uid, token, thread_id, resource_id);
+    const ResourceAccessResult access = group ? ResourceAccessResult::Authorized :
+        ResourceAccessAuthorizer::Instance().AuthorizePrivateDownload(uid, token, thread_id, resource_id);
     if (access != ResourceAccessResult::Authorized) {
         const ErrorCodes error = access == ResourceAccessResult::Denied
             ? ErrorCodes::ResourceAccessDenied
@@ -480,10 +550,18 @@ void LogicWorker::HandleDownloadFile(std::shared_ptr<CSession> session, const sh
     Json::UInt64 total_size = 0;
     // 下载复用可信文件解析器，不再维护第二套完成标志、文件名和大小校验逻辑。
     VerifiedFileResource verified;
-    const ErrorCodes resolve_result = ResolveCompletedFileResourceLocked(resource_id, verified);
+    const ErrorCodes resolve_result = ResolveCompletedFileResourceLocked(resource_id, verified,group);
     if (resolve_result != ErrorCodes::Success) {
         FillDownloadResponse(response, resolve_result, resource_id, 0, 0, false);
         return;
+    }
+    if(group) {
+        Json::Value meta;
+        if(!ReadJsonFile(verified.finalPath.parent_path()/"meta.json",meta)||
+           meta["purpose"].asString()!="group_avatar"||!meta["thread_id"].isUInt64()||
+           meta["thread_id"].asUInt64()!=thread_id) {
+            FillDownloadResponse(response,ResourceAccessDenied,resource_id,0,0,false);return;
+        }
     }
     final_path = verified.finalPath;
     file_name = verified.name;

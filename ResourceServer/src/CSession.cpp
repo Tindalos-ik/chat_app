@@ -213,12 +213,13 @@ void CSession::ReadBody(int body_len) {
             memcpy(_recv_msg_node->_data, _data, bytes_transfered);
             _recv_msg_node->_cur_len += static_cast<short>(bytes_transfered);
             _recv_msg_node->_data[_recv_msg_node->_total_len] = '\0';
-            // 1007 现在带有登录 token。只记录消息类型，不能把凭证写进
-            // ResourceServer 日志；其他旧协议暂时保留原有调试输出。
-            if (_recv_msg_node->GetMsgId() == ID_DOWNLOAD_FILE_REQ) {
-                std::cout << "received authenticated download request" << endl;
+            // 上传/续传/下载均可能带凭据，协议层只记录语义ID，绝不打印包体。
+            if (_recv_msg_node->GetMsgId() == ID_DOWNLOAD_FILE_REQ ||
+                _recv_msg_node->GetMsgId() == ID_UPLOAD_FILE_REQ ||
+                _recv_msg_node->GetMsgId() == ID_SYNC_FILE_REQ) {
+                std::cout << "received resource request id=" << _recv_msg_node->GetMsgId() << endl;
             } else {
-                std::cout << "receive data is " << _recv_msg_node->_data << endl;
+                std::cout << "received request id=" << _recv_msg_node->GetMsgId() << endl;
             }
 
             // 封装成逻辑节点投递给逻辑层处理

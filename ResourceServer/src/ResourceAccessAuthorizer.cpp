@@ -90,70 +90,85 @@ ResourceAccessAuthorizer& ResourceAccessAuthorizer::Instance() {
 //   ResourceAccessResult::Authorized 表示允许下载；
 //   ResourceAccessResult::Denied 表示明确拒绝；
 //   ResourceAccessResult::Unavailable 表示依赖服务暂时不可用，调用方可稍后重试。
-ResourceAccessResult ResourceAccessAuthorizer::AuthorizePrivateDownload(
-    int uid, const std::string& token, std::uint64_t threadId,
-    const std::string& resourceId) const {
-    // 基础参数校验：
-    //   uid 必须大于 0；
-    //   token 不能为空；
-    //   threadId 不能为 0；
-    //   resourceId 不能为空。
-    // 只要有一项不合法，就直接拒绝，避免无效请求继续访问网络或数据库。
-    if (uid <= 0 || token.empty() || threadId == 0 || resourceId.empty()) {
+ResourceAccessResult ResourceAccessAuthorizer::Authenticate(int uid, const std::string& token) const {
+    if (uid <= 0 || token.empty() || token.size() > 512) {
         return ResourceAccessResult::Denied;
     }
-
-    // 从全局配置管理器中读取 StatusServer 配置节。
-    const auto status = ConfigMgr::Inst()["StatusServer"];
-    // 读取状态服务器主机地址。
-    const std::string host = status["host"];
-    // 读取状态服务器端口号。
-    const std::string port = status["port"];
-    // 如果主机或端口为空，说明无法连接状态服务器进行身份验证。
-    // 此时返回 Unavailable，表示服务暂不可用，而不是权限拒绝。
+    auto status = ConfigMgr::Inst()["StatusServer"];
+    const std::string host = status["host"], port = status["port"];
     if (host.empty() || port.empty()) {
         return ResourceAccessResult::Unavailable;
     }
-
-    // 创建到状态服务器的 gRPC 通道。
-    // InsecureChannelCredentials() 表示使用不加密的连接，通常用于内网或测试环境。
     auto channel = grpc::CreateChannel(host + ":" + port, grpc::InsecureChannelCredentials());
-    // 基于通道创建 StatusService 的客户端存根（stub），后续通过它调用远程方法。
     auto stub = message::StatusService::NewStub(channel);
-    // 创建 gRPC 客户端上下文，用于控制本次 RPC 调用的超时、元数据等。
     grpc::ClientContext context;
-    // 设置本次 RPC 的截止时间：当前时间加 3 秒，防止因网络问题长时间阻塞。
     context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(3));
-    // 构造登录请求 protobuf 消息。
     message::LoginReq request;
-    // 构造登录响应 protobuf 消息，用于接收服务端返回结果。
     message::LoginRsp response;
     request.set_uid(uid);
     request.set_token(token);
-    // 同步调用 StatusServer 的 Login 方法，验证 uid 与 token 是否匹配。
-    // 调用结果保存在 rpcStatus 中，服务端响应写入 response。
-    const grpc::Status rpcStatus = stub->Login(&context, request, &response);
-    // 如果 gRPC 调用本身失败（例如网络错误、超时、服务未启动），返回 Unavailable。
-    if (!rpcStatus.ok()) {
+    if (!stub->Login(&context, request, &response).ok()) {
         return ResourceAccessResult::Unavailable;
     }
-    // StatusServer 的业务拒绝表示 token/uid 不匹配；不要把它伪装成可重试故障。
-    // response.error() != 0 表示业务层返回了错误码；
-    // response.uid() != uid 表示返回的用户 ID 与请求不一致；
-    // response.token() != token 表示返回的 token 与请求不一致。
-    // 这些情况都说明身份验证失败，应明确拒绝。
-    if (response.error() != 0 || response.uid() != uid || response.token() != token) {
+    return response.error() == 0 && response.uid() == uid && response.token() == token ?
+        ResourceAccessResult::Authorized : ResourceAccessResult::Denied;
+}
+
+ResourceAccessResult ResourceAccessAuthorizer::AuthorizePrivateDownload(
+    int uid, const std::string& token, std::uint64_t threadId, const std::string& resourceId) const {
+    if (!threadId || resourceId.empty()) {
         return ResourceAccessResult::Denied;
     }
-
-    // 身份验证通过后，再查询 MySQL，确认该用户确实有权访问该私聊图片资源。
+    const auto identity = Authenticate(uid, token);
+    if (identity != ResourceAccessResult::Authorized) {
+        return identity;
+    }
     try {
-        // 调用匿名命名空间中的 HasPrivateResourceAccess：
-        // ConfigMgr::Inst()["Mysql"] 用于读取 MySQL 配置节。
-        return HasPrivateResourceAccess(ConfigMgr::Inst()["Mysql"], uid, threadId, resourceId)
-            ? ResourceAccessResult::Authorized
-            : ResourceAccessResult::Denied;
-    } catch (const std::exception&) {
+        return HasPrivateResourceAccess(ConfigMgr::Inst()["Mysql"], uid, threadId, resourceId) ?
+            ResourceAccessResult::Authorized : ResourceAccessResult::Denied;
+    } catch (...) {
+        return ResourceAccessResult::Unavailable;
+    }
+}
+
+ResourceAccessResult ResourceAccessAuthorizer::AcquireGroupAccess(
+    int uid, const std::string& token, std::uint64_t threadId, const std::string& resourceId,
+    bool published, std::unique_ptr<GroupResourceLease>& lease) const {
+    lease.reset();
+    if (!threadId || resourceId.empty()) {
+        return ResourceAccessResult::Denied;
+    }
+    const auto identity = Authenticate(uid, token);
+    if (identity != ResourceAccessResult::Authorized) {
+        return identity;
+    }
+    try {
+        auto cfg = ConfigMgr::Inst()["Mysql"];
+        auto db = std::make_unique<mysqlx::Session>(cfg["host"], std::stoi(cfg["port"]),
+            cfg["user"], cfg["passwd"], cfg["schema"]);
+        // 先锁群再锁成员，与管理事务一致；持锁到响应入队，退群/撤权不能穿透分块。
+        db->startTransaction();
+        auto group = db->sql("SELECT CAST(active AS UNSIGNED),avatar_resource_id,owner_uid "
+            "FROM group_chat WHERE thread_id=? FOR UPDATE").bind(threadId).execute().fetchOne();
+        if (!group || group[0].get<int>() != 1) {
+            return ResourceAccessResult::Denied;
+        }
+        auto member = db->sql("SELECT role FROM group_chat_member WHERE thread_id=? "
+            "AND user_id=? AND active=1 FOR UPDATE").bind(threadId).bind(uid).execute().fetchOne();
+        const bool managerMissing = !published && member && member[0].get<int>() < 1;
+        const bool publicationChanged = published && group[1].get<std::string>() != resourceId;
+        if (!member || managerMissing || publicationChanged) {
+            return ResourceAccessResult::Denied;
+        }
+        auto owner = db->sql("SELECT role FROM group_chat_member WHERE thread_id=? "
+            "AND user_id=? AND active=1 FOR UPDATE").bind(threadId).bind(group[2].get<int>())
+            .execute().fetchOne();
+        if (!owner || owner[0].get<int>() != 2) {
+            return ResourceAccessResult::Denied;
+        }
+        lease = std::make_unique<GroupResourceLease>(std::move(db));
+        return ResourceAccessResult::Authorized;
+    } catch (...) {
         return ResourceAccessResult::Unavailable;
     }
 }

@@ -9,7 +9,7 @@ target_link_libraries(tcp_stream_test PRIVATE GTest::gtest_main)
 gtest_discover_tests(tcp_stream_test DISCOVERY_MODE PRE_TEST
     PROPERTIES LABELS unit)
 
-# 两组数据库用例链接同一份生产数据访问实现。运行前由用例检查隔离测试库配置；
+# 三组数据库用例链接同一份生产数据访问实现。运行前由用例检查隔离测试库配置；
 # 普通 CTest/CI 环境不提供该配置时会明确跳过，绝不连接开发库。
 find_package(redis++ CONFIG REQUIRED)
 find_package(unofficial-mysql-connector-cpp CONFIG REQUIRED)
@@ -47,6 +47,25 @@ foreach(test_name IN ITEMS friend_transaction_test message_retry_offline_sync_te
     gtest_discover_tests(${test_name} DISCOVERY_MODE PRE_TEST
         PROPERTIES LABELS integration)
 endforeach()
+
+# 群头像用生产完整解码和资源绑定实现；这些测试只写自己创建的临时目录。
+find_package(PNG REQUIRED)
+find_package(libjpeg-turbo CONFIG REQUIRED)
+add_executable(group_avatar_decoder_test
+    group_avatar_decoder_test.cpp
+    ${CMAKE_SOURCE_DIR}/ResourceServer/src/GroupAvatarDecoder.cpp
+    ${CMAKE_SOURCE_DIR}/ResourceServer/src/ResourceVerifier.cpp
+    ${CMAKE_SOURCE_DIR}/ResourceServer/src/ConfigMgr.cpp
+    ${CMAKE_SOURCE_DIR}/ResourceServer/jsoncpp/jsoncpp.cpp)
+target_compile_features(group_avatar_decoder_test PRIVATE cxx_std_17)
+target_include_directories(group_avatar_decoder_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/ResourceServer/include
+    ${CMAKE_SOURCE_DIR}/ResourceServer/jsoncpp/json
+    ${CHAT_TEST_BOOST_INCLUDE_DIR})
+target_link_libraries(group_avatar_decoder_test PRIVATE
+    GTest::gtest_main chat_proto PNG::PNG libjpeg-turbo::turbojpeg)
+gtest_discover_tests(group_avatar_decoder_test DISCOVERY_MODE PRE_TEST
+    PROPERTIES LABELS unit)
 
 find_package(Qt6 6.5 QUIET COMPONENTS Core Sql Widgets)
 set(CHAT_APP_SQLITE_QT_MISMATCH FALSE)

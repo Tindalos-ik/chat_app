@@ -128,7 +128,8 @@ struct GroupEvent {
     std::string type;
     Json::Value payload;
 };
-// 统一群 JSON，source 显式区分 mutation/snapshot/event，避免搜索元数据授予身份。
+// group为调用者已读取的群元数据/接收者身份，source为服务端mutation/snapshot/event来源。
+// 返回统一JSON；本函数只序列化，不读取数据库或替代锁内授权，搜索资料不能据此授予身份。
 Json::Value BuildGroupJson(const GroupChatThread& group, const char* source);
 /**
  * @class MySqlPool
@@ -339,7 +340,7 @@ public:
     int MutateGroup(int uid, short action, const Json::Value& request,
         const Json::Value& verifiedAvatar, Json::Value& response, std::vector<GroupEvent>& events);
     // LoadGroupRequests参数uid为认证用户，request含scope/after_id/page_size，审批还需thread_id。
-    // inbox=本人全部邀请；applications=本人全部申请；results=相关终态；approvals=当前经理待审批。
+    // inbox=本人全部邀请；applications=本人全部申请；results=相关终态；approvals=当前管理者待审批。
     // response输出全局ID页/next_id/load_more与真实UID；返回错误码，不给非成员信箱身份权限。
     int LoadGroupRequests(int uid, const Json::Value& request, Json::Value& response);
 private:

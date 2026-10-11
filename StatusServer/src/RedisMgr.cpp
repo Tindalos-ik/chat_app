@@ -61,27 +61,27 @@ bool RedisMgr::Set(const std::string &key, const std::string &value)
 {
     auto connect = _connectionPool->getConnection();
     if (connect == nullptr) {
-        std::cout << "[ SET " << key << " " << value << " ] failed: no connection" << std::endl;
+        std::cout << "[ SET " << key << " ] failed: no connection" << std::endl;
         return false;
     }
     
     redisReply* reply = (redisReply*)redisCommand(connect, "SET %s %s", key.c_str(), value.c_str());
     if(reply == NULL){
-        std::cout << "[ SET " << key << " " << value << " ] failed" << std::endl;
+        std::cout << "[ SET " << key << " ] failed" << std::endl;
         freeReplyObject(reply);
         _connectionPool->returnConnection(connect);
         return false;
     }
 
     if(reply->type != REDIS_REPLY_STATUS || (strcmp(reply->str, "OK") != 0 && strcmp(reply->str, "ok") != 0)){
-        std::cout << "[ SET " << key << " " << value << " ] failed" << std::endl;
+        std::cout << "[ SET " << key << " ] failed" << std::endl;
         freeReplyObject(reply);
         _connectionPool->returnConnection(connect);
         return false;
     }
 
     freeReplyObject(reply);
-    std::cout << "[ SET " << key << " " << value << " ] success" << std::endl;
+    std::cout << "[ SET " << key << " ] success" << std::endl;
     _connectionPool->returnConnection(connect);
     return true;
 }
@@ -91,19 +91,19 @@ bool RedisMgr::Auth(const std::string &password)
 {
     auto connect = _connectionPool->getConnection();
     if (connect == nullptr) {
-        std::cout << "[ AUTH " << password << " ] failed: no connection" << std::endl;
+        std::cout << "[ AUTH *** ] failed: no connection" << std::endl;
         return false;
     }
     
     redisReply* reply = (redisReply*)redisCommand(connect, "AUTH %s", password.c_str());
     if(reply == NULL){
-        std::cout << "[ AUTH " << password << " ] failed" << std::endl;
+        std::cout << "[ AUTH *** ] failed" << std::endl;
         freeReplyObject(reply);
         _connectionPool->returnConnection(connect);
         return false;
     }
     freeReplyObject(reply);
-    std::cout << "[ AUTH " << password << " ] success" << std::endl;
+    std::cout << "[ AUTH *** ] success" << std::endl;
     _connectionPool->returnConnection(connect);
     return true;
 }

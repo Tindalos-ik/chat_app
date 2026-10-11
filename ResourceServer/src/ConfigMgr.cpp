@@ -36,7 +36,7 @@ ConfigMgr::ConfigMgr()
         for (const auto& [key, value] : section_info._section_datas) {
             // ResourceServer 的下载鉴权需要 MySQL 配置；启动调试输出不能把密码
             // 留在控制台或服务日志中。
-            std::cout << key << " = " << (key == "passwd" ? "***" : value) << std::endl;
+            std::cout << key << " = " << ((key == "passwd" || key == "service_key" || key == "token") ? "***" : value) << std::endl;
         }
     }
 }

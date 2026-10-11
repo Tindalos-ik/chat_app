@@ -1,6 +1,8 @@
 #include "ResourceServiceImpl.h"
 
 #include "ResourceVerifier.h"
+#include "ResourceAccessAuthorizer.h"
+#include "ConfigMgr.h"
 
 #include <iostream>
 #include <vector>
@@ -78,5 +80,51 @@ grpc::Status ResourceServiceImpl::VerifyFiles(grpc::ServerContext* context,
         item->set_mime_type(resource.mimeType);
         item->set_file_size(resource.fileSize);
     }
+    return grpc::Status::OK;
+}
+
+grpc::Status ResourceServiceImpl::VerifyGroupAvatar(grpc::ServerContext* context,
+    const message::GroupAvatarVerifyReq* request, message::GroupAvatarVerifyRsp* response) {
+    response->set_error(ResourceAccessDenied);
+    // 空配置/缺服务凭据默认拒绝；用户token不能冒充内部服务，凭据不进入任务或日志。
+    const std::string key = ConfigMgr::Inst()["ResourceServer"]["service_key"];
+    if (!context || !request || key.empty()) {
+        return grpc::Status::OK;
+    }
+    const auto& metadata = context->client_metadata();
+    auto supplied = metadata.find("x-resource-service-key");
+    if (supplied == metadata.end() || supplied->second.size() != key.size()) {
+        return grpc::Status::OK;
+    }
+    // 常量时间比较；insecure channel上的来源地址不能替代服务身份。
+    unsigned char difference = 0;
+    for (size_t i = 0; i < key.size(); ++i) {
+        difference |= static_cast<unsigned char>(key[i] ^ supplied->second.data()[i]);
+    }
+    if (difference) {
+        return grpc::Status::OK;
+    }
+    std::unique_ptr<GroupResourceLease> lease;
+    // 当前管理者租约仅保护核验；ChatServer发布前仍须再次锁群读取当前role。
+    auto access = ResourceAccessAuthorizer::Instance().AcquireGroupAccess(request->uid(),
+        request->token(), request->thread_id(), request->resource_id(), false, lease);
+    if (access != ResourceAccessResult::Authorized) {
+        response->set_error(access == ResourceAccessResult::Denied ?
+            ResourceAccessDenied : ResourceAuthorizationUnavailable);
+        return grpc::Status::OK;
+    }
+    std::lock_guard<std::mutex> lock(GetResourceFileMutex());
+    VerifiedImageResource resource;
+    auto error = ResolveGroupAvatarLocked(request->resource_id(), request->uid(),
+        request->thread_id(), resource);
+    response->set_error(error);
+    if (error != Success) {
+        return grpc::Status::OK;
+    }
+    response->set_resource_id(resource.resourceId);
+    response->set_mime_type(resource.mimeType);
+    response->set_file_size(resource.fileSize);
+    response->set_width(resource.width);
+    response->set_height(resource.height);
     return grpc::Status::OK;
 }

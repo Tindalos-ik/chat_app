@@ -18,7 +18,8 @@ public:
     message::ResourceVerifyRsp VerifyImages(const message::ResourceVerifyReq& request);
     // 核验已发布普通文件。request 为待核验资源 ID 列表，响应含权威名称/MIME/字节数。
     message::ResourceFileVerifyRsp VerifyFiles(const message::ResourceFileVerifyReq& request);
-    // 新群头像核验必须带实际服务凭据，不把insecure gRPC误作已认证边界。
+    // VerifyGroupAvatar参数request：认证UID/token、群号、资源ID；返回错误或可信MIME/尺寸/字节数。
+    // 以配置服务凭据认证真实RPC边界（缺失即拒绝）；调用前不能持群锁，核验后仍须重查当前role。
     message::GroupAvatarVerifyRsp VerifyGroupAvatar(const message::GroupAvatarVerifyReq& request);
 
 private:

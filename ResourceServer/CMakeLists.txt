@@ -5,6 +5,8 @@ add_compile_options(/utf-8 /wd4819) #忽略编码警告
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+find_package(PNG REQUIRED)
+find_package(libjpeg-turbo CONFIG REQUIRED)
 
 # ==================== 项目源文件 ====================
 set(JSONCPP_SOURCES
@@ -22,6 +24,7 @@ set(SOURCE_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ResourceVerifier.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ResourceServiceImpl.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ResourceAccessAuthorizer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/GroupAvatarDecoder.cpp
 )
 
 link_directories("D:/cppsoft/vcpkg/installed/x64-windows/lib") # 添加 vcpkg 的 lib 路径，库文件搜索路径
@@ -48,6 +51,8 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     gRPC::grpc++
     protobuf::libprotobuf
     mysqlcppconnx
+    PNG::PNG
+    libjpeg-turbo::turbojpeg
 )
 
 

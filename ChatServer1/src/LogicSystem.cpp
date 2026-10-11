@@ -357,13 +357,13 @@ void LogicSystem::LoginHandler(std::shared_ptr<CSession> session, const short &m
     bool parse_success = Json::parseFromStream(reader, ss, &root, &errs);
     if (!parse_success) {
         std::cout << "Failed to parse JSON data" << std::endl;
-        std::cout << errs << std::endl;
         return;
     }
 
     int uid = root["uid"].asInt();
     std::string token = root["token"].asString();
-    std::cout << "user login uid is " << uid << " user token is " << token << std::endl;
+    // token同时用于群资源授权，登录诊断只记录UID，不能暴露可复用凭据。
+    std::cout << "user login uid is " << uid << std::endl;
 
     Json::Value rtvalue;
     Defer defer([this, &rtvalue, session]{

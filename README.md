@@ -76,7 +76,7 @@ chat_app/
 git clone https://github.com/microsoft/vcpkg.git D:/cppsoft/vcpkg
 Set-Location D:/cppsoft/vcpkg
 .\bootstrap-vcpkg.bat
-.\vcpkg install grpc protobuf redis-plus-plus mysqlcppconnx --triplet x64-windows
+.\vcpkg install grpc protobuf redis-plus-plus mysqlcppconnx libpng libjpeg-turbo --triplet x64-windows
 ```
 
 > `CMakePresets.json` 和各服务的 `CMakeLists.txt` 使用了上述 vcpkg 与 Boost 路径。安装在其他位置时，请先统一更新这些路径再配置工程。

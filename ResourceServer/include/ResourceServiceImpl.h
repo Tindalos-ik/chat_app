@@ -17,4 +17,10 @@ public:
     grpc::Status VerifyFiles(grpc::ServerContext* context,
                              const message::ResourceFileVerifyReq* request,
                              message::ResourceFileVerifyRsp* response) override;
+    // VerifyGroupAvatar参数context含配置服务凭据；request含认证UID/token、群号及不透明任务ID。
+    // response返回业务错误或可信资源ID/MIME/大小/尺寸（不含路径）；传输Status OK不代表业务成功。
+    // 验服务身份→Status当前token→群/成员管理租约→文件绑定/完整解码；调用方发布仍须重查权限。
+    grpc::Status VerifyGroupAvatar(grpc::ServerContext* context,
+        const message::GroupAvatarVerifyReq* request,
+        message::GroupAvatarVerifyRsp* response) override;
 };

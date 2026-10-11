@@ -212,7 +212,7 @@ ErrorCodes ResolveCompletedImageResourceLocked(const std::string& resourceId,
 }
 
 ErrorCodes ResolveCompletedFileResourceLocked(const std::string& resourceId,
-                                              VerifiedFileResource& resource) {
+                                              VerifiedFileResource& resource, bool allowGroupAvatar) {
     resource = {};
     // resource_id 会成为任务目录名，限制字符集以阻止路径分隔符和目录穿越。
     if (!IsSafeUploadId(resourceId)) return ErrorCodes::Error_Json;
@@ -222,6 +222,8 @@ ErrorCodes ResolveCompletedFileResourceLocked(const std::string& resourceId,
     if (!ReadJsonFile(taskDir / "meta.json", meta)) return ErrorCodes::ResourceNotFound;
     if (!meta["completed"].isBool()) return ErrorCodes::ResourceNotFound;
     if (!meta["completed"].asBool()) return ErrorCodes::ResourceNotCompleted;
+    // 受保护群任务绝不能借旧私聊核验/下载路径绕过群权限和当前头像绑定。
+    if(meta["purpose"].asString()=="group_avatar"&&!allowGroupAvatar)return ErrorCodes::ResourceAccessDenied;
     const auto storedName = std::filesystem::u8path(meta["name"].asString()).filename();
     if (storedName.empty() || !IsNonNegativeInteger(meta["total_size"])) return ErrorCodes::ResourceNotFound;
     std::error_code ec;

@@ -34,7 +34,7 @@ ConfigMgr::ConfigMgr()
     for (const auto& [section_name, section_info] : _config_map) {
         std::cout << "[" << section_name << "]" << std::endl;
         for (const auto& [key, value] : section_info._section_datas) {
-            std::cout << key << " = " << value << std::endl;
+            std::cout << key << " = " << ((key == "passwd" || key == "service_key" || key == "token") ? "***" : value) << std::endl;
         }
     }
 }

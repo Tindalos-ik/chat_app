@@ -257,7 +257,9 @@ void CSession::HandleFrame(const chat_protocol::TcpFrame& frame) {
     memcpy(_recv_msg_node->_data, frame.body.data(), frame.body.size());
     _recv_msg_node->_cur_len = body_length;
     _recv_msg_node->_data[frame.body.size()] = '\0';
-    std::cout << "receive data is " << _recv_msg_node->_data << endl;
+    // 登录及受保护资源使用token；诊断只记录帧信息，不能输出凭据或正文。
+    std::cout << "receive message id " << _recv_msg_node->GetMsgId()
+        << ", body bytes " << _recv_msg_node->_cur_len << endl;
 
     // 心跳属于传输层控制帧，不进入单线程 LogicSystem 队列。
     // 身份认证仍由登录流程负责；这里仅检测连接是否能收发数据。
