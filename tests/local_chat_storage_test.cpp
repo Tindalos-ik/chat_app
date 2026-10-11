@@ -98,6 +98,19 @@ LocalChatThread MakeThread(qint64 threadId, const QString &title, int unreadCoun
     thread.updatedAtMs = 1000;
     return thread;
 }
+LocalChatThread MakeGroup(qint64 threadId, const QString &title, qint64 version,
+                         qint64 membershipVersion, int role = 0)
+{
+    LocalChatThread thread = MakeThread(threadId, title);
+    thread.threadType = QStringLiteral("group");
+    thread.peerUid = 0;
+    thread.active = true;
+    thread.membershipProof = true;
+    thread.role = role;
+    thread.version = version;
+    thread.membershipVersion = membershipVersion;
+    return thread;
+}
 
 LocalChatMessage MakeMessage(qint64 messageId, qint64 threadId, qint64 senderId,
                              qint64 recvId, const QString &content)
@@ -337,37 +350,100 @@ TEST_F(LocalChatStorageTest, ReopeningDatabaseRestoresThreadsMessagesAndSyncCurs
     EXPECT_EQ(storage_->SyncCursors().value(threadId), messageId + 50);
     EXPECT_EQ(storage_->MaxKnownThreadId(), threadId);
 }
-TEST_F(LocalChatStorageTest, InactiveGroupsStayInactiveUntilConfirmedJoin)
+TEST_F(LocalChatStorageTest, InactiveGroupsStayInactiveUntilNewerMemberProof)
 {
     ASSERT_TRUE(Initialize(6201));
-    LocalChatThread group = MakeThread(9910000001LL, QStringLiteral("Old group"));
-    group.threadType = QStringLiteral("group");
-    group.peerUid = 0;
-    group.ownerUid = 6201;
-    ASSERT_TRUE(storage_->UpsertThread(group));
-    ASSERT_TRUE(storage_->SetGroupState(group.threadId, false));
+    LocalChatThread group = MakeGroup(9910000001LL, QStringLiteral("Old group"), 1, 2, 2);
+    ASSERT_TRUE(storage_->UpsertThread(group, GroupCacheAuthority::MembershipProof));
+    ASSERT_TRUE(storage_->SetGroupState(group.threadId, 3, QStringLiteral("kicked")));
     group.title = QStringLiteral("Late list snapshot");
-    EXPECT_TRUE(storage_->UpsertThread(group));
+    group.membershipVersion = 2;
+    EXPECT_TRUE(storage_->UpsertThread(group, GroupCacheAuthority::MembershipProof));
     EXPECT_FALSE(storage_->LoadAllThreads().front().active);
-    EXPECT_TRUE(storage_->SetGroupState(group.threadId, false));
+    group.membershipVersion = 3;
+    EXPECT_TRUE(storage_->UpsertThread(group, GroupCacheAuthority::MembershipProof));
+    EXPECT_FALSE(storage_->LoadAllThreads().front().active);
+    group.membershipVersion = 4;
     group.title = QStringLiteral("Explicit rejoin");
-    EXPECT_TRUE(storage_->UpsertThread(group, true));
+    EXPECT_TRUE(storage_->UpsertThread(group, GroupCacheAuthority::MembershipProof));
     const auto threads = storage_->LoadAllThreads();
     ASSERT_EQ(threads.size(), 1);
     EXPECT_TRUE(threads.front().active);
     EXPECT_EQ(threads.front().peerUid, 0);
 }
+
+TEST_F(LocalChatStorageTest, MemberMetadataAdvancesRoleWithoutGrantingMembership)
+{
+    ASSERT_TRUE(Initialize(6202));
+    LocalChatThread group = MakeGroup(9910000002LL, QStringLiteral("Current group"), 1, 2, 0);
+    ASSERT_TRUE(storage_->UpsertThread(group, GroupCacheAuthority::MembershipProof));
+    group.role = 1;
+    group.membershipVersion = 3;
+    ASSERT_TRUE(storage_->UpsertThread(group, GroupCacheAuthority::CurrentMemberMetadata));
+    auto threads = storage_->LoadAllThreads();
+    ASSERT_EQ(threads.size(), 1);
+    EXPECT_TRUE(threads.front().active);
+    EXPECT_EQ(threads.front().role, 1);
+    EXPECT_EQ(threads.front().membershipVersion, 3);
+
+    ASSERT_TRUE(storage_->SetGroupState(group.threadId, 4, QStringLiteral("kicked")));
+    group.role = 0;
+    group.membershipVersion = 5;
+    ASSERT_TRUE(storage_->UpsertThread(group, GroupCacheAuthority::CurrentMemberMetadata));
+    threads = storage_->LoadAllThreads();
+    EXPECT_FALSE(threads.front().active);
+    EXPECT_EQ(threads.front().membershipVersion, 4);
+    EXPECT_EQ(threads.front().invalidReason, QStringLiteral("kicked"));
+
+    group.membershipVersion = 4;
+    ASSERT_TRUE(storage_->UpsertThread(group, GroupCacheAuthority::MembershipProof));
+    EXPECT_FALSE(storage_->LoadAllThreads().front().active);
+    group.membershipVersion = 5;
+    ASSERT_TRUE(storage_->UpsertThread(group, GroupCacheAuthority::MembershipProof));
+    EXPECT_TRUE(storage_->LoadAllThreads().front().active);
+
+    ASSERT_TRUE(storage_->SetGroupState(group.threadId, 6, QStringLiteral("kicked")));
+    group.version = 2;
+    group.role = 2;
+    group.membershipVersion = 7;
+    ASSERT_TRUE(storage_->UpsertThread(group, GroupCacheAuthority::Metadata));
+    threads = storage_->LoadAllThreads();
+    EXPECT_FALSE(threads.front().active);
+    EXPECT_EQ(threads.front().membershipVersion, 6);
+    EXPECT_EQ(threads.front().role, 0);
+    group.membershipVersion = 6;
+    ASSERT_TRUE(storage_->UpsertThread(group, GroupCacheAuthority::MembershipProof));
+    EXPECT_FALSE(storage_->LoadAllThreads().front().active);
+    group.membershipVersion = 7;
+    ASSERT_TRUE(storage_->UpsertThread(group, GroupCacheAuthority::MembershipProof));
+    EXPECT_TRUE(storage_->LoadAllThreads().front().active);
+
+    LocalChatThread unknown = MakeGroup(9910000003LL, QStringLiteral("Unconfirmed"), 1, 7, 1);
+    ASSERT_TRUE(storage_->UpsertThread(unknown, GroupCacheAuthority::Metadata));
+    auto current = storage_->LoadAllThreads();
+    const auto unconfirmed = std::find_if(current.cbegin(), current.cend(), [](const auto &thread) {
+        return thread.threadId == 9910000003LL;
+    });
+    ASSERT_NE(unconfirmed, current.cend());
+    EXPECT_FALSE(unconfirmed->active);
+    EXPECT_EQ(unconfirmed->membershipVersion, 0);
+    ASSERT_TRUE(storage_->ReconcileGroupSnapshot({unknown}));
+    current = storage_->LoadAllThreads();
+    const auto recovered = std::find_if(current.cbegin(), current.cend(), [](const auto &thread) {
+        return thread.threadId == 9910000003LL;
+    });
+    ASSERT_NE(recovered, current.cend());
+    EXPECT_TRUE(recovered->active);
+    EXPECT_EQ(recovered->membershipVersion, 7);
+}
 TEST_F(LocalChatStorageTest, CompleteGroupSnapshotReconcilesEveryCachedThread)
 {
-
     ASSERT_TRUE(Initialize(6204));
-    QSet<qint64> present;
+    QList<LocalChatThread> present;
     for (qint64 id = 1; id <= 135; ++id) {
-        LocalChatThread group = MakeThread(992000 + id, QStringLiteral("group %1").arg(id));
-        group.threadType = QStringLiteral("group");
-        group.peerUid = 0;
-        ASSERT_TRUE(storage_->UpsertThread(group));
-        if (id <= 120) present.insert(group.threadId);
+        LocalChatThread group = MakeGroup(992000 + id, QStringLiteral("group %1").arg(id), 1, 1);
+        ASSERT_TRUE(storage_->UpsertThread(group, GroupCacheAuthority::MembershipProof));
+        if (id <= 120) present.append(group);
     }
     ASSERT_TRUE(storage_->ReconcileGroupSnapshot(present));
     const auto all = storage_->LoadAllThreads();
@@ -377,7 +453,7 @@ TEST_F(LocalChatStorageTest, CompleteGroupSnapshotReconcilesEveryCachedThread)
             return thread.threadId == 992000 + id;
         });
         ASSERT_NE(iter, all.cend());
-        EXPECT_EQ(iter->active, present.contains(iter->threadId));
+        EXPECT_EQ(iter->active, id <= 120);
         EXPECT_EQ(iter->title, QStringLiteral("group %1").arg(id));
         EXPECT_EQ(iter->threadId, 992000 + id);
     }
@@ -453,8 +529,8 @@ TEST_F(LocalChatStorageTest, UnknownGroupStateCreatesPersistentTombstone)
 {
     ASSERT_TRUE(Initialize(6205));
     const qint64 threadId = 9930000001LL;
-    ASSERT_TRUE(storage_->SetGroupState(threadId, false));
-    EXPECT_FALSE(storage_->SetGroupState(threadId, true));
+    ASSERT_TRUE(storage_->SetGroupState(threadId, 1, QStringLiteral("kicked")));
+    EXPECT_FALSE(storage_->SetGroupState(threadId, 1, QStringLiteral("stale")));
     LocalChatThread lateGroup = MakeThread(threadId, QStringLiteral("late group"));
     lateGroup.threadType = QStringLiteral("group");
     lateGroup.peerUid = 0;
@@ -485,7 +561,10 @@ TEST_F(LocalChatStorageTest, UnknownGroupStateCreatesPersistentTombstone)
     ASSERT_EQ(restoredMessages.size(), 1);
     EXPECT_EQ(restoredMessages.front().senderNick, QStringLiteral("late sender"));
     EXPECT_EQ(storage_->SyncCursors().value(threadId), message.messageId);
-    ASSERT_TRUE(storage_->UpsertThread(lateGroup, true));
+    lateGroup.membershipVersion = 2;
+    lateGroup.role = 0;
+    lateGroup.membershipProof = true;
+    ASSERT_TRUE(storage_->UpsertThread(lateGroup, GroupCacheAuthority::MembershipProof));
     EXPECT_TRUE(storage_->LoadAllThreads().front().active);
 }
 
@@ -548,5 +627,126 @@ TEST_F(LocalChatStorageTest, MigratesVersionThreeDatabaseWithoutLosingHistory)
     EXPECT_EQ(history.front().sendState, 3);
     EXPECT_EQ(history.front().senderNick, QString());
     EXPECT_EQ(storage_->SyncCursors().value(991001), 900);
+}
+TEST_F(LocalChatStorageTest, MigratesVersionFourCacheAndArbitratesMembershipProofVersions)
+{
+    ASSERT_TRUE(Initialize(6210));
+    const QString databasePath = storage_->DatabasePath();
+    storage_->Close();
+    ASSERT_TRUE(QFile::remove(databasePath));
+    const QString connectionName = QStringLiteral("legacy-v4-proof-test");
+    {
+        QSqlDatabase legacy = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connectionName);
+        legacy.setDatabaseName(databasePath);
+        ASSERT_TRUE(legacy.open());
+        QSqlQuery query(legacy);
+        ASSERT_TRUE(query.exec(QStringLiteral(
+            "CREATE TABLE local_chat_thread (thread_id INTEGER PRIMARY KEY, thread_type TEXT NOT NULL, "
+            "title TEXT NOT NULL DEFAULT '', peer_uid INTEGER NOT NULL DEFAULT 0, owner_uid INTEGER NOT NULL DEFAULT 0, "
+            "active INTEGER NOT NULL DEFAULT 1, last_message_id INTEGER NOT NULL DEFAULT 0, "
+            "last_message_preview TEXT NOT NULL DEFAULT '', last_message_at_ms INTEGER NOT NULL DEFAULT 0, "
+            "unread_count INTEGER NOT NULL DEFAULT 0, updated_at_ms INTEGER NOT NULL DEFAULT 0)")));
+        ASSERT_TRUE(query.exec(QStringLiteral(
+            "CREATE TABLE local_sync_cursor (thread_id INTEGER PRIMARY KEY, max_message_id INTEGER NOT NULL, "
+            "synced_at_ms INTEGER NOT NULL)")));
+        ASSERT_TRUE(query.exec(QStringLiteral(
+            "CREATE TABLE local_chat_message (message_id INTEGER PRIMARY KEY, thread_id INTEGER NOT NULL, "
+            "sender_id INTEGER NOT NULL, recv_id INTEGER NOT NULL DEFAULT 0, content_type TEXT NOT NULL, "
+            "content TEXT NOT NULL DEFAULT '', created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL, "
+            "sender_nick TEXT NOT NULL DEFAULT '', server_status INTEGER NOT NULL DEFAULT 0, "
+            "send_state INTEGER NOT NULL DEFAULT 1, delivery_state INTEGER NOT NULL DEFAULT 1, "
+            "is_read INTEGER NOT NULL DEFAULT 1)")));
+        ASSERT_TRUE(query.exec(QStringLiteral(
+            "CREATE TABLE local_message_attachment (attachment_id INTEGER PRIMARY KEY, message_id INTEGER NOT NULL, "
+            "local_path TEXT NOT NULL DEFAULT '', remote_url TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT '', "
+            "file_size INTEGER NOT NULL DEFAULT 0, download_state INTEGER NOT NULL DEFAULT 0)")));
+        ASSERT_TRUE(query.exec(QStringLiteral(
+            "INSERT INTO local_chat_thread(thread_id,thread_type,title,peer_uid,owner_uid,active,"
+            "last_message_id,last_message_preview,last_message_at_ms,unread_count,updated_at_ms) "
+            "VALUES(991010,'private','old private',6211,0,1,900,'cached',10,7,10),"
+            "(991011,'group','old group',0,6210,0,901,'group cache',11,5,11)")));
+        ASSERT_TRUE(query.exec(QStringLiteral(
+            "INSERT INTO local_sync_cursor(thread_id,max_message_id,synced_at_ms) "
+            "VALUES(991010,900,20),(991011,901,21)")));
+        ASSERT_TRUE(query.exec(QStringLiteral(
+            "INSERT INTO local_chat_message(message_id,thread_id,sender_id,recv_id,content_type,content,"
+            "created_at_ms,updated_at_ms,sender_nick,server_status,send_state,delivery_state,is_read) "
+            "VALUES(900,991010,6210,6211,'text','private history',10,10,'',1,3,4,1),"
+            "(901,991011,6211,0,'text','group history',11,11,'member',0,3,1,0)")));
+        ASSERT_TRUE(query.exec(QStringLiteral("PRAGMA user_version = 4")));
+        legacy.close();
+        legacy = QSqlDatabase();
+        QSqlDatabase::removeDatabase(connectionName);
+    }
+    ASSERT_TRUE(Initialize(6210));
+    auto threads = storage_->LoadAllThreads();
+    ASSERT_EQ(threads.size(), 2);
+    const auto privateThread = std::find_if(threads.cbegin(), threads.cend(), [](const LocalChatThread &t) {
+        return t.threadId == 991010;
+    });
+    const auto groupThread = std::find_if(threads.cbegin(), threads.cend(), [](const LocalChatThread &t) {
+        return t.threadId == 991011;
+    });
+    ASSERT_NE(privateThread, threads.cend());
+    ASSERT_NE(groupThread, threads.cend());
+    EXPECT_EQ(privateThread->unreadCount, 7);
+    EXPECT_EQ(groupThread->unreadCount, 5);
+    EXPECT_FALSE(groupThread->active);
+    EXPECT_EQ(storage_->SyncCursors().value(991010), 900);
+    EXPECT_EQ(storage_->SyncCursors().value(991011), 901);
+    EXPECT_EQ(storage_->LoadRecentMessages(991010).front().deliveryState, 4);
+    EXPECT_EQ(storage_->LoadRecentMessages(991011).front().content, QStringLiteral("group history"));
+    QSqlQuery version(QSqlDatabase::database(QStringLiteral("local_chat_cache_6210")));
+    ASSERT_TRUE(version.exec(QStringLiteral("PRAGMA user_version")));
+    ASSERT_TRUE(version.next());
+    EXPECT_EQ(version.value(0).toInt(), 5);
+
+    ASSERT_TRUE(storage_->SetGroupState(991011, 6, QStringLiteral("kicked")));
+    LocalChatThread proof = MakeGroup(991011, QStringLiteral("new group"), 4, 5, 2);
+    proof.announcement = QStringLiteral("new announcement");
+    proof.announcementVersion = 3;
+    proof.avatarResourceId = QStringLiteral("avatar-new");
+    proof.avatarVersion = 8;
+    ASSERT_TRUE(storage_->UpsertThread(proof, GroupCacheAuthority::MembershipProof));
+    auto current = storage_->LoadAllThreads();
+    auto restored = std::find_if(current.cbegin(), current.cend(), [](const LocalChatThread &t) {
+        return t.threadId == 991011;
+    });
+    ASSERT_NE(restored, current.cend());
+    EXPECT_FALSE(restored->active);
+    EXPECT_EQ(restored->title, QStringLiteral("new group"));
+    proof.membershipVersion = 6;
+    ASSERT_TRUE(storage_->UpsertThread(proof, GroupCacheAuthority::MembershipProof));
+    current = storage_->LoadAllThreads();
+    restored = std::find_if(current.cbegin(), current.cend(), [](const LocalChatThread &t) {
+        return t.threadId == 991011;
+    });
+    ASSERT_NE(restored, current.cend());
+    EXPECT_FALSE(restored->active);
+    proof.membershipVersion = 7;
+    ASSERT_TRUE(storage_->UpsertThread(proof, GroupCacheAuthority::MembershipProof));
+    current = storage_->LoadAllThreads();
+    restored = std::find_if(current.cbegin(), current.cend(), [](const LocalChatThread &t) {
+        return t.threadId == 991011;
+    });
+    ASSERT_NE(restored, current.cend());
+    EXPECT_TRUE(restored->active);
+    EXPECT_EQ(restored->role, 2);
+    LocalChatThread staleMetadata = proof;
+    staleMetadata.version = 3;
+    staleMetadata.title = QStringLiteral("stale title");
+    staleMetadata.membershipVersion = 0;
+    ASSERT_TRUE(storage_->UpsertThread(staleMetadata));
+    current = storage_->LoadAllThreads();
+    restored = std::find_if(current.cbegin(), current.cend(), [](const LocalChatThread &t) {
+        return t.threadId == 991011;
+    });
+    ASSERT_NE(restored, current.cend());
+    EXPECT_EQ(restored->title, QStringLiteral("new group"));
+    EXPECT_EQ(restored->announcement, QStringLiteral("new announcement"));
+    EXPECT_EQ(restored->avatarResourceId, QStringLiteral("avatar-new"));
+    EXPECT_TRUE(restored->active);
+    EXPECT_EQ(restored->unreadCount, 5);
+    EXPECT_EQ(storage_->SyncCursors().value(991011), 901);
 }
 } // namespace

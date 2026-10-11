@@ -17,19 +17,50 @@ struct UserInfo {
     int _sex = 0;
     QString _icon;
 };
-// 服务端群元数据/本地展示身份：threadId共用chat_thread全局ID，owner/active不是客户端权限证明。
+// 群元数据使用独立版本；membershipProof只在服务端明确返回当前成员证明时为true。
 struct GroupInfo {
     qint64 threadId = 0;
     QString name;
     qint64 ownerUid = 0;
     bool active = true;
+    qint64 version = 0;
+    bool approvalRequired = false;
+    QString announcement;
+    qint64 announcementVersion = 0;
+    qint64 announcementUpdatedAtMs = 0;
+    qint64 announcementAuthorUid = 0;
+    QString avatarResourceId;
+    qint64 avatarVersion = 0;
+    QString avatarMimeType;
+    qint64 avatarSize = 0;
+    int avatarWidth = 0;
+    int avatarHeight = 0;
+    bool member = false;
+    int role = 0;
+    qint64 membershipVersion = 0;
+    bool membershipProof = false;
+    QString source;
 };
 
-// 成员页条目：role仅0普通成员或2群主；nick缺资料回退UID，不伪造好友对象。
+// 成员页条目：role为0普通、1管理员或2群主；昵称缺资料回退UID。
 struct GroupMemberInfo {
     qint64 uid = 0;
     QString nick;
     int role = 0;
+    qint64 membershipVersion = 0;
+};
+struct GroupAdmissionInfo {
+    QString kind; // invitation / application
+    qint64 id = 0;
+    qint64 threadId = 0;
+    QString groupName;
+    qint64 inviterUid = 0;
+    qint64 applicantUid = 0;
+    qint64 targetUid = 0;
+    QString status;
+    qint64 createdAtMs = 0;
+    QString explanation;
+    qint64 updatedAtMs = 0;
 };
 
 // 搜索结果：搜索 uid/name 后服务器返回的用户信息

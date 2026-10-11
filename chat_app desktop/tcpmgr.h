@@ -18,7 +18,9 @@
 #include <QList>
 #include <QSet>
 #include "global.h"
+#include <QJsonObject>
 #include "userdata.h"
+#include "localchatstoragemgr.h"
 
 class TcpMgr : public QObject, public Singleton<TcpMgr>, //继承QObject是为了能够信号和槽机制，并且要第一个继承
                public std::enable_shared_from_this<TcpMgr>
@@ -30,18 +32,26 @@ public:
     bool IsConnected() const;
     void CloseConnection();
     // 群API返回本次request_id；空串表示参数/连接无效。服务端只信任登录session UID。
-    // name为UTF-8群名；创建成功后才确认本地成员身份。
     QString CreateGroup(const QString &name);
-    // threadId为精确群号，搜索仅查询有效群、不申请好友。
     QString SearchGroup(qint64 threadId);
-    // threadId为有效群号，直接幂等加入；匹配当前账号/失效epoch的成功回包才允许激活缓存。
-    QString JoinGroup(qint64 threadId);
-    // threadId为群号；afterUid为成员分页游标(首轮0)，回包按request_id/thread绑定信息窗。
+    QString JoinGroup(qint64 threadId, const QString &explanation = QString());
     QString LoadGroupMembers(qint64 threadId, qint64 afterUid = 0);
-    // threadId为群号；targetUid仅指定普通成员。UI owner检查不能代替服务端事务鉴权。
-    QString KickGroupMember(qint64 threadId, qint64 targetUid);
-    // threadId为群号；逻辑解散后保留本地历史，不退出整个账号连接。
+    QString KickGroupMember(qint64 threadId, qint64 targetUid,
+                            qint64 expectedMembershipVersion);
     QString DissolveGroup(qint64 threadId);
+    QString InviteGroupMember(qint64 threadId, qint64 targetUid);
+    QString LoadGroupRequests(const QString &scope, qint64 afterId = 0, qint64 threadId = 0);
+    QString DecideGroupInvitation(qint64 invitationId, qint64 threadId, bool accept);
+    QString DecideGroupApplication(qint64 applicationId, qint64 threadId, bool approve);
+    QString SetGroupAdmin(qint64 threadId, qint64 targetUid, int role,
+                          qint64 expectedMembershipVersion);
+    QString TransferGroupOwner(qint64 threadId, qint64 targetUid,
+                               qint64 expectedMembershipVersion);
+    QString LeaveGroup(qint64 threadId, qint64 expectedMembershipVersion);
+    QString SetGroupApproval(qint64 threadId, bool required);
+    QString UpdateGroupAnnouncement(qint64 threadId, const QString &announcement,
+                                    qint64 expectedVersion);
+    QString UpdateGroupAvatar(qint64 threadId, const QString &resourceId);
     // 应用准备退出时调用：先停止异步回调，保证析构阶段不再触发界面逻辑。
     void PrepareForShutdown();
 
@@ -57,24 +67,30 @@ private:
     void RequestGroupList();
     // threadId为已知有效群，按该群连续message_id历史游标补拉，实时notify/ACK不推进游标。
     void RequestGroupMessages(qint64 threadId);
-    // afterThreadId为上一页服务端游标(首轮0)；每页request_id与当前账号/轮次绑定。
     void SendGroupListPage(qint64 afterThreadId);
-    // successful仅完整分页成功为true；据全量身份对账，并保护轮内新confirmed create/join。
     void FinishGroupList(bool successful);
+    QString SendGroupMutation(ReqId requestType, QJsonObject request, qint64 threadId);
     QHash<QString, int> _pendingGroupRequests;
     QHash<QString, qint64> _pendingGroupThreads;
+    QHash<QString, QString> _pendingGroupOperationIds;
+    QHash<QString, quint64> _pendingGroupLoginGenerations;
+    QHash<QString, QString> _pendingGroupScopes;
     QSet<qint64> _groupSnapshotIds;
-    // 本轮快照开始后create/join的权威确认不能被旧快照缺失项误判为失效。
+    QHash<qint64, LocalChatThread> _groupSnapshotGroups;
     QSet<qint64> _groupSnapshotConfirmedIds;
     bool _groupListInProgress = false;
     bool _groupListRefreshQueued = false;
     qint64 _groupSnapshotCursor = 0;
     QString _groupListPendingRequestId;
     qint64 _groupListPendingAfter = 0;
+    quint64 _groupSnapshotGeneration = 0;
     QHash<qint64, quint64> _groupStateEpochs;
     QHash<QString, quint64> _pendingJoinEpochs;
     QHash<QString, qint64> _pendingGroupAccounts;
     qint64 _groupListAccountUid = 0;
+    quint64 _loginGeneration = 0;
+    quint64 _groupListLoginGeneration = 0;
+    QHash<qint64, quint64> _groupSnapshotProofEpochs;
     QMap<ReqId, std::function<void(ReqId id, int len, QByteArray data)>> _handler; //消息id对应的回调函数
 
     QTcpSocket* _socket; //客户端这边只需要一个socket就可以了，很简单
@@ -130,6 +146,13 @@ signals:
     void sig_group_state(qint64 threadId, bool active, const QString &reason, qint64 targetUid);
     void sig_group_members(qint64 threadId, const QString &requestId,
                            const QList<GroupMemberInfo> &members, qint64 nextUid, bool loadMore);
+    void sig_group_mutation_result(const QString &requestId, int requestType,
+                                   int error, const QJsonObject &response);
+    void sig_group_requests(const QString &requestId, const QString &scope, qint64 threadId,
+                            const QList<GroupAdmissionInfo> &entries,
+                            qint64 nextId, bool loadMore);
+    void sig_group_event(const QString &eventType, const GroupInfo &group,
+                         const GroupAdmissionInfo &entry, qint64 targetUid);
 };
 
 #endif // TCPMGR_H

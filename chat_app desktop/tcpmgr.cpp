@@ -16,6 +16,73 @@ namespace {
 constexpr int kHeartbeatIntervalMs = 20 * 1000;
 constexpr int kHeartbeatResponseTimeoutMs = 60 * 1000;
 constexpr qint64 kMaxChatResourceBytes = 100LL * 1024 * 1024;
+bool ParseInt64(const QJsonValue &value, qint64 *result, bool allowZero = true)
+{
+    bool ok = false;
+    qint64 parsed = 0;
+    if (value.isString()) {
+        parsed = value.toString().toLongLong(&ok);
+    } else if (value.isDouble()) {
+        parsed = value.toInteger(-1);
+        ok = parsed >= 0 && (allowZero || parsed > 0);
+    }
+    if (!ok || parsed < 0 || (!allowZero && parsed == 0)) return false;
+    *result = parsed;
+    return true;
+}
+
+LocalChatThread ToLocalGroup(const GroupInfo &group)
+{
+    LocalChatThread local;
+    local.threadId = group.threadId;
+    local.threadType = QStringLiteral("group");
+    local.title = group.name;
+    local.peerUid = 0;
+    local.ownerUid = group.ownerUid;
+    local.active = group.active;
+    local.membershipProof = group.membershipProof;
+    local.role = group.role;
+    local.version = group.version;
+    local.membershipVersion = group.membershipVersion;
+    local.approvalRequired = group.approvalRequired;
+    local.announcement = group.announcement;
+    local.announcementVersion = group.announcementVersion;
+    local.announcementUpdatedAtMs = group.announcementUpdatedAtMs;
+    local.announcementAuthorUid = group.announcementAuthorUid;
+    local.avatarResourceId = group.avatarResourceId;
+    local.avatarVersion = group.avatarVersion;
+    local.avatarMimeType = group.avatarMimeType;
+    local.avatarSize = group.avatarSize;
+    local.avatarWidth = group.avatarWidth;
+    local.avatarHeight = group.avatarHeight;
+    return local;
+}
+
+GroupInfo FromLocalGroup(const LocalChatThread &local)
+{
+    GroupInfo group;
+    group.threadId = local.threadId;
+    group.name = local.title;
+    group.ownerUid = local.ownerUid;
+    group.active = local.active;
+    group.version = local.version;
+    group.approvalRequired = local.approvalRequired;
+    group.announcement = local.announcement;
+    group.announcementVersion = local.announcementVersion;
+    group.announcementUpdatedAtMs = local.announcementUpdatedAtMs;
+    group.announcementAuthorUid = local.announcementAuthorUid;
+    group.avatarResourceId = local.avatarResourceId;
+    group.avatarVersion = local.avatarVersion;
+    group.avatarMimeType = local.avatarMimeType;
+    group.avatarSize = local.avatarSize;
+    group.avatarWidth = local.avatarWidth;
+    group.avatarHeight = local.avatarHeight;
+    group.member = local.active;
+    group.role = local.role;
+    group.membershipVersion = local.membershipVersion;
+    group.source = QStringLiteral("cache");
+    return group;
+}
 
 // 1033/1034/1035 只共享图片元数据。这里集中做边界校验，后续 ResourceClient 不会收到
 // 空 resource_id、超大尺寸或伪造 MIME 的下载任务。
@@ -122,48 +189,68 @@ bool TcpMgr::IsConnected() const
 {
     return _socket && _socket->state() == QAbstractSocket::ConnectedState;
 }
+QString TcpMgr::SendGroupMutation(ReqId requestType, QJsonObject request, qint64 threadId)
+{
+    if (!IsConnected() || !_logged_in) return {};
+    const QString requestId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    const QString operationId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    const auto user = UserMgr::GetInstance()->GetUserInfo();
+    if (!user || user->_uid <= 0) return {};
+    request.insert(QStringLiteral("request_id"), requestId);
+    request.insert(QStringLiteral("operation_id"), operationId);
+    if (threadId > 0) request.insert(QStringLiteral("thread_id"), QString::number(threadId));
+    const QByteArray payload = QJsonDocument(request).toJson(QJsonDocument::Compact);
+    if (payload.size() > 2048) return {};
+    _pendingGroupRequests.insert(requestId, requestType);
+    _pendingGroupAccounts.insert(requestId, user->_uid);
+    _pendingGroupLoginGenerations.insert(requestId, _loginGeneration);
+    _pendingGroupOperationIds.insert(requestId, operationId);
+    if (threadId > 0) _pendingGroupThreads.insert(requestId, threadId);
+    if (requestType == ID_JOIN_GROUP_REQ)
+        _pendingJoinEpochs.insert(requestId, _groupStateEpochs.value(threadId, 0));
+    emit sig_send_data(requestType, payload);
+    return requestId;
+}
+
 QString TcpMgr::CreateGroup(const QString &name)
 {
-    if (!IsConnected() || name.trimmed().isEmpty() || name.toUtf8().size() > 255) return {};
-    const QString requestId = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    _pendingGroupRequests.insert(requestId, ID_CREATE_GROUP_REQ);
-    if (const auto user = UserMgr::GetInstance()->GetUserInfo()) _pendingGroupAccounts.insert(requestId, user->_uid);
-    QJsonObject request{{"request_id", requestId}, {"name", name.trimmed()}};
-    emit sig_send_data(ID_CREATE_GROUP_REQ, QJsonDocument(request).toJson(QJsonDocument::Compact));
-    return requestId;
+    if (name.trimmed().isEmpty() || name.toUtf8().size() > 255) return {};
+    return SendGroupMutation(ID_CREATE_GROUP_REQ,
+                             QJsonObject{{"name", name.trimmed()}}, 0);
 }
 
 QString TcpMgr::SearchGroup(qint64 threadId)
 {
     if (!IsConnected() || threadId <= 0) return {};
     const QString requestId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    const auto user = UserMgr::GetInstance()->GetUserInfo();
+    if (!user) return {};
     _pendingGroupRequests.insert(requestId, ID_SEARCH_GROUP_REQ);
-    if (const auto user = UserMgr::GetInstance()->GetUserInfo()) _pendingGroupAccounts.insert(requestId, user->_uid);
+    _pendingGroupAccounts.insert(requestId, user->_uid);
+    _pendingGroupLoginGenerations.insert(requestId, _loginGeneration);
     _pendingGroupThreads.insert(requestId, threadId);
-    QJsonObject request{{"request_id", requestId}, {"thread_id", QString::number(threadId)}};
+    const QJsonObject request{{"request_id", requestId}, {"thread_id", QString::number(threadId)}};
     emit sig_send_data(ID_SEARCH_GROUP_REQ, QJsonDocument(request).toJson(QJsonDocument::Compact));
     return requestId;
 }
 
-QString TcpMgr::JoinGroup(qint64 threadId)
+QString TcpMgr::JoinGroup(qint64 threadId, const QString &explanation)
 {
-    if (!IsConnected() || threadId <= 0) return {};
-    const QString requestId = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    _pendingGroupRequests.insert(requestId, ID_JOIN_GROUP_REQ);
-    if (const auto user = UserMgr::GetInstance()->GetUserInfo()) _pendingGroupAccounts.insert(requestId, user->_uid);
-    _pendingJoinEpochs.insert(requestId, _groupStateEpochs.value(threadId, 0));
-    _pendingGroupThreads.insert(requestId, threadId);
-    QJsonObject request{{"request_id", requestId}, {"thread_id", QString::number(threadId)}};
-    emit sig_send_data(ID_JOIN_GROUP_REQ, QJsonDocument(request).toJson(QJsonDocument::Compact));
-    return requestId;
+    if (threadId <= 0 || explanation.toUtf8().size() > 256) return {};
+    return SendGroupMutation(ID_JOIN_GROUP_REQ,
+                             QJsonObject{{"explanation", explanation},
+                                         {"thread_id", QString::number(threadId)}}, threadId);
 }
 
 QString TcpMgr::LoadGroupMembers(qint64 threadId, qint64 afterUid)
 {
     if (!IsConnected() || threadId <= 0 || afterUid < 0) return {};
     const QString requestId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    const auto user = UserMgr::GetInstance()->GetUserInfo();
+    if (!user) return {};
     _pendingGroupRequests.insert(requestId, ID_LOAD_GROUP_MEMBERS_REQ);
-    if (const auto user = UserMgr::GetInstance()->GetUserInfo()) _pendingGroupAccounts.insert(requestId, user->_uid);
+    _pendingGroupAccounts.insert(requestId, user->_uid);
+    _pendingGroupLoginGenerations.insert(requestId, _loginGeneration);
     _pendingGroupThreads.insert(requestId, threadId);
     QJsonObject request{{"request_id", requestId}, {"thread_id", QString::number(threadId)},
                         {"after_uid", QString::number(afterUid)}, {"page_size", 50}};
@@ -171,30 +258,123 @@ QString TcpMgr::LoadGroupMembers(qint64 threadId, qint64 afterUid)
     return requestId;
 }
 
-QString TcpMgr::KickGroupMember(qint64 threadId, qint64 targetUid)
+QString TcpMgr::KickGroupMember(qint64 threadId, qint64 targetUid,
+                                qint64 expectedMembershipVersion)
 {
-    if (!IsConnected() || threadId <= 0 || targetUid <= 0
-        || targetUid > std::numeric_limits<int>::max()) return {};
-    const QString requestId = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    _pendingGroupRequests.insert(requestId, ID_KICK_GROUP_MEMBER_REQ);
-    if (const auto user = UserMgr::GetInstance()->GetUserInfo()) _pendingGroupAccounts.insert(requestId, user->_uid);
-    _pendingGroupThreads.insert(requestId, threadId);
-    QJsonObject request{{"request_id", requestId}, {"thread_id", QString::number(threadId)},
-                        {"target_member_uid", static_cast<int>(targetUid)}};
-    emit sig_send_data(ID_KICK_GROUP_MEMBER_REQ, QJsonDocument(request).toJson(QJsonDocument::Compact));
-    return requestId;
+    if (threadId <= 0 || targetUid <= 0 || targetUid > std::numeric_limits<int>::max()
+        || expectedMembershipVersion <= 0) return {};
+    return SendGroupMutation(ID_KICK_GROUP_MEMBER_REQ,
+        QJsonObject{{"target_member_uid", static_cast<int>(targetUid)},
+                    {"expected_membership_version", QString::number(expectedMembershipVersion)}},
+        threadId);
 }
 
 QString TcpMgr::DissolveGroup(qint64 threadId)
 {
-    if (!IsConnected() || threadId <= 0) return {};
+    if (threadId <= 0) return {};
+    return SendGroupMutation(ID_DISSOLVE_GROUP_REQ, {}, threadId);
+}
+
+QString TcpMgr::InviteGroupMember(qint64 threadId, qint64 targetUid)
+{
+    if (threadId <= 0 || targetUid <= 0 || targetUid > std::numeric_limits<int>::max()) return {};
+    return SendGroupMutation(ID_INVITE_GROUP_REQ,
+        QJsonObject{{"target_member_uid", static_cast<int>(targetUid)}}, threadId);
+}
+
+QString TcpMgr::LoadGroupRequests(const QString &scope, qint64 afterId, qint64 threadId)
+{
+    if (!IsConnected() || (scope != QStringLiteral("inbox")
+        && scope != QStringLiteral("results") && scope != QStringLiteral("approvals"))
+        || afterId < 0 || (scope == QStringLiteral("approvals") && threadId <= 0)) return {};
+    const auto user = UserMgr::GetInstance()->GetUserInfo();
+    if (!user) return {};
     const QString requestId = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    _pendingGroupRequests.insert(requestId, ID_DISSOLVE_GROUP_REQ);
-    if (const auto user = UserMgr::GetInstance()->GetUserInfo()) _pendingGroupAccounts.insert(requestId, user->_uid);
+    QJsonObject request{{"request_id", requestId}, {"scope", scope},
+                        {"after_id", QString::number(afterId)}, {"page_size", 50}};
+    if (threadId > 0) request.insert(QStringLiteral("thread_id"), QString::number(threadId));
+    _pendingGroupRequests.insert(requestId, ID_LOAD_GROUP_REQUESTS_REQ);
+    _pendingGroupAccounts.insert(requestId, user->_uid);
+    _pendingGroupLoginGenerations.insert(requestId, _loginGeneration);
     _pendingGroupThreads.insert(requestId, threadId);
-    QJsonObject request{{"request_id", requestId}, {"thread_id", QString::number(threadId)}};
-    emit sig_send_data(ID_DISSOLVE_GROUP_REQ, QJsonDocument(request).toJson(QJsonDocument::Compact));
+    _pendingGroupScopes.insert(requestId, scope);
+    emit sig_send_data(ID_LOAD_GROUP_REQUESTS_REQ,
+                       QJsonDocument(request).toJson(QJsonDocument::Compact));
     return requestId;
+}
+
+QString TcpMgr::DecideGroupInvitation(qint64 invitationId, qint64 threadId, bool accept)
+{
+    if (invitationId <= 0 || threadId <= 0) return {};
+    return SendGroupMutation(ID_DECIDE_GROUP_INVITE_REQ,
+        QJsonObject{{"invitation_id", QString::number(invitationId)}, {"accept", accept}}, threadId);
+}
+
+QString TcpMgr::DecideGroupApplication(qint64 applicationId, qint64 threadId, bool approve)
+{
+    if (applicationId <= 0 || threadId <= 0) return {};
+    return SendGroupMutation(ID_DECIDE_GROUP_APPLICATION_REQ,
+        QJsonObject{{"application_id", QString::number(applicationId)}, {"approve", approve}}, threadId);
+}
+
+QString TcpMgr::SetGroupAdmin(qint64 threadId, qint64 targetUid, int role,
+                              qint64 expectedMembershipVersion)
+{
+    if (threadId <= 0 || targetUid <= 0 || targetUid > std::numeric_limits<int>::max()
+        || (role != 0 && role != 1) || expectedMembershipVersion <= 0) return {};
+    return SendGroupMutation(ID_SET_GROUP_ADMIN_REQ,
+        QJsonObject{{"target_member_uid", static_cast<int>(targetUid)}, {"role", role},
+                    {"expected_membership_version", QString::number(expectedMembershipVersion)}},
+        threadId);
+}
+
+QString TcpMgr::TransferGroupOwner(qint64 threadId, qint64 targetUid,
+                                   qint64 expectedMembershipVersion)
+{
+    if (threadId <= 0 || targetUid <= 0 || targetUid > std::numeric_limits<int>::max()
+        || expectedMembershipVersion <= 0) return {};
+    return SendGroupMutation(ID_TRANSFER_GROUP_OWNER_REQ,
+        QJsonObject{{"target_member_uid", static_cast<int>(targetUid)},
+                    {"expected_membership_version", QString::number(expectedMembershipVersion)}},
+        threadId);
+}
+
+QString TcpMgr::LeaveGroup(qint64 threadId, qint64 expectedMembershipVersion)
+{
+    if (threadId <= 0 || expectedMembershipVersion <= 0) return {};
+    return SendGroupMutation(ID_LEAVE_GROUP_REQ,
+        QJsonObject{{"expected_membership_version", QString::number(expectedMembershipVersion)}},
+        threadId);
+}
+
+QString TcpMgr::SetGroupApproval(qint64 threadId, bool required)
+{
+    if (threadId <= 0) return {};
+    return SendGroupMutation(ID_SET_GROUP_APPROVAL_REQ,
+        QJsonObject{{"approval_required", required}}, threadId);
+}
+
+QString TcpMgr::UpdateGroupAnnouncement(qint64 threadId, const QString &announcement,
+                                        qint64 expectedVersion)
+{
+    if (threadId <= 0 || expectedVersion < 0 || announcement.toUtf8().size() > 1024) return {};
+    QJsonObject request{{"announcement", announcement},
+                        {"expected_announcement_version", QString::number(expectedVersion)}};
+    const QByteArray serialized = QJsonDocument(QJsonObject{
+        {"request_id", QStringLiteral("00000000-0000-0000-0000-000000000000")},
+        {"operation_id", QStringLiteral("00000000-0000-0000-0000-000000000000")},
+        {"thread_id", QString::number(threadId)}, {"announcement", announcement},
+        {"expected_announcement_version", QString::number(expectedVersion)}})
+            .toJson(QJsonDocument::Compact);
+    if (serialized.size() > 2048) return {};
+    return SendGroupMutation(ID_UPDATE_GROUP_ANNOUNCEMENT_REQ, request, threadId);
+}
+
+QString TcpMgr::UpdateGroupAvatar(qint64 threadId, const QString &resourceId)
+{
+    if (threadId <= 0 || resourceId.isEmpty()) return {};
+    return SendGroupMutation(ID_UPDATE_GROUP_AVATAR_REQ,
+                             QJsonObject{{"resource_id", resourceId}}, threadId);
 }
 void TcpMgr::RequestGroupList()
 {
@@ -202,12 +382,17 @@ void TcpMgr::RequestGroupList()
         _groupListRefreshQueued = true;
         return;
     }
+    const auto user = UserMgr::GetInstance()->GetUserInfo();
+    if (!_logged_in || !user || user->_uid <= 0) return;
     _groupListInProgress = true;
+    _groupSnapshotGroups.clear();
     _groupSnapshotIds.clear();
     _groupSnapshotConfirmedIds.clear();
+    _groupSnapshotProofEpochs.clear();
     _groupSnapshotCursor = 0;
-    const auto user = UserMgr::GetInstance()->GetUserInfo();
-    _groupListAccountUid = user ? user->_uid : 0;
+    _groupListAccountUid = user->_uid;
+    _groupListLoginGeneration = _loginGeneration;
+    ++_groupSnapshotGeneration;
     SendGroupListPage(0);
 }
 
@@ -223,9 +408,10 @@ void TcpMgr::SendGroupListPage(qint64 afterThreadId)
                         {"after_thread_id", QString::number(afterThreadId)},
                         {"page_size", 50}};
     const QString requestId = _groupListPendingRequestId;
-    QTimer::singleShot(15000, this, [this, requestId] {
-        if (_groupListInProgress && _groupListPendingRequestId == requestId)
-            FinishGroupList(false);
+    const quint64 generation = _groupSnapshotGeneration;
+    QTimer::singleShot(15000, this, [this, requestId, generation] {
+        if (_groupListInProgress && _groupSnapshotGeneration == generation
+            && _groupListPendingRequestId == requestId) FinishGroupList(false);
     });
     emit sig_send_data(ID_LOAD_GROUP_LIST_REQ,
                        QJsonDocument(request).toJson(QJsonDocument::Compact));
@@ -234,17 +420,33 @@ void TcpMgr::SendGroupListPage(qint64 afterThreadId)
 void TcpMgr::FinishGroupList(bool successful)
 {
     if (!_groupListInProgress) return;
-    const auto storage = LocalChatStorageMgr::GetInstance();
-    if (successful && storage->ReconcileGroupSnapshot(_groupSnapshotIds | _groupSnapshotConfirmedIds)) {
-        // 失效对账发生在整轮成功之后，连未出现在本轮的缓存群也刷新为只读。
-        for (const LocalChatThread &thread : storage->LoadAllThreads())
-            if (thread.threadType == QStringLiteral("group"))
-                emit sig_local_chat_synced(thread.threadId);
+    const auto user = UserMgr::GetInstance()->GetUserInfo();
+    successful = successful && user && user->_uid == _groupListAccountUid
+        && _groupListLoginGeneration == _loginGeneration && _logged_in;
+    QList<LocalChatThread> memberGroups;
+    if (successful) {
+        for (auto it = _groupSnapshotGroups.cbegin(); it != _groupSnapshotGroups.cend(); ++it) {
+            if (_groupSnapshotProofEpochs.value(it.key(), 0) != _groupStateEpochs.value(it.key(), 0)) {
+                successful = false;
+                break;
+            }
+            memberGroups.append(it.value());
+        }
+    }
+    if (successful && LocalChatStorageMgr::GetInstance()->ReconcileGroupSnapshot(memberGroups)) {
+        const auto threads = LocalChatStorageMgr::GetInstance()->LoadAllThreads();
+        for (const LocalChatThread &thread : threads) {
+            if (thread.threadType != QStringLiteral("group")) continue;
+            emit sig_local_chat_synced(thread.threadId);
+            if (thread.active) RequestGroupMessages(thread.threadId);
+        }
     }
     _groupListInProgress = false;
     _groupListPendingRequestId.clear();
     _groupListPendingAfter = 0;
-    if (_groupListRefreshQueued) {
+    _groupSnapshotGroups.clear();
+    _groupSnapshotProofEpochs.clear();
+    if (_groupListRefreshQueued && _logged_in) {
         _groupListRefreshQueued = false;
         RequestGroupList();
     }
@@ -252,8 +454,16 @@ void TcpMgr::FinishGroupList(bool successful)
 
 void TcpMgr::RequestGroupMessages(qint64 threadId)
 {
-    if (threadId <= 0) return;
+    if (threadId <= 0 || !_logged_in) return;
     const auto storage = LocalChatStorageMgr::GetInstance();
+    bool activeMember = false;
+    for (const LocalChatThread &thread : storage->LoadAllThreads()) {
+        if (thread.threadType == QStringLiteral("group") && thread.threadId == threadId) {
+            activeMember = thread.active;
+            break;
+        }
+    }
+    if (!activeMember) return;
     QJsonObject request{{"type", QStringLiteral("group")},
                         {"thread_id", QString::number(threadId)},
                         {"after_message_id", QString::number(storage->SyncCursors().value(threadId, 0))},
@@ -275,6 +485,16 @@ void TcpMgr::CloseConnection()
     _b_recy_pending = false;
     _logged_in = false;
     _disconnect_notified = false;
+    ++_loginGeneration;
+    _pendingGroupRequests.clear();
+    _pendingGroupThreads.clear();
+    _pendingGroupAccounts.clear();
+    _pendingGroupLoginGenerations.clear();
+    _pendingGroupOperationIds.clear();
+    _pendingGroupScopes.clear();
+    _pendingJoinEpochs.clear();
+    _groupListInProgress = false;
+    _groupListPendingRequestId.clear();
 
     // 信号和槽是绑定在具体对象上的，需要重新连接信号和槽
     // initSigAndSlot(); 此时_socket为空，在重新进行长连接的时候再连接信号和槽
@@ -289,6 +509,16 @@ void TcpMgr::PrepareForShutdown()
     _is_shutting_down = true;
     _logged_in = false;
     _disconnect_notified = true;
+    ++_loginGeneration;
+    _pendingGroupRequests.clear();
+    _pendingGroupThreads.clear();
+    _pendingGroupAccounts.clear();
+    _pendingGroupLoginGenerations.clear();
+    _pendingGroupOperationIds.clear();
+    _pendingGroupScopes.clear();
+    _pendingJoinEpochs.clear();
+    _groupListInProgress = false;
+    _groupListPendingRequestId.clear();
     StopHeartbeat();
 
     if (_socket) {
@@ -408,34 +638,42 @@ void TcpMgr::initHandlers()
         }
         userMgr->SetFriendList(std::move(friendList));
 
+        ++_loginGeneration;
         _logged_in = true;
         _disconnect_notified = false;
         _pendingGroupRequests.clear();
         _pendingGroupThreads.clear();
         _pendingGroupAccounts.clear();
+        _pendingGroupLoginGenerations.clear();
+        _pendingGroupOperationIds.clear();
+        _pendingGroupScopes.clear();
         _pendingJoinEpochs.clear();
         _groupStateEpochs.clear();
         _groupListPendingRequestId.clear();
         _groupListPendingAfter = 0;
         _groupListInProgress = false;
         _groupListRefreshQueued = false;
-        StartHeartbeat();
+        _groupSnapshotGroups.clear();
+        _groupSnapshotIds.clear();
+        _groupSnapshotConfirmedIds.clear();
 
         QJsonObject loadThreadsRequest;
+        ++_groupSnapshotGeneration;
         loadThreadsRequest["after_thread_id"] = QString::number(
             LocalChatStorageMgr::GetInstance()->MaxKnownThreadId());
         loadThreadsRequest["page_size"] = 100;
         emit sig_send_data(ID_LOAD_CHAT_THREAD_REQ,
                            QJsonDocument(loadThreadsRequest).toJson(QJsonDocument::Compact));
         RequestGroupList();
+        LoadGroupRequests(QStringLiteral("inbox"));
+        LoadGroupRequests(QStringLiteral("results"));
         const auto storage = LocalChatStorageMgr::GetInstance();
         for (const LocalChatThread &thread : storage->LoadAllThreads()) {
-            if (thread.threadId <= 0 || (thread.threadType == QStringLiteral("group") && !thread.active)) continue;
+            if (thread.threadId <= 0 || thread.threadType == QStringLiteral("group")) continue;
             QJsonObject request;
             request["thread_id"] = QString::number(thread.threadId);
             request["after_message_id"] = QString::number(
                 storage->SyncCursors().value(thread.threadId, 0));
-            if (thread.threadType == QStringLiteral("group")) request["type"] = QStringLiteral("group");
             request["page_size"] = 100;
             emit sig_send_data(ID_LOAD_CHAT_MSG_REQ,
                                QJsonDocument(request).toJson(QJsonDocument::Compact));
@@ -1403,13 +1641,55 @@ void TcpMgr::initHandlers()
     auto parseGroup = [](const QJsonObject &object, GroupInfo *group) {
         bool idOk = false;
         bool ownerOk = false;
-        group->threadId = object.value("thread_id").toVariant().toLongLong(&idOk);
-        group->ownerUid = object.value("owner_uid").toVariant().toLongLong(&ownerOk);
+        group->threadId = 0;
+        group->ownerUid = 0;
+        idOk = ParseInt64(object.value("thread_id"), &group->threadId, false);
+        ownerOk = ParseInt64(object.value("owner_uid"), &group->ownerUid, false);
+        bool versionOk = false;
+        versionOk = ParseInt64(object.value("version"), &group->version);
+        bool announcementVersionOk = ParseInt64(
+            object.value("announcement_version"), &group->announcementVersion);
+        bool avatarVersionOk = ParseInt64(object.value("avatar_version"), &group->avatarVersion);
         group->name = object.value("name").toString();
         group->active = object.value("active").toBool();
-        return idOk && ownerOk && group->threadId > 0 && group->ownerUid > 0
-            && group->active && object.value("type").toString() == QStringLiteral("group")
-            && !group->name.isEmpty();
+        group->approvalRequired = object.value("approval_required").toBool();
+        group->announcement = object.value("announcement").toString();
+        group->announcementUpdatedAtMs = object.value("announcement_updated_at_ms").toVariant().toLongLong();
+        group->announcementAuthorUid = object.value("announcement_author_uid").toVariant().toLongLong();
+        group->avatarResourceId = object.value("avatar_resource_id").toString();
+        group->avatarMimeType = object.value("avatar_mime_type").toString();
+        group->avatarSize = object.value("avatar_size").toVariant().toLongLong();
+        group->avatarWidth = object.value("avatar_width").toInt();
+        group->avatarHeight = object.value("avatar_height").toInt();
+        group->member = object.value("member").toBool();
+        group->membershipProof = object.value("membership_proof").toBool();
+        group->source = object.value("source").toString();
+        bool memberVersionOk = true;
+        if (group->member || group->membershipProof)
+            memberVersionOk = ParseInt64(object.value("membership_version"),
+                                         &group->membershipVersion, false);
+        if (object.value("role").isDouble() || object.value("role").isString())
+            group->role = object.value("role").toInt(-1);
+        const bool avatarPresent = !group->avatarResourceId.isEmpty();
+        const bool avatarValid = avatarPresent
+            ? (group->avatarVersion > 0
+               && (group->avatarMimeType == QStringLiteral("image/png")
+                   || group->avatarMimeType == QStringLiteral("image/jpeg"))
+               && group->avatarSize > 0 && group->avatarSize <= 2 * 1024 * 1024
+               && group->avatarWidth > 0 && group->avatarWidth <= 1024
+               && group->avatarHeight > 0 && group->avatarHeight <= 1024)
+            : (group->avatarVersion == 0 && group->avatarSize == 0
+               && group->avatarWidth == 0 && group->avatarHeight == 0);
+        return idOk && ownerOk && versionOk && group->version > 0
+            && announcementVersionOk && avatarVersionOk && avatarValid && memberVersionOk
+            && group->threadId > 0 && group->ownerUid > 0
+            && object.value("type").toString() == QStringLiteral("group")
+            && !group->name.isEmpty() && group->announcement.toUtf8().size() <= 1024
+            && (!group->membershipProof || (group->active && group->member
+                && group->membershipVersion > 0 && group->role >= 0 && group->role <= 2
+                && (group->source == QStringLiteral("mutation")
+                    || group->source == QStringLiteral("snapshot")
+                    || group->source == QStringLiteral("event"))));
     };
     auto handle_group_management = [this, parseGroup](ReqId responseId, int, QByteArray data) {
         const QJsonDocument doc = QJsonDocument::fromJson(data);
@@ -1419,89 +1699,191 @@ void TcpMgr::initHandlers()
         if (requestId.isEmpty() || !_pendingGroupRequests.contains(requestId)
             || _pendingGroupRequests.value(requestId) + 1 != responseId) return;
         const auto currentUser = UserMgr::GetInstance()->GetUserInfo();
-        if (!currentUser || _pendingGroupAccounts.value(requestId, 0) != currentUser->_uid) {
+        const int requestType = _pendingGroupRequests.value(requestId);
+        const QString operationId = _pendingGroupOperationIds.value(requestId);
+        const bool isMutation = !operationId.isEmpty();
+        qint64 responseUid = 0;
+        const bool responseUidValid = ParseInt64(response.value("uid"), &responseUid, false);
+        if (!_logged_in || !currentUser || !responseUidValid
+            || responseUid != currentUser->_uid
+            || _pendingGroupAccounts.value(requestId, 0) != currentUser->_uid
+            || _pendingGroupLoginGenerations.value(requestId, 0) != _loginGeneration
+            || (isMutation && response.value("operation_id").toString() != operationId)) {
             _pendingGroupRequests.remove(requestId);
             _pendingGroupThreads.remove(requestId);
             _pendingGroupAccounts.remove(requestId);
+            _pendingGroupLoginGenerations.remove(requestId);
+            _pendingGroupOperationIds.remove(requestId);
             _pendingJoinEpochs.remove(requestId);
             return;
         }
-        const int requestType = _pendingGroupRequests.take(requestId);
-        const qint64 requestedThread = _pendingGroupThreads.take(requestId);
-        const quint64 requestEpoch = _pendingJoinEpochs.take(requestId);
+        _pendingGroupRequests.remove(requestId);
         _pendingGroupAccounts.remove(requestId);
+        _pendingGroupLoginGenerations.remove(requestId);
+        _pendingGroupOperationIds.remove(requestId);
+        const quint64 requestEpoch = _pendingJoinEpochs.take(requestId);
+        const qint64 requestedThread = _pendingGroupThreads.take(requestId);
         const int error = response.value("error").toInt(ErrorCodes::ERR_JSON);
         if (requestType == ID_JOIN_GROUP_REQ
-            && requestEpoch != _groupStateEpochs.value(requestedThread, 0)) return;
-        emit sig_group_operation_result(requestId, error);
-        if (error != ErrorCodes::SUCCESS) return;
-        if (requestType != ID_CREATE_GROUP_REQ) {
-            bool responseThreadOk = false;
-            const qint64 responseThread = response.value("thread_id").toVariant().toLongLong(&responseThreadOk);
-            if (!responseThreadOk || responseThread != requestedThread) return;
-        }
+            && _groupStateEpochs.value(requestedThread, 0) != requestEpoch) return;
         if (requestType == ID_SEARCH_GROUP_REQ) {
-            GroupInfo group;
-            if (parseGroup(response.value("group").toObject(), &group)
-                && group.threadId == requestedThread) emit sig_group_search_result(group);
+            if (error == ErrorCodes::SUCCESS) {
+                GroupInfo group;
+                if (parseGroup(response.value("group").toObject(), &group)
+                    && group.threadId == requestedThread) emit sig_group_search_result(group);
+            }
             return;
         }
-        if (requestType == ID_CREATE_GROUP_REQ || requestType == ID_JOIN_GROUP_REQ) {
+        if (error == ErrorCodes::SUCCESS
+            && (requestType == ID_CREATE_GROUP_REQ || requestType == ID_JOIN_GROUP_REQ)) {
+            if (requestType == ID_JOIN_GROUP_REQ
+                && response.value("admission").toString() == QStringLiteral("pending")) {
+                emit sig_group_mutation_result(requestId, requestType, error, response);
+                emit sig_group_operation_result(requestId, error);
+                return;
+            }
             GroupInfo group;
-            if (!parseGroup(response.value("group").toObject(), &group)
+            if (!response.value("membership_granted").toBool()
+                || !parseGroup(response.value("group").toObject(), &group)
+                || !group.member || !group.membershipProof || group.source != QStringLiteral("mutation")
                 || (requestedThread > 0 && group.threadId != requestedThread)) return;
-            LocalChatThread local;
-            // 管理确认只覆盖群元数据，保留既有消息摘要/时间/未读与独立连续cursor。
+            LocalChatThread local = ToLocalGroup(group);
+            if (!LocalChatStorageMgr::GetInstance()->UpsertThread(
+                    local, GroupCacheAuthority::MembershipProof)) return;
+            LocalChatThread persisted;
+            bool activeMember = false;
             for (const LocalChatThread &cached : LocalChatStorageMgr::GetInstance()->LoadAllThreads()) {
                 if (cached.threadId == group.threadId && cached.threadType == QStringLiteral("group")) {
-                    local = cached;
+                    persisted = cached;
+                    activeMember = cached.active;
                     break;
                 }
             }
-            local.threadId = group.threadId;
-            local.threadType = QStringLiteral("group");
-            local.title = group.name;
-            local.peerUid = 0;
-            local.ownerUid = group.ownerUid;
-            local.active = true;
-            if (!LocalChatStorageMgr::GetInstance()->UpsertThread(local, true)) return;
-            if (_groupListInProgress) _groupSnapshotConfirmedIds.insert(group.threadId);
-            emit sig_group_info(group, true);
-            RequestGroupMessages(group.threadId);
-            RequestGroupList();
-            return;
-        }
-        if (requestType == ID_DISSOLVE_GROUP_REQ) {
-            if (!response.value("active").isBool() || response.value("active").toBool()) return;
-            ++_groupStateEpochs[requestedThread];
-            for (auto it = _pendingGroupThreads.begin(); it != _pendingGroupThreads.end();) {
-                if (it.value() == requestedThread
-                    && _pendingGroupRequests.value(it.key()) == ID_JOIN_GROUP_REQ) {
-                    _pendingGroupRequests.remove(it.key());
-                    _pendingGroupAccounts.remove(it.key());
-                    _pendingJoinEpochs.remove(it.key());
-                    it = _pendingGroupThreads.erase(it);
-                } else ++it;
+            if (_groupListInProgress && activeMember) {
+                persisted.membershipProof = true;
+                _groupSnapshotGroups.insert(group.threadId, persisted);
+                _groupSnapshotProofEpochs.insert(group.threadId,
+                    _groupStateEpochs.value(group.threadId, 0));
+                _groupSnapshotConfirmedIds.insert(group.threadId);
             }
-            LocalChatStorageMgr::GetInstance()->SetGroupState(requestedThread, false);
-            emit sig_group_state(requestedThread, false, QStringLiteral("dissolved"), 0);
-            return;
-        }
-        if (requestType == ID_LOAD_GROUP_MEMBERS_REQ) {
+            if (activeMember) {
+                const GroupInfo currentGroup = FromLocalGroup(persisted);
+                emit sig_group_info(currentGroup, true);
+                RequestGroupMessages(group.threadId);
+            }
+            RequestGroupList();
+        } else if (error == ErrorCodes::SUCCESS && requestType == ID_DISSOLVE_GROUP_REQ) {
+            const QJsonObject groupObject = response.value("group").toObject();
+            qint64 memberVersion = 0;
+            if (!ParseInt64(groupObject.value("membership_version"), &memberVersion, false)
+                || groupObject.value("active").toBool()
+                || groupObject.value("member").toBool()
+                || groupObject.value("membership_proof").toBool()) return;
+            const auto storage = LocalChatStorageMgr::GetInstance();
+            bool stored = storage->SetGroupState(
+                requestedThread, memberVersion, QStringLiteral("dissolved"));
+            if (!stored) {
+                for (const LocalChatThread &thread : storage->LoadAllThreads()) {
+                    if (thread.threadId == requestedThread && !thread.active
+                        && thread.membershipVersion >= memberVersion) stored = true;
+                }
+            }
+            if (!stored) return;
+            ++_groupStateEpochs[requestedThread];
+            emit sig_group_state(requestedThread, false, QStringLiteral("dissolved"), currentUser->_uid);
+        } else if (error == ErrorCodes::SUCCESS && requestType == ID_LEAVE_GROUP_REQ) {
+            const QJsonObject groupObject = response.value("group").toObject();
+            if (groupObject.value("member").toBool()
+                && groupObject.value("membership_proof").toBool()) {
+                GroupInfo group;
+                if (!parseGroup(groupObject, &group) || group.threadId != requestedThread
+                    || !LocalChatStorageMgr::GetInstance()->UpsertThread(
+                        ToLocalGroup(group), GroupCacheAuthority::CurrentMemberMetadata)) return;
+                for (const LocalChatThread &thread : LocalChatStorageMgr::GetInstance()->LoadAllThreads()) {
+                    if (thread.threadId == requestedThread && thread.active) {
+                        emit sig_group_info(FromLocalGroup(thread), false);
+                        break;
+                    }
+                }
+                RequestGroupList();
+            } else {
+                qint64 memberVersion = 0;
+                if (!ParseInt64(groupObject.value("membership_version"), &memberVersion, false)
+                    || !groupObject.value("active").toBool()) return;
+                const auto storage = LocalChatStorageMgr::GetInstance();
+                bool stored = storage->SetGroupState(
+                    requestedThread, memberVersion, QStringLiteral("left"));
+                if (!stored) {
+                    for (const LocalChatThread &thread : storage->LoadAllThreads()) {
+                        if (thread.threadId == requestedThread && !thread.active
+                            && thread.membershipVersion >= memberVersion) stored = true;
+                    }
+                }
+                if (!stored) return;
+                ++_groupStateEpochs[requestedThread];
+                emit sig_group_state(requestedThread, false, QStringLiteral("left"), currentUser->_uid);
+                RequestGroupList();
+            }
+        } else if (error == ErrorCodes::SUCCESS && requestType == ID_LOAD_GROUP_MEMBERS_REQ) {
+            GroupInfo selfGroup;
+            if (!parseGroup(response.value("group").toObject(), &selfGroup)
+                || selfGroup.threadId != requestedThread || !selfGroup.member
+                || !selfGroup.membershipProof || selfGroup.source != QStringLiteral("snapshot")) return;
+            if (!LocalChatStorageMgr::GetInstance()->UpsertThread(
+                    ToLocalGroup(selfGroup), GroupCacheAuthority::CurrentMemberMetadata)) return;
             QList<GroupMemberInfo> members;
             for (const QJsonValue &value : response.value("members").toArray()) {
-                const QJsonObject memberObject = value.toObject();
+                const QJsonObject object = value.toObject();
                 GroupMemberInfo member;
-                member.uid = memberObject.value("uid").toVariant().toLongLong();
-                member.nick = memberObject.value("nick").toString();
-                member.role = memberObject.value("role").toInt();
-                if (member.uid > 0) members.append(member);
+                if (!ParseInt64(object.value("uid"), &member.uid, false)
+                    || !ParseInt64(object.value("membership_version"), &member.membershipVersion, false))
+                    return;
+                member.nick = object.value("nick").toString();
+                member.role = object.value("role").toInt(-1);
+                if (member.role < 0 || member.role > 2) return;
+                members.append(member);
             }
-            bool nextOk = false;
-            const qint64 nextUid = response.value("next_uid").toVariant().toLongLong(&nextOk);
+            qint64 nextUid = 0;
+            if (!ParseInt64(response.value("next_uid"), &nextUid)) return;
             emit sig_group_members(requestedThread, requestId, members,
-                                   nextOk ? nextUid : 0, response.value("load_more").toBool());
+                                   nextUid, response.value("load_more").toBool());
+        } else if (error == ErrorCodes::SUCCESS && isMutation) {
+            const QJsonObject groupObject = response.value("group").toObject();
+            if (!groupObject.isEmpty()) {
+                GroupInfo group;
+                if (parseGroup(groupObject, &group)
+                    && (requestedThread <= 0 || group.threadId == requestedThread)) {
+                    const bool membershipGranted = response.value("membership_granted").toBool()
+                        && group.member && group.membershipProof;
+                    const GroupCacheAuthority authority = membershipGranted
+                        ? GroupCacheAuthority::MembershipProof
+                        : (group.member && group.membershipProof
+                            ? GroupCacheAuthority::CurrentMemberMetadata
+                            : GroupCacheAuthority::Metadata);
+                    if (LocalChatStorageMgr::GetInstance()->UpsertThread(
+                            ToLocalGroup(group), authority)) {
+                        for (const LocalChatThread &cached :
+                             LocalChatStorageMgr::GetInstance()->LoadAllThreads()) {
+                            if (cached.threadId == group.threadId
+                                && cached.threadType == QStringLiteral("group") && cached.active) {
+                                emit sig_group_info(FromLocalGroup(cached), membershipGranted);
+                                RequestGroupMessages(group.threadId);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if (requestType == ID_KICK_GROUP_MEMBER_REQ
+                || requestType == ID_TRANSFER_GROUP_OWNER_REQ
+                || requestType == ID_SET_GROUP_ADMIN_REQ
+                || requestType == ID_SET_GROUP_APPROVAL_REQ
+                || requestType == ID_UPDATE_GROUP_ANNOUNCEMENT_REQ
+                || requestType == ID_UPDATE_GROUP_AVATAR_REQ
+                || requestType == ID_DECIDE_GROUP_INVITE_REQ) RequestGroupList();
         }
+        if (isMutation) emit sig_group_mutation_result(requestId, requestType, error, response);
+        emit sig_group_operation_result(requestId, error);
     };
     _handler[ID_CREATE_GROUP_RSP] = handle_group_management;
     _handler[ID_SEARCH_GROUP_RSP] = handle_group_management;
@@ -1509,67 +1891,61 @@ void TcpMgr::initHandlers()
     _handler[ID_LOAD_GROUP_MEMBERS_RSP] = handle_group_management;
     _handler[ID_KICK_GROUP_MEMBER_RSP] = handle_group_management;
     _handler[ID_DISSOLVE_GROUP_RSP] = handle_group_management;
-
+    _handler[ID_INVITE_GROUP_RSP] = handle_group_management;
+    _handler[ID_DECIDE_GROUP_INVITE_RSP] = handle_group_management;
+    _handler[ID_DECIDE_GROUP_APPLICATION_RSP] = handle_group_management;
+    _handler[ID_SET_GROUP_ADMIN_RSP] = handle_group_management;
+    _handler[ID_TRANSFER_GROUP_OWNER_RSP] = handle_group_management;
+    _handler[ID_LEAVE_GROUP_RSP] = handle_group_management;
+    _handler[ID_SET_GROUP_APPROVAL_RSP] = handle_group_management;
+    _handler[ID_UPDATE_GROUP_ANNOUNCEMENT_RSP] = handle_group_management;
+    _handler[ID_UPDATE_GROUP_AVATAR_RSP] = handle_group_management;
     _handler[ID_LOAD_GROUP_LIST_RSP] = [this, parseGroup](ReqId, int, QByteArray data) {
-        const auto storage = LocalChatStorageMgr::GetInstance();
         if (!_groupListInProgress || _groupListPendingRequestId.isEmpty()) return;
         const QJsonDocument doc = QJsonDocument::fromJson(data);
         if (!doc.isObject()) return;
         const QJsonObject response = doc.object();
-        const QString responseRequestId = response.value("request_id").toString();
-        if (responseRequestId != _groupListPendingRequestId) return;
+        if (response.value("request_id").toString() != _groupListPendingRequestId) return;
         const auto user = UserMgr::GetInstance()->GetUserInfo();
-        if (!user || user->_uid != _groupListAccountUid) {
+        if (!user || user->_uid != _groupListAccountUid
+            || _groupListLoginGeneration != _loginGeneration) {
             FinishGroupList(false);
             return;
         }
-        _groupListPendingRequestId.clear();
         if (response.value("error").toInt(ErrorCodes::ERR_JSON) != ErrorCodes::SUCCESS
             || !response.value("groups").isArray()) {
             FinishGroupList(false);
             return;
         }
+        _groupListPendingRequestId.clear();
         const QJsonArray groups = response.value("groups").toArray();
         if (groups.size() > 50) {
             FinishGroupList(false);
             return;
         }
-        // 每页应用前取当前全量身份；不能用轮开始时旧副本覆盖期间到达的未读通知。
-        QHash<qint64, LocalChatThread> existingGroups;
-        for (const LocalChatThread &cached : storage->LoadAllThreads())
-            if (cached.threadType == QStringLiteral("group")) existingGroups.insert(cached.threadId, cached);
         qint64 pageMaxThread = 0;
         qint64 previousPageThread = _groupSnapshotCursor;
         for (const QJsonValue &value : groups) {
             GroupInfo group;
-            if (!parseGroup(value.toObject(), &group)
+            if (!parseGroup(value.toObject(), &group) || !group.member || !group.membershipProof
+                || group.source != QStringLiteral("snapshot")
                 || group.threadId <= previousPageThread || _groupSnapshotIds.contains(group.threadId)) {
                 FinishGroupList(false);
                 return;
             }
             previousPageThread = group.threadId;
-            _groupSnapshotIds.insert(group.threadId);
             pageMaxThread = group.threadId;
-            LocalChatThread local = existingGroups.value(group.threadId);
-            local.threadId = group.threadId;
-            local.threadType = QStringLiteral("group");
-            local.title = group.name;
-            local.peerUid = 0;
-            local.ownerUid = group.ownerUid;
-            if (!existingGroups.contains(group.threadId)) local.active = true;
-            if (!storage->UpsertThread(local)) {
-                FinishGroupList(false);
-                return;
+            _groupSnapshotIds.insert(group.threadId);
+            if (!_groupSnapshotConfirmedIds.contains(group.threadId)) {
+                _groupSnapshotGroups.insert(group.threadId, ToLocalGroup(group));
+                _groupSnapshotProofEpochs.insert(
+                    group.threadId, _groupStateEpochs.value(group.threadId, 0));
             }
-            group.active = local.active;
-            if (local.active) RequestGroupMessages(group.threadId);
-            emit sig_group_info(group, false);
         }
         if (response.value("load_more").toBool()) {
-            bool cursorOk = false;
-            const qint64 nextId = response.value("next_thread_id").toVariant().toLongLong(&cursorOk);
-            if (!cursorOk || nextId != pageMaxThread || nextId <= _groupSnapshotCursor
-                || pageMaxThread <= 0) {
+            qint64 nextId = 0;
+            if (!ParseInt64(response.value("next_thread_id"), &nextId, false)
+                || nextId != pageMaxThread || nextId <= _groupSnapshotCursor || pageMaxThread <= 0) {
                 FinishGroupList(false);
                 return;
             }
@@ -1580,34 +1956,172 @@ void TcpMgr::initHandlers()
         }
     };
 
-    _handler[ID_NOTIFY_GROUP_STATE] = [this](ReqId, int, QByteArray data) {
+    _handler[ID_LOAD_GROUP_REQUESTS_RSP] = [this, parseGroup](ReqId, int, QByteArray data) {
+        const QJsonDocument doc = QJsonDocument::fromJson(data);
+        if (!doc.isObject()) return;
+        const QJsonObject response = doc.object();
+        const QString requestId = response.value("request_id").toString();
+        if (requestId.isEmpty() || !_pendingGroupRequests.contains(requestId)
+            || _pendingGroupRequests.value(requestId) != ID_LOAD_GROUP_REQUESTS_REQ) return;
+        const auto user = UserMgr::GetInstance()->GetUserInfo();
+        if (!_logged_in || !user || _pendingGroupAccounts.value(requestId, 0) != user->_uid
+            || _pendingGroupLoginGenerations.value(requestId, 0) != _loginGeneration
+            || response.value("uid").toInt() != user->_uid) return;
+        const QString scope = _pendingGroupScopes.value(requestId);
+        const qint64 requestedThread = _pendingGroupThreads.value(requestId);
+        _pendingGroupRequests.remove(requestId);
+        _pendingGroupAccounts.remove(requestId);
+        _pendingGroupLoginGenerations.remove(requestId);
+        _pendingGroupThreads.remove(requestId);
+        _pendingGroupScopes.remove(requestId);
+        if (response.value("error").toInt(ErrorCodes::ERR_JSON) != ErrorCodes::SUCCESS
+            || response.value("scope").toString() != scope
+            || !response.value("entries").isArray()) return;
+        if (scope == QStringLiteral("approvals")) {
+            GroupInfo group;
+            if (!parseGroup(response.value("group").toObject(), &group)
+                || group.threadId != requestedThread || !group.member || !group.membershipProof
+                || group.source != QStringLiteral("snapshot")) return;
+            if (!LocalChatStorageMgr::GetInstance()->UpsertThread(
+                    ToLocalGroup(group), GroupCacheAuthority::CurrentMemberMetadata)) return;
+        }
+        QList<GroupAdmissionInfo> entries;
+        for (const QJsonValue &value : response.value("entries").toArray()) {
+            const QJsonObject object = value.toObject();
+            GroupAdmissionInfo entry;
+            if (!ParseInt64(object.value("id"), &entry.id, false)
+                || !ParseInt64(object.value("thread_id"), &entry.threadId, false)) return;
+            entry.kind = object.value("kind").toString();
+            if (entry.kind != QStringLiteral("invitation")
+                && entry.kind != QStringLiteral("application")) return;
+            entry.groupName = object.value("group_name").toString();
+            ParseInt64(object.value("target_uid"), &entry.targetUid);
+            ParseInt64(object.value("applicant_uid"), &entry.applicantUid);
+            ParseInt64(object.value("inviter_uid"), &entry.inviterUid);
+            ParseInt64(object.value("created_at_ms"), &entry.createdAtMs);
+            ParseInt64(object.value("updated_at_ms"), &entry.updatedAtMs);
+            entry.status = object.value("status").toString();
+            entry.explanation = object.value("explanation").toString();
+            entries.append(entry);
+        }
+        qint64 nextId = 0;
+        if (!ParseInt64(response.value("next_id"), &nextId)) return;
+        emit sig_group_requests(requestId, scope, requestedThread, entries,
+                                nextId, response.value("load_more").toBool());
+    };
+    auto invalidate_group = [this](qint64 threadId, qint64 membershipVersion,
+                                   const QString &reason, qint64 targetUid) {
+        if (threadId <= 0 || membershipVersion <= 0) return;
+        if (!LocalChatStorageMgr::GetInstance()->SetGroupState(
+                threadId, membershipVersion, reason)) return;
+        ++_groupStateEpochs[threadId];
+        for (auto it = _pendingGroupThreads.begin(); it != _pendingGroupThreads.end();) {
+            const QString requestId = it.key();
+            if (it.value() == threadId && _pendingGroupRequests.value(requestId) == ID_JOIN_GROUP_REQ) {
+                _pendingGroupRequests.remove(requestId);
+                _pendingGroupAccounts.remove(requestId);
+                _pendingGroupLoginGenerations.remove(requestId);
+                _pendingGroupOperationIds.remove(requestId);
+                _pendingJoinEpochs.remove(requestId);
+                it = _pendingGroupThreads.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        emit sig_group_state(threadId, false, reason, targetUid);
+        RequestGroupList();
+    };
+    _handler[ID_NOTIFY_GROUP_STATE] = [this, invalidate_group](ReqId, int, QByteArray data) {
         const QJsonDocument doc = QJsonDocument::fromJson(data);
         if (!doc.isObject()) return;
         const QJsonObject state = doc.object();
-        bool threadOk = false;
-        const qint64 threadId = state.value("thread_id").toVariant().toLongLong(&threadOk);
-        if (state.value("error").toInt(ErrorCodes::ERR_JSON) != ErrorCodes::SUCCESS
-            || state.value("type").toString() != QStringLiteral("group")
-            || !threadOk || threadId <= 0 || !state.value("active").isBool()
-            || state.value("active").toBool()) return;
-        const QString reason = state.value("reason").toString();
-        if (reason != QStringLiteral("kicked") && reason != QStringLiteral("dissolved")) return;
-        const qint64 targetUid = state.value("target_member_uid").toVariant().toLongLong();
         const auto user = UserMgr::GetInstance()->GetUserInfo();
-        if (!user || targetUid != user->_uid) return;
-        ++_groupStateEpochs[threadId];
-        for (auto it = _pendingGroupThreads.begin(); it != _pendingGroupThreads.end();) {
-            if (it.value() == threadId && _pendingGroupRequests.value(it.key()) == ID_JOIN_GROUP_REQ) {
-                _pendingGroupRequests.remove(it.key());
-                _pendingGroupAccounts.remove(it.key());
-                _pendingJoinEpochs.remove(it.key());
-                it = _pendingGroupThreads.erase(it);
-            } else ++it;
+        qint64 threadId = 0;
+        qint64 membershipVersion = 0;
+        qint64 targetUid = 0;
+        if (!user || state.value("type").toString() != QStringLiteral("group")
+            || !ParseInt64(state.value("thread_id"), &threadId, false)
+            || !ParseInt64(state.value("membership_version"), &membershipVersion, false)
+            || !ParseInt64(state.value("target_member_uid"), &targetUid, false)
+            || targetUid != user->_uid || state.value("member").toBool()
+            || state.value("membership_proof").toBool()) return;
+        const QString reason = state.value("reason").toString();
+        if (reason != QStringLiteral("kicked") && reason != QStringLiteral("dissolved")
+            && reason != QStringLiteral("left")) return;
+        invalidate_group(threadId, membershipVersion, reason, targetUid);
+    };
+    _handler[ID_NOTIFY_GROUP_EVENT] = [this, parseGroup, invalidate_group](ReqId, int, QByteArray data) {
+        const QJsonDocument doc = QJsonDocument::fromJson(data);
+        if (!doc.isObject() || !_logged_in) return;
+        const QJsonObject event = doc.object();
+        const auto user = UserMgr::GetInstance()->GetUserInfo();
+        if (!user || event.value("uid").toInt() != user->_uid) return;
+        qint64 targetUid = 0;
+        if (!ParseInt64(event.value("target_uid"), &targetUid, false) || targetUid != user->_uid) return;
+        const QString eventType = event.value("event_type").toString();
+        GroupInfo group;
+        if (event.value("group").isObject() && !parseGroup(event.value("group").toObject(), &group))
+            return;
+        GroupAdmissionInfo entry;
+        if (event.value("entry").isObject()) {
+            const QJsonObject object = event.value("entry").toObject();
+            if (!ParseInt64(object.value("id"), &entry.id, false)
+                || !ParseInt64(object.value("thread_id"), &entry.threadId, false)) return;
+            entry.kind = object.value("kind").toString();
+            entry.groupName = object.value("group_name").toString();
+            entry.targetUid = object.value("target_uid").toVariant().toLongLong();
+            entry.applicantUid = object.value("applicant_uid").toVariant().toLongLong();
+            entry.inviterUid = object.value("inviter_uid").toVariant().toLongLong();
+            entry.status = object.value("status").toString();
+            entry.explanation = object.value("explanation").toString();
+            entry.createdAtMs = object.value("created_at_ms").toVariant().toLongLong();
+            entry.updatedAtMs = object.value("updated_at_ms").toVariant().toLongLong();
         }
-        // SetGroupState会INSERT未知群tombstone；晚列表普通upsert也不能把active=false激活。
-        // 失效epoch同时撤销旧join请求关联，只有之后新matching confirmed join才允许重新加入。
-        LocalChatStorageMgr::GetInstance()->SetGroupState(threadId, false);
-        emit sig_group_state(threadId, false, reason, targetUid);
+        if (eventType == QStringLiteral("invalidated")) {
+            const QJsonObject groupObject = event.value("group").toObject();
+            qint64 membershipVersion = 0;
+            if (!groupObject.isEmpty() && group.threadId > 0 && !group.member
+                && !group.membershipProof
+                && ParseInt64(groupObject.value("membership_version"), &membershipVersion, false))
+                invalidate_group(group.threadId, membershipVersion,
+                                 event.value("reason").toString(), targetUid);
+        } else if ((eventType == QStringLiteral("metadata") || eventType == QStringLiteral("members"))
+                   && event.value("group").isObject()) {
+            if (group.threadId <= 0) return;
+            if (group.membershipProof && group.member && group.active
+                && group.source == QStringLiteral("event")) {
+                const bool membershipGranted = eventType == QStringLiteral("members")
+                    && event.value("membership_granted").toBool();
+                const GroupCacheAuthority authority = membershipGranted
+                    ? GroupCacheAuthority::MembershipProof
+                    : GroupCacheAuthority::CurrentMemberMetadata;
+                if (!LocalChatStorageMgr::GetInstance()->UpsertThread(
+                        ToLocalGroup(group), authority)) return;
+                LocalChatThread persisted;
+                bool activeMember = false;
+                for (const LocalChatThread &thread : LocalChatStorageMgr::GetInstance()->LoadAllThreads()) {
+                    if (thread.threadType == QStringLiteral("group")
+                        && thread.threadId == group.threadId) {
+                        persisted = thread;
+                        activeMember = thread.active;
+                        break;
+                    }
+                }
+                if (activeMember && _groupListInProgress) {
+                    persisted.membershipProof = true;
+                    _groupSnapshotGroups.insert(group.threadId, persisted);
+                    _groupSnapshotProofEpochs.insert(
+                        group.threadId, _groupStateEpochs.value(group.threadId, 0));
+                    _groupSnapshotConfirmedIds.insert(group.threadId);
+                }
+                if (activeMember) emit sig_group_info(FromLocalGroup(persisted), membershipGranted);
+            } else {
+                LocalChatStorageMgr::GetInstance()->UpsertThread(
+                    ToLocalGroup(group), GroupCacheAuthority::Metadata);
+            }
+            RequestGroupMessages(group.threadId);
+        }
+        emit sig_group_event(eventType, group, entry, targetUid);
     };
 
 }
@@ -1630,7 +2144,17 @@ void TcpMgr::initSigAndSlot()
         }
         qWarning() << "disconnected from server:" << _socket->errorString();
         const bool should_notify = _logged_in && !_disconnect_notified;
+        if (_logged_in) ++_loginGeneration;
         _logged_in = false;
+        _pendingGroupRequests.clear();
+        _pendingGroupThreads.clear();
+        _pendingGroupAccounts.clear();
+        _pendingGroupLoginGenerations.clear();
+        _pendingGroupOperationIds.clear();
+        _pendingGroupScopes.clear();
+        _pendingJoinEpochs.clear();
+        _groupListInProgress = false;
+        _groupListPendingRequestId.clear();
         StopHeartbeat();
         _disconnect_notified = true;
         _buffer.clear();

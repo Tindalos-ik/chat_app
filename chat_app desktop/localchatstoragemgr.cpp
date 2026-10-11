@@ -26,11 +26,26 @@ LocalChatThread ReadThread(QSqlQuery &query)
     thread.peerUid = query.value(3).toLongLong();
     thread.ownerUid = query.value(4).toLongLong();
     thread.active = query.value(5).toInt() != 0;
-    thread.lastMessageId = query.value(6).toLongLong();
-    thread.lastMessagePreview = query.value(7).toString();
-    thread.lastMessageAtMs = query.value(8).toLongLong();
-    thread.unreadCount = query.value(9).toInt();
-    thread.updatedAtMs = query.value(10).toLongLong();
+    thread.role = query.value(6).toInt();
+    thread.invalidReason = query.value(7).toString();
+    thread.version = query.value(8).toLongLong();
+    thread.membershipVersion = query.value(9).toLongLong();
+    thread.approvalRequired = query.value(10).toInt() != 0;
+    thread.announcement = query.value(11).toString();
+    thread.announcementVersion = query.value(12).toLongLong();
+    thread.announcementUpdatedAtMs = query.value(13).toLongLong();
+    thread.announcementAuthorUid = query.value(14).toLongLong();
+    thread.avatarResourceId = query.value(15).toString();
+    thread.avatarVersion = query.value(16).toLongLong();
+    thread.avatarMimeType = query.value(17).toString();
+    thread.avatarSize = query.value(18).toLongLong();
+    thread.avatarWidth = query.value(19).toInt();
+    thread.avatarHeight = query.value(20).toInt();
+    thread.lastMessageId = query.value(21).toLongLong();
+    thread.lastMessagePreview = query.value(22).toString();
+    thread.lastMessageAtMs = query.value(23).toLongLong();
+    thread.unreadCount = query.value(24).toInt();
+    thread.updatedAtMs = query.value(25).toLongLong();
     return thread;
 }
 
@@ -171,7 +186,10 @@ QList<LocalChatThread> LocalChatStorageMgr::LoadThreads(int limit)
     if (!IsReady()) return threads;
     QSqlQuery query(_database);
     query.prepare(QStringLiteral(
-        "SELECT thread_id, thread_type, title, peer_uid, owner_uid, active, last_message_id, "
+        "SELECT thread_id, thread_type, title, peer_uid, owner_uid, active, role, invalid_reason, "
+        "version, membership_version, approval_required, announcement, announcement_version, "
+        "announcement_updated_at_ms, announcement_author_uid, avatar_resource_id, avatar_version, "
+        "avatar_mime_type, avatar_size, avatar_width, avatar_height, last_message_id, "
         "last_message_preview, last_message_at_ms, unread_count, updated_at_ms FROM local_chat_thread "
         "ORDER BY last_message_at_ms DESC, thread_id DESC LIMIT ?"));
     query.addBindValue(NormalizeLimit(limit, kDefaultThreadLimit));
@@ -182,14 +200,16 @@ QList<LocalChatThread> LocalChatStorageMgr::LoadThreads(int limit)
     while (query.next()) threads.append(ReadThread(query));
     return threads;
 }
-
 QList<LocalChatThread> LocalChatStorageMgr::LoadAllThreads()
 {
     QList<LocalChatThread> threads;
     if (!IsReady()) return threads;
     QSqlQuery query(_database);
     if (!query.exec(QStringLiteral(
-            "SELECT thread_id, thread_type, title, peer_uid, owner_uid, active, last_message_id, "
+            "SELECT thread_id, thread_type, title, peer_uid, owner_uid, active, role, invalid_reason, "
+            "version, membership_version, approval_required, announcement, announcement_version, "
+            "announcement_updated_at_ms, announcement_author_uid, avatar_resource_id, avatar_version, "
+            "avatar_mime_type, avatar_size, avatar_width, avatar_height, last_message_id, "
             "last_message_preview, last_message_at_ms, unread_count, updated_at_ms "
             "FROM local_chat_thread ORDER BY thread_id ASC"))) {
         SetError(QStringLiteral("读取全部本地会话失败"));
@@ -248,7 +268,7 @@ bool LocalChatStorageMgr::HasMessage(qint64 messageId) const
 }
 
 bool LocalChatStorageMgr::UpsertThread(const LocalChatThread &thread,
-                                       bool authoritativeActivation)
+                                       GroupCacheAuthority authority)
 {
     if (!IsReady() || thread.threadId <= 0
         || (thread.threadType != QStringLiteral("private")
@@ -260,7 +280,7 @@ bool LocalChatStorageMgr::UpsertThread(const LocalChatThread &thread,
         SetError(QStringLiteral("开启本地会话事务失败"));
         return false;
     }
-    if (!UpsertThreadInTransaction(thread, authoritativeActivation) || !_database.commit()) {
+    if (!UpsertThreadInTransaction(thread, authority) || !_database.commit()) {
         _database.rollback();
         if (_lastError.isEmpty()) SetError(QStringLiteral("提交本地会话事务失败"));
         return false;
@@ -269,31 +289,49 @@ bool LocalChatStorageMgr::UpsertThread(const LocalChatThread &thread,
     return true;
 }
 
-bool LocalChatStorageMgr::SetGroupState(qint64 threadId, bool active)
+bool LocalChatStorageMgr::SetGroupState(qint64 threadId, qint64 membershipVersion,
+                                        const QString &reason)
 {
-    if (!IsReady() || threadId <= 0 || active) return false;
+    if (!IsReady() || threadId <= 0 || membershipVersion <= 0) return false;
     QSqlQuery query(_database);
     query.prepare(QStringLiteral(
         "INSERT INTO local_chat_thread "
-        "(thread_id, thread_type, title, peer_uid, owner_uid, active, updated_at_ms) "
-        "VALUES (?, 'group', '', 0, 0, 0, ?) "
-        "ON CONFLICT(thread_id) DO UPDATE SET active = 0, updated_at_ms = excluded.updated_at_ms "
-        "WHERE local_chat_thread.thread_type = 'group'"));
+        "(thread_id, thread_type, title, active, role, invalid_reason, membership_version, updated_at_ms) "
+        "VALUES (?, 'group', '', 0, 0, ?, ?, ?) "
+        "ON CONFLICT(thread_id) DO UPDATE SET active = 0, role = 0, invalid_reason = excluded.invalid_reason, "
+        "membership_version = excluded.membership_version, updated_at_ms = excluded.updated_at_ms "
+        "WHERE local_chat_thread.thread_type = 'group' "
+        "AND excluded.membership_version > local_chat_thread.membership_version"));
     query.addBindValue(threadId);
+    query.addBindValue(reason);
+    query.addBindValue(membershipVersion);
     query.addBindValue(QDateTime::currentMSecsSinceEpoch());
     if (!query.exec() || query.numRowsAffected() == 0) {
-        SetError(QStringLiteral("持久化群失效状态失败"));
+        SetError(QStringLiteral("持久化群失效状态失败或通知版本已过期"));
         return false;
     }
     _cachedThreads = LoadThreads();
     return true;
 }
-bool LocalChatStorageMgr::ReconcileGroupSnapshot(const QSet<qint64> &activeThreadIds)
+
+bool LocalChatStorageMgr::ReconcileGroupSnapshot(const QList<LocalChatThread> &memberGroups)
 {
     if (!IsReady()) return false;
     if (!_database.transaction()) {
         SetError(QStringLiteral("开启群列表对账事务失败"));
         return false;
+    }
+    QSet<qint64> memberIds;
+    for (const LocalChatThread &thread : memberGroups) {
+        if (thread.threadType != QStringLiteral("group") || !thread.active || !thread.membershipProof
+            || thread.threadId <= 0 || thread.membershipVersion <= 0 || thread.role < 0 || thread.role > 2
+            || memberIds.contains(thread.threadId)
+            || !UpsertThreadInTransaction(thread, GroupCacheAuthority::MembershipProof)) {
+            _database.rollback();
+            if (_lastError.isEmpty()) _lastError = QStringLiteral("群快照成员证明无效或重复");
+            return false;
+        }
+        memberIds.insert(thread.threadId);
     }
     QSqlQuery query(_database);
     if (!query.exec(QStringLiteral("SELECT thread_id FROM local_chat_thread "
@@ -305,11 +343,12 @@ bool LocalChatStorageMgr::ReconcileGroupSnapshot(const QSet<qint64> &activeThrea
     QList<qint64> missing;
     while (query.next()) {
         const qint64 threadId = query.value(0).toLongLong();
-        if (!activeThreadIds.contains(threadId)) missing.append(threadId);
+        if (!memberIds.contains(threadId)) missing.append(threadId);
     }
     QSqlQuery update(_database);
-    update.prepare(QStringLiteral("UPDATE local_chat_thread SET active = 0, updated_at_ms = ? "
-                                  "WHERE thread_id = ? AND thread_type = 'group'"));
+    update.prepare(QStringLiteral("UPDATE local_chat_thread SET active = 0, role = 0, "
+                                  "invalid_reason = 'not_in_snapshot', updated_at_ms = ? "
+                                  "WHERE thread_id = ? AND thread_type = 'group' AND active = 1"));
     for (qint64 threadId : missing) {
         update.bindValue(0, QDateTime::currentMSecsSinceEpoch());
         update.bindValue(1, threadId);
@@ -341,7 +380,7 @@ bool LocalChatStorageMgr::SaveReceivedMessages(const LocalChatThread &thread,
         return false;
     }
 
-    bool success = UpsertThreadInTransaction(thread);
+    bool success = UpsertThreadInTransaction(thread, GroupCacheAuthority::Metadata, false);
     QSqlQuery messageQuery(_database);
     if (success) {
         success = messageQuery.prepare(QStringLiteral(
@@ -589,9 +628,16 @@ bool LocalChatStorageMgr::CreateSchema()
             "thread_type TEXT NOT NULL CHECK (thread_type IN ('private', 'group')), "
             "title TEXT NOT NULL DEFAULT '', peer_uid INTEGER NOT NULL DEFAULT 0, "
             "owner_uid INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)), "
-            "last_message_id INTEGER NOT NULL DEFAULT 0, "
-            "last_message_preview TEXT NOT NULL DEFAULT '', "
-            "last_message_at_ms INTEGER NOT NULL DEFAULT 0, "
+            "role INTEGER NOT NULL DEFAULT 0 CHECK (role IN (0, 1, 2)), "
+            "invalid_reason TEXT NOT NULL DEFAULT '', version INTEGER NOT NULL DEFAULT 0, "
+            "membership_version INTEGER NOT NULL DEFAULT 0, approval_required INTEGER NOT NULL DEFAULT 0 "
+            "CHECK (approval_required IN (0, 1)), announcement TEXT NOT NULL DEFAULT '', "
+            "announcement_version INTEGER NOT NULL DEFAULT 0, announcement_updated_at_ms INTEGER NOT NULL DEFAULT 0, "
+            "announcement_author_uid INTEGER NOT NULL DEFAULT 0, avatar_resource_id TEXT NOT NULL DEFAULT '', "
+            "avatar_version INTEGER NOT NULL DEFAULT 0, avatar_mime_type TEXT NOT NULL DEFAULT '', "
+            "avatar_size INTEGER NOT NULL DEFAULT 0, avatar_width INTEGER NOT NULL DEFAULT 0, "
+            "avatar_height INTEGER NOT NULL DEFAULT 0, last_message_id INTEGER NOT NULL DEFAULT 0, "
+            "last_message_preview TEXT NOT NULL DEFAULT '', last_message_at_ms INTEGER NOT NULL DEFAULT 0, "
             "unread_count INTEGER NOT NULL DEFAULT 0 CHECK (unread_count >= 0), "
             "updated_at_ms INTEGER NOT NULL DEFAULT 0)"),
         QStringLiteral(
@@ -654,22 +700,37 @@ bool LocalChatStorageMgr::CreateSchema()
         SetError(QStringLiteral("读取本地会话表结构失败"));
         return false;
     }
-    bool hasOwnerUid = false;
-    bool hasActive = false;
-    while (threadColumns.next()) {
-        hasOwnerUid = hasOwnerUid || threadColumns.value(1).toString() == QStringLiteral("owner_uid");
-        hasActive = hasActive || threadColumns.value(1).toString() == QStringLiteral("active");
+    QSet<QString> existingColumns;
+    while (threadColumns.next()) existingColumns.insert(threadColumns.value(1).toString());
+    const QList<QPair<QString, QString>> threadAdditions = {
+        {QStringLiteral("owner_uid"), QStringLiteral("INTEGER NOT NULL DEFAULT 0")},
+        {QStringLiteral("active"), QStringLiteral("INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1))")},
+        {QStringLiteral("role"), QStringLiteral("INTEGER NOT NULL DEFAULT 0 CHECK (role IN (0, 1, 2))")},
+        {QStringLiteral("invalid_reason"), QStringLiteral("TEXT NOT NULL DEFAULT ''")},
+        {QStringLiteral("version"), QStringLiteral("INTEGER NOT NULL DEFAULT 0")},
+        {QStringLiteral("membership_version"), QStringLiteral("INTEGER NOT NULL DEFAULT 0")},
+        {QStringLiteral("approval_required"), QStringLiteral("INTEGER NOT NULL DEFAULT 0 CHECK (approval_required IN (0, 1))")},
+        {QStringLiteral("announcement"), QStringLiteral("TEXT NOT NULL DEFAULT ''")},
+        {QStringLiteral("announcement_version"), QStringLiteral("INTEGER NOT NULL DEFAULT 0")},
+        {QStringLiteral("announcement_updated_at_ms"), QStringLiteral("INTEGER NOT NULL DEFAULT 0")},
+        {QStringLiteral("announcement_author_uid"), QStringLiteral("INTEGER NOT NULL DEFAULT 0")},
+        {QStringLiteral("avatar_resource_id"), QStringLiteral("TEXT NOT NULL DEFAULT ''")},
+        {QStringLiteral("avatar_version"), QStringLiteral("INTEGER NOT NULL DEFAULT 0")},
+        {QStringLiteral("avatar_mime_type"), QStringLiteral("TEXT NOT NULL DEFAULT ''")},
+        {QStringLiteral("avatar_size"), QStringLiteral("INTEGER NOT NULL DEFAULT 0")},
+        {QStringLiteral("avatar_width"), QStringLiteral("INTEGER NOT NULL DEFAULT 0")},
+        {QStringLiteral("avatar_height"), QStringLiteral("INTEGER NOT NULL DEFAULT 0")}
+    };
+    for (const auto &column : threadAdditions) {
+        if (!existingColumns.contains(column.first)
+            && !Execute(QStringLiteral("ALTER TABLE local_chat_thread ADD COLUMN %1 %2")
+                            .arg(column.first, column.second))) return false;
     }
-    if (!hasOwnerUid && !Execute(QStringLiteral(
-            "ALTER TABLE local_chat_thread ADD COLUMN owner_uid INTEGER NOT NULL DEFAULT 0"))) return false;
-    if (!hasActive && !Execute(QStringLiteral(
-            "ALTER TABLE local_chat_thread ADD COLUMN active INTEGER NOT NULL DEFAULT 1 "
-            "CHECK (active IN (0, 1))"))) return false;
     if (schemaVersion < 3) {
         if (!Execute(QStringLiteral(
                 "UPDATE local_sync_cursor SET max_message_id = 0, synced_at_ms = 0"))) return false;
     }
-    return Execute(QStringLiteral("PRAGMA user_version = 4"));
+    return Execute(QStringLiteral("PRAGMA user_version = 5"));
 }
 
 bool LocalChatStorageMgr::Execute(const QString &sql)
@@ -684,47 +745,149 @@ bool LocalChatStorageMgr::Execute(const QString &sql)
 }
 
 bool LocalChatStorageMgr::UpsertThreadInTransaction(const LocalChatThread &thread,
-                                                     bool authoritativeActivation)
+                                                     GroupCacheAuthority authority,
+                                                     bool preserveGroupUnread)
 {
     if (thread.threadId <= 0 || (thread.threadType != QStringLiteral("private")
                                  && thread.threadType != QStringLiteral("group"))) {
         _lastError = QStringLiteral("保存本地会话失败：会话类型或 ID 无效");
         return false;
     }
+    if (thread.threadType == QStringLiteral("group")
+        && authority != GroupCacheAuthority::Metadata
+        && (!thread.membershipProof || !thread.active || thread.membershipVersion <= 0
+            || thread.role < 0 || thread.role > 2)) {
+        _lastError = QStringLiteral("拒绝无效或非成员群证明");
+        return false;
+    }
+    LocalChatThread merged = thread;
+    QSqlQuery current(_database);
+    current.prepare(QStringLiteral(
+        "SELECT title, owner_uid, active, role, invalid_reason, version, membership_version, "
+        "approval_required, announcement, announcement_version, announcement_updated_at_ms, "
+        "announcement_author_uid, avatar_resource_id, avatar_version, avatar_mime_type, "
+        "avatar_size, avatar_width, avatar_height, unread_count FROM local_chat_thread WHERE thread_id = ?"));
+    current.addBindValue(thread.threadId);
+    if (!current.exec()) {
+        SetError(QStringLiteral("读取待更新的本地会话版本失败"));
+        return false;
+    }
+    const bool exists = current.next();
+    if (exists && thread.threadType == QStringLiteral("group")) {
+        if (preserveGroupUnread) merged.unreadCount = current.value(18).toInt();
+        const qint64 oldVersion = current.value(5).toLongLong();
+        const qint64 oldMembershipVersion = current.value(6).toLongLong();
+        const bool wasActive = current.value(2).toInt() != 0;
+        if (thread.version < oldVersion) {
+            merged.title = current.value(0).toString();
+            merged.ownerUid = current.value(1).toLongLong();
+            merged.approvalRequired = current.value(7).toInt() != 0;
+            merged.version = oldVersion;
+        }
+        if (thread.announcementVersion < current.value(9).toLongLong()) {
+            merged.announcement = current.value(8).toString();
+            merged.announcementVersion = current.value(9).toLongLong();
+            merged.announcementUpdatedAtMs = current.value(10).toLongLong();
+            merged.announcementAuthorUid = current.value(11).toLongLong();
+        }
+        if (thread.avatarVersion < current.value(13).toLongLong()) {
+            merged.avatarResourceId = current.value(12).toString();
+            merged.avatarVersion = current.value(13).toLongLong();
+            merged.avatarMimeType = current.value(14).toString();
+            merged.avatarSize = current.value(15).toLongLong();
+            merged.avatarWidth = current.value(16).toInt();
+            merged.avatarHeight = current.value(17).toInt();
+        }
+        if (authority == GroupCacheAuthority::CurrentMemberMetadata) {
+            merged.active = wasActive;
+            merged.role = current.value(3).toInt();
+            merged.invalidReason = current.value(4).toString();
+            merged.membershipVersion = oldMembershipVersion;
+            if (wasActive && thread.membershipVersion > oldMembershipVersion) {
+                merged.membershipVersion = thread.membershipVersion;
+                merged.role = thread.role;
+                merged.invalidReason.clear();
+            }
+        } else if (authority == GroupCacheAuthority::MembershipProof
+                   && thread.membershipVersion > oldMembershipVersion) {
+            merged.active = true;
+            merged.role = thread.role;
+            merged.membershipVersion = thread.membershipVersion;
+            merged.invalidReason.clear();
+        } else {
+            merged.active = wasActive;
+            merged.role = current.value(3).toInt();
+            merged.invalidReason = current.value(4).toString();
+            merged.membershipVersion = oldMembershipVersion;
+        }
+    } else if (thread.threadType == QStringLiteral("group")
+               && authority != GroupCacheAuthority::MembershipProof) {
+        merged.active = false;
+        merged.role = 0;
+        merged.membershipVersion = 0;
+        if (authority == GroupCacheAuthority::CurrentMemberMetadata)
+            merged.invalidReason = QStringLiteral("membership_unconfirmed");
+    } else if (thread.threadType == QStringLiteral("group")
+               && thread.membershipVersion <= 0) {
+        _lastError = QStringLiteral("群成员证明缺少有效 membership_version");
+        return false;
+    }
+
     QSqlQuery query(_database);
     query.prepare(QStringLiteral(
         "INSERT INTO local_chat_thread "
-        "(thread_id, thread_type, title, peer_uid, owner_uid, active, last_message_id, "
+        "(thread_id, thread_type, title, peer_uid, owner_uid, active, role, invalid_reason, version, "
+        "membership_version, approval_required, announcement, announcement_version, "
+        "announcement_updated_at_ms, announcement_author_uid, avatar_resource_id, avatar_version, "
+        "avatar_mime_type, avatar_size, avatar_width, avatar_height, last_message_id, "
         "last_message_preview, last_message_at_ms, unread_count, updated_at_ms) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(thread_id) DO UPDATE SET "
-        "title = CASE WHEN excluded.thread_type = 'group' AND excluded.title = '' "
-        "THEN local_chat_thread.title ELSE excluded.title END, "
-        "peer_uid = excluded.peer_uid, "
-        "owner_uid = CASE WHEN excluded.owner_uid > 0 THEN excluded.owner_uid "
-        "ELSE local_chat_thread.owner_uid END, "
-        "active = CASE WHEN ? = 1 OR local_chat_thread.active = 1 THEN excluded.active ELSE 0 END, "
-        "last_message_id = MAX(local_chat_thread.last_message_id, excluded.last_message_id), "
-        "last_message_preview = CASE WHEN excluded.last_message_id >= local_chat_thread.last_message_id "
+        "title=excluded.title, peer_uid=excluded.peer_uid, owner_uid=excluded.owner_uid, "
+        "active=excluded.active, role=excluded.role, invalid_reason=excluded.invalid_reason, "
+        "version=excluded.version, membership_version=excluded.membership_version, "
+        "approval_required=excluded.approval_required, announcement=excluded.announcement, "
+        "announcement_version=excluded.announcement_version, "
+        "announcement_updated_at_ms=excluded.announcement_updated_at_ms, "
+        "announcement_author_uid=excluded.announcement_author_uid, "
+        "avatar_resource_id=excluded.avatar_resource_id, avatar_version=excluded.avatar_version, "
+        "avatar_mime_type=excluded.avatar_mime_type, avatar_size=excluded.avatar_size, "
+        "avatar_width=excluded.avatar_width, avatar_height=excluded.avatar_height, "
+        "last_message_id=MAX(local_chat_thread.last_message_id, excluded.last_message_id), "
+        "last_message_preview=CASE WHEN excluded.last_message_id >= local_chat_thread.last_message_id "
         "THEN excluded.last_message_preview ELSE local_chat_thread.last_message_preview END, "
-        "last_message_at_ms = MAX(local_chat_thread.last_message_at_ms, excluded.last_message_at_ms), "
-        "unread_count = excluded.unread_count, updated_at_ms = excluded.updated_at_ms "
-        "WHERE local_chat_thread.thread_type = excluded.thread_type"));
-    query.addBindValue(thread.threadId);
-    query.addBindValue(thread.threadType);
-    query.addBindValue(thread.title.isNull() ? QStringLiteral("") : thread.title);
-    query.addBindValue(thread.peerUid);
-    query.addBindValue(thread.ownerUid);
-    query.addBindValue(thread.active ? 1 : 0);
-    query.addBindValue(thread.lastMessageId);
-    query.addBindValue(thread.lastMessagePreview.isNull()
-                           ? QStringLiteral("") : thread.lastMessagePreview);
-    query.addBindValue(thread.lastMessageAtMs);
-    query.addBindValue(thread.unreadCount);
-    query.addBindValue(thread.updatedAtMs > 0 ? thread.updatedAtMs : QDateTime::currentMSecsSinceEpoch());
-    query.addBindValue(authoritativeActivation ? 1 : 0);
+        "last_message_at_ms=MAX(local_chat_thread.last_message_at_ms, excluded.last_message_at_ms), "
+        "unread_count=excluded.unread_count, updated_at_ms=excluded.updated_at_ms "
+        "WHERE local_chat_thread.thread_type=excluded.thread_type"));
+    query.addBindValue(merged.threadId);
+    query.addBindValue(merged.threadType);
+    query.addBindValue(merged.title.isNull() ? QStringLiteral("") : merged.title);
+    query.addBindValue(merged.peerUid);
+    query.addBindValue(merged.ownerUid);
+    query.addBindValue(merged.active ? 1 : 0);
+    query.addBindValue(merged.role);
+    query.addBindValue(merged.invalidReason.isNull() ? QStringLiteral("") : merged.invalidReason);
+    query.addBindValue(merged.version);
+    query.addBindValue(merged.membershipVersion);
+    query.addBindValue(merged.approvalRequired ? 1 : 0);
+    query.addBindValue(merged.announcement.isNull() ? QStringLiteral("") : merged.announcement);
+    query.addBindValue(merged.announcementVersion);
+    query.addBindValue(merged.announcementUpdatedAtMs);
+    query.addBindValue(merged.announcementAuthorUid);
+    query.addBindValue(merged.avatarResourceId.isNull() ? QStringLiteral("") : merged.avatarResourceId);
+    query.addBindValue(merged.avatarVersion);
+    query.addBindValue(merged.avatarMimeType.isNull() ? QStringLiteral("") : merged.avatarMimeType);
+    query.addBindValue(merged.avatarSize);
+    query.addBindValue(merged.avatarWidth);
+    query.addBindValue(merged.avatarHeight);
+    query.addBindValue(merged.lastMessageId);
+    query.addBindValue(merged.lastMessagePreview.isNull()
+                           ? QStringLiteral("") : merged.lastMessagePreview);
+    query.addBindValue(merged.lastMessageAtMs);
+    query.addBindValue(merged.unreadCount);
+    query.addBindValue(merged.updatedAtMs > 0 ? merged.updatedAtMs : QDateTime::currentMSecsSinceEpoch());
     if (!query.exec() || query.numRowsAffected() == 0) {
-        SetError(QStringLiteral("保存本地会话失败：thread_id 类型不匹配"));
+        _lastError = QStringLiteral("保存本地会话失败：") + query.lastError().text();
         return false;
     }
     return true;

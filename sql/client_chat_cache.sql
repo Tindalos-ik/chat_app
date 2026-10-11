@@ -1,7 +1,7 @@
 -- ============================================================
 -- 客户端聊天缓存建表脚本（SQLite 3）
 --
--- 仅用于新缓存建表，对应 runtime schema v4。
+-- 仅用于新缓存建表，对应 runtime schema v5。
 -- 旧缓存必须由 LocalChatStorageMgr 沿 user_version 自动 ALTER 迁移；
 -- 不得用本脚本替代升级，也不得删除旧库重建。
 -- 建议每个已登录用户使用独立文件，例如：chat_cache_<uid>.db。
@@ -22,6 +22,21 @@ CREATE TABLE IF NOT EXISTS local_chat_thread (
   peer_uid             INTEGER NOT NULL DEFAULT 0,
   owner_uid            INTEGER NOT NULL DEFAULT 0,
   active               INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+  role                 INTEGER NOT NULL DEFAULT 0 CHECK (role IN (0, 1, 2)),
+  invalid_reason       TEXT NOT NULL DEFAULT '',
+  version              INTEGER NOT NULL DEFAULT 0 CHECK (version >= 0),
+  membership_version   INTEGER NOT NULL DEFAULT 0 CHECK (membership_version >= 0),
+  approval_required    INTEGER NOT NULL DEFAULT 0 CHECK (approval_required IN (0, 1)),
+  announcement         TEXT NOT NULL DEFAULT '',
+  announcement_version INTEGER NOT NULL DEFAULT 0 CHECK (announcement_version >= 0),
+  announcement_updated_at_ms INTEGER NOT NULL DEFAULT 0,
+  announcement_author_uid INTEGER NOT NULL DEFAULT 0,
+  avatar_resource_id   TEXT NOT NULL DEFAULT '',
+  avatar_version       INTEGER NOT NULL DEFAULT 0 CHECK (avatar_version >= 0),
+  avatar_mime_type     TEXT NOT NULL DEFAULT '',
+  avatar_size          INTEGER NOT NULL DEFAULT 0 CHECK (avatar_size >= 0),
+  avatar_width         INTEGER NOT NULL DEFAULT 0 CHECK (avatar_width >= 0),
+  avatar_height        INTEGER NOT NULL DEFAULT 0 CHECK (avatar_height >= 0),
   last_message_id      INTEGER NOT NULL DEFAULT 0,
   last_message_preview TEXT NOT NULL DEFAULT '',
   last_message_at_ms   INTEGER NOT NULL DEFAULT 0,

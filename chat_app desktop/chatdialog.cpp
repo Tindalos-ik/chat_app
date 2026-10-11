@@ -665,14 +665,17 @@ void ChatDialog::slot_group_members(qint64 threadId, const QString &requestId,
     _group_members_request_id.clear();
     qint64 lastUid = _group_members_next_uid;
     for (const GroupMemberInfo &member : members) {
-        if (member.uid <= lastUid || (member.role != 0 && member.role != 2)) return;
+        if (member.uid <= lastUid || member.role < 0 || member.role > 2
+            || member.membershipVersion <= 0) return;
         lastUid = member.uid;
+        const QString roleName = member.role == 2 ? tr("群主")
+            : member.role == 1 ? tr("管理员") : tr("成员");
         auto *item = new QListWidgetItem(
             tr("%1（UID %2，%3）").arg(member.nick.isEmpty() ? QString::number(member.uid) : member.nick,
-                QString::number(member.uid), member.role == 2 ? tr("群主") : tr("成员")),
-            _group_members_list);
+                QString::number(member.uid), roleName), _group_members_list);
         item->setData(Qt::UserRole, member.uid);
         item->setData(Qt::UserRole + 1, member.role);
+        item->setData(Qt::UserRole + 2, member.membershipVersion);
     }
     const bool validMore = loadMore && !members.isEmpty() && nextUid == lastUid;
     _group_members_next_uid = validMore ? nextUid : lastUid;
@@ -734,14 +737,16 @@ void ChatDialog::ShowGroupInfo()
                 tr("确定将UID %1移出此群？").arg(QString::number(targetUid))) != QMessageBox::Yes) return;
             if (!_current_is_group || _current_thread_id != threadId
                 || !CanUseGroup(threadId, true) || !_group_members_list) return;
-            bool targetStillOrdinary = false;
+            qint64 targetMembershipVersion = 0;
             for (int index = 0; index < _group_members_list->count(); ++index) {
                 const auto *member = _group_members_list->item(index);
                 if (member->data(Qt::UserRole).toLongLong() == targetUid
-                    && member->data(Qt::UserRole + 1).toInt() == 0) targetStillOrdinary = true;
+                    && member->data(Qt::UserRole + 1).toInt() == 0)
+                    targetMembershipVersion = member->data(Qt::UserRole + 2).toLongLong();
             }
-            if (!targetStillOrdinary) return;
-            const QString requestId = TcpMgr::GetInstance()->KickGroupMember(threadId, targetUid);
+            if (targetMembershipVersion <= 0) return;
+            const QString requestId = TcpMgr::GetInstance()->KickGroupMember(
+                threadId, targetUid, targetMembershipVersion);
             if (!requestId.isEmpty()) _group_kick_requests.insert(requestId, threadId);
         });
         auto *dissolve = new QPushButton(tr("解散群聊"), dialog);

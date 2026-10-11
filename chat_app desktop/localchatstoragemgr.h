@@ -1,5 +1,5 @@
-// 文件作用：本账号SQLite身份/消息/连续历史游标存储；v4保留旧缓存、持久化群tombstone及完整快照对账。
-// 仅Qt创建线程访问；本地active/owner是UI状态，不能作为服务器授权证据。
+// 文件作用：本账号SQLite身份/消息/连续历史游标存储；v5群缓存分离元数据、成员版本与失效原因。
+// 仅Qt创建线程访问；本地active/owner/role是UI状态，不能作为服务器授权证据。
 #ifndef LOCALCHATSTORAGEMGR_H
 #define LOCALCHATSTORAGEMGR_H
 
@@ -14,6 +14,12 @@
 
 // 聊天列表展示和本地同步需要的会话摘要。
 // threadId、lastMessageId 均对应服务端的 BIGINT 消息/会话 ID。
+enum class GroupCacheAuthority {
+    Metadata,
+    CurrentMemberMetadata,
+    MembershipProof
+};
+
 struct LocalChatThread {
     qint64 threadId = 0;
     QString threadType;  // private / group
@@ -21,6 +27,22 @@ struct LocalChatThread {
     qint64 peerUid = 0;  // 私聊对方 uid；群聊时为 0
     qint64 ownerUid = 0; // 本地展示的群主资料，不作为权限凭据
     bool active = true;  // 本地群可用状态，不代表服务器端授权
+    bool membershipProof = false; // 仅本次TCP响应携带的服务端证明，不由已缓存active推导。
+    int role = 0;        // 0普通、1管理员、2群主；仅成员证明更新时可信
+    QString invalidReason;
+    qint64 version = 0;
+    qint64 membershipVersion = 0;
+    bool approvalRequired = false;
+    QString announcement;
+    qint64 announcementVersion = 0;
+    qint64 announcementUpdatedAtMs = 0;
+    qint64 announcementAuthorUid = 0;
+    QString avatarResourceId;
+    qint64 avatarVersion = 0;
+    QString avatarMimeType;
+    qint64 avatarSize = 0;
+    int avatarWidth = 0;
+    int avatarHeight = 0;
     qint64 lastMessageId = 0;
     QString lastMessagePreview;
     qint64 lastMessageAtMs = 0;
@@ -87,15 +109,14 @@ public:
     // 判断正式 message_id 是否已经落库。实时通知用它去重，但不会借此推进 1030 同步游标。
     bool HasMessage(qint64 messageId) const;
 
-    // thread为当前UID完整会话身份/摘要，调用者合并旧摘要后仅更新服务端元数据。
-    // authoritativeActivation 仅用于服务端明确确认的 create/join；普通列表/迟到消息不能复活失效群。
-    bool UpsertThread(const LocalChatThread &thread, bool authoritativeActivation = false);
-    // threadId为群正式身份，active只能false（true拒绝）；未知群也保存空摘要tombstone，不能充当权限证明。
-    // 只有 UpsertThread(..., authoritativeActivation=true) 的服务端 create/join 确认可恢复。
-    bool SetGroupState(qint64 threadId, bool active);
-    // 只有完整权威快照所有分页成功后才调用；缺失群标为不可用并保留缓存历史。
-    // activeThreadIds为当前UID完整成功分页轮的有效群集合，不可传半轮/网络失败所得子集。
-    bool ReconcileGroupSnapshot(const QSet<qint64> &activeThreadIds);
+    // Group metadata never changes membership; CurrentMemberMetadata advances an existing member's
+    // role/version without activation. MembershipProof is reserved for explicit grants or a full snapshot.
+    bool UpsertThread(const LocalChatThread &thread,
+                      GroupCacheAuthority authority = GroupCacheAuthority::Metadata);
+    // 失效通知/主动退出必须提供比本地更大的服务端membership_version，保存reason作只读状态说明。
+    bool SetGroupState(qint64 threadId, qint64 membershipVersion, const QString &reason);
+    // 仅完整成功、账号/轮次epoch仍匹配的快照调用；页级资料在此事务内与成员证明一并提交。
+    bool ReconcileGroupSnapshot(const QList<LocalChatThread> &memberGroups);
 
     // 批量保存服务端消息和该会话的同步游标；三者位于同一事务，避免只写入一半。
     // 已有 messageId 的记录会被更新，因而撤回/已读等服务端状态也可重新同步。
@@ -124,10 +145,10 @@ private:
 
     bool CreateSchema();
     bool Execute(const QString &sql);
-    // 调用者必须已有SQLite事务；thread为完整会话，authoritativeActivation沿public UpsertThread的
-    // 服务端create/join确认许可，不另建激活约定，普通列表/消息仍不得复活tombstone。
+    // 调用者必须已有SQLite事务；版本仲裁按群资料与成员资格独立执行。
     bool UpsertThreadInTransaction(const LocalChatThread &thread,
-                                   bool authoritativeActivation = false);
+                                   GroupCacheAuthority authority = GroupCacheAuthority::Metadata,
+                                   bool preserveGroupUnread = true);
     QList<LocalChatMessage> QueryMessages(const QString &sql,
                                           qint64 threadId,
                                           qint64 anchorMessageId,
