@@ -50,6 +50,7 @@
 | [sql/chat_message_storage.sql](sql/chat_message_storage.sql) | 旧版分步初始化的聊天表兼容脚本；新环境执行统一建表脚本即可 |
 | [sql/chat_image_message_migration.sql](sql/chat_image_message_migration.sql) | 已部署 chat_message 的图片/文件资源字段和消息类型迁移脚本 |
 | [sql/chat_message_receipt_migration.sql](sql/chat_message_receipt_migration.sql) | 已部署 chat_message 的显示确认字段迁移脚本 |
+| [sql/chat_group_management_migration.sql](sql/chat_group_management_migration.sql) | 已部署群管理结构增量升级：保留管理员/历史，增加版本、准入与业务重放结果 |
 | [sql/chat_group_migration.sql](sql/chat_group_migration.sql) | 已部署群表 owner_uid/active、角色0/2与 RESTRICT 外键迁移 |
 | [疑惑.md](note/疑惑.md) | 常见小知识点解答（uid/token、分布式、Qt 并发安全、MySQL/Redis 边界等） |
 | [全栈聊天室.md](note/全栈聊天室.md) | 架构总览 |

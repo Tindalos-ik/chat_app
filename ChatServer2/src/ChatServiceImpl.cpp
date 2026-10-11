@@ -326,7 +326,7 @@ Status ChatServiceImpl::NotifyGroup(ServerContext*, const message::GroupNotifyRe
     auto session = UserMgr::GetInstance()->GetSession(request->target_member_uid());
     response->set_error(UidInvalid);
     if (!session) return Status::OK;
-    if (!request->state_change()) {
+    if (request->event_type() == message::GROUP_EVENT_TEXT) {
         auto thread = request->thread_id();
         GroupChatThread group;
         std::vector<GroupChatMember> members;
@@ -342,6 +342,6 @@ Status ChatServiceImpl::NotifyGroup(ServerContext*, const message::GroupNotifyRe
         return Status::OK;
     }
     response->set_error(session->TrySend(request->payload_json(),
-        request->state_change() ? ID_NOTIFY_GROUP_STATE : ID_NOTIFY_GROUP_TEXT_MSG) ? Success : ServerBusy);
+        request->event_type() == message::GROUP_EVENT_INVALIDATED ? ID_NOTIFY_GROUP_STATE : ID_NOTIFY_GROUP_EVENT) ? Success : ServerBusy);
     return Status::OK;
 }

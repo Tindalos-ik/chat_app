@@ -72,6 +72,7 @@ service ResourceService {
     // 原子核验一批聊天图片：任意一项未完成、缺失或不是图片，整批失败。
     rpc VerifyImages (ResourceVerifyReq) returns (ResourceVerifyRsp) {}
     rpc VerifyFiles (ResourceFileVerifyReq) returns (ResourceFileVerifyRsp) {}
+    rpc VerifyGroupAvatar (GroupAvatarVerifyReq) returns (GroupAvatarVerifyRsp) {}
 }
 
 message ResourceFileVerifyReq { repeated string resource_ids = 1; }
@@ -274,18 +275,40 @@ message ThreadReadRsp {
     int32 error = 1;
 }
 
-// 群通知专用信封：thread_id为群号，sender_uid为发送者，target_member_uid为实际接收成员。
-// payload_json为来源服已提交的正式消息/群状态；目标服永不新增chat_message。
-// 文本按thread_id/target_member_uid再授权并持同一group行锁入TCP队列；
-// state_change仅改变群状态，绝不当作账号踢人。
+// 群通知类型决定授权路径；inbox/result 不代表成员，invalidated 不关闭账号连接。
+enum GroupEventType {
+    GROUP_EVENT_TEXT = 0;
+    GROUP_EVENT_INBOX = 1;
+    GROUP_EVENT_RESULT = 2;
+    GROUP_EVENT_METADATA = 3;
+    GROUP_EVENT_MEMBERS = 4;
+    GROUP_EVENT_INVALIDATED = 5;
+}
 message GroupNotifyReq {
     uint64 thread_id = 1;
     int32 sender_uid = 2;
     int32 target_member_uid = 3;
-    bool state_change = 4;
+    GroupEventType event_type = 4;
     string payload_json = 5;
 }
 message GroupNotifyRsp { int32 error = 1; }
+
+// 新核验边界要求 RPC metadata x-resource-service-key 配置凭据，并验证 uid/token。
+// 凭据只在 ChatServer/ResourceServer 配置中保存，不进资源任务、日志或客户端。
+message GroupAvatarVerifyReq {
+    int32 uid = 1;
+    string token = 2;
+    uint64 thread_id = 3;
+    string resource_id = 4;
+}
+message GroupAvatarVerifyRsp {
+    int32 error = 1;
+    string resource_id = 2;
+    string mime_type = 3;
+    uint64 file_size = 4;
+    uint32 width = 5;
+    uint32 height = 6;
+}
 
 // 聊天服务器之间的 gRPC 服务定义。
 service ChatService {

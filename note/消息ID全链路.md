@@ -68,6 +68,19 @@ HTTP 负责注册、登录、验证码和重置密码等短请求。登录拿到
 | `ID_KICK_GROUP_MEMBER_REQ/RSP` | `{request_id,thread_id,target_member_uid}` | 仅群主踢普通成员，不踢群主 |
 | `ID_DISSOLVE_GROUP_REQ/RSP` | `{request_id,thread_id}` | 仅群主active=0逻辑解散，保留全部历史 |
 | `ID_NOTIFY_GROUP_STATE` | `{thread_id,type:'group',active:false,reason,target_member_uid}` | reason kicked/dissolved，只失效本群，不触发账号下线 |
+| `ID_INVITE_GROUP_REQ/RSP` | `{request_id,operation_id,thread_id,target_member_uid}` | 好友邀请准入契约 |
+| `ID_DECIDE_GROUP_INVITE_REQ/RSP` | `{request_id,operation_id,thread_id,invitation_id,accept}` | 被邀请者明确同意/拒绝 |
+| `ID_LOAD_GROUP_REQUESTS_REQ/RSP` | `{request_id,scope,after_id,page_size,thread_id?}` | inbox/results/approvals；全局准入 id 分页 |
+| `ID_DECIDE_GROUP_APPLICATION_REQ/RSP` | `{request_id,operation_id,thread_id,application_id,approve}` | 管理员/群主审批申请 |
+| `ID_SET_GROUP_ADMIN_REQ/RSP` | `{request_id,operation_id,thread_id,target_member_uid,role,expected_membership_version}` | 群主管理角色0/1，版本指目标 |
+| `ID_TRANSFER_GROUP_OWNER_REQ/RSP` | `{request_id,operation_id,thread_id,target_member_uid,expected_membership_version}` | 群主原子转让，版本指目标 |
+| `ID_LEAVE_GROUP_REQ/RSP` | `{request_id,operation_id,thread_id,expected_membership_version}` | 普通/管理员自愿离群，版本指自己 |
+| `ID_SET_GROUP_APPROVAL_REQ/RSP` | `{request_id,operation_id,thread_id,approval_required}` | 群主审批开关，不自动处理已有申请 |
+| `ID_UPDATE_GROUP_ANNOUNCEMENT_REQ/RSP` | `{request_id,operation_id,thread_id,announcement,expected_announcement_version}` | 纯 UTF8 最大1024字节；完整输入仍受2048限制 |
+| `ID_UPDATE_GROUP_AVATAR_REQ/RSP` | `{request_id,operation_id,thread_id,resource_id}` | 可信群头像核验/发布契约 |
+| `ID_NOTIFY_GROUP_EVENT` | event_type inbox/result/metadata/members/invalidated | 非成员信箱/结果不携带有效成员证明 |
+
+群管理 mutation 均要求 operation_id（现有 create/join/kick/dissolve 同样适用）。准入响应 entries 使用 `{kind,id,thread_id,group_name,inviter_uid,applicant_uid,target_uid,status,explanation,created_at_ms,updated_at_ms}`，next_id 为全局准入游标。group 对象扩展 version、approval_required、announcement、announcement_version、announcement_author_uid、announcement_updated_at_ms、avatar_resource_id、avatar_mime_type、avatar_size、avatar_width、avatar_height、avatar_version，以及接收者专属 member/role/membership_version/membership_proof/source。source 为 mutation/snapshot/event；只有有效当前成员证明才能恢复新一代成员身份，旧快照和旧踢出事件不能覆盖较新 membership_version。成员项携带 membership_version，成员回包包含最新完整 group。
 
 群管理/列表/成员响应原样回传字符串request_id；group对象为 `{thread_id,type:'group',name,owner_uid,active:true}`。身份只用登录session UID。群不可用返回 GroupUnavailable，非成员 GroupNotMember，非群主管理/试图踢群主 GroupPermissionDenied；群号为uint64 thread_id，没有独立编号。群历史使用既有 ID_LOAD_CHAT_MSG_REQ/RSP，type group 或数据库实际类型分派；有效成员可读加入前历史，踢出/解散后拒绝。
 

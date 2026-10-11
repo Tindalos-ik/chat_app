@@ -91,11 +91,13 @@ Set-Location D:/cppsoft/vcpkg
 mysql --protocol=tcp -h 127.0.0.1 -P 3306 -uroot -p < sql/create_tables.sql
 ```
 
-`sql/create_tables.sql` 是全新环境唯一需要执行的 MySQL 建表入口。它会创建 `chat_app_db` 和当前使用的九张表：`user`、`user_id`、`friend`、`friend_apply`、`chat_thread`、`private_chat`、`group_chat`、`group_chat_member`、`chat_message`。其中 `chat_message` 已包含图片/文件元数据及 `displayed_at`；脚本只会在 `user_id` 为空时初始化分配器。
+`sql/create_tables.sql` 是全新环境唯一需要执行的 MySQL 建表入口。除用户、好友、会话、成员和消息表，还定义持久化准入记录 `group_admission` 与业务重放结果 `group_operation`。群元数据含版本、审批开关、公告和头像资源字段；成员保留 `active/membership_version`，角色 CHECK 允许0普通成员、1管理员、2群主。脚本只会在 `user_id` 为空时初始化分配器。
 
 项目服务通过 MySQL X DevAPI 使用 `33060` 端口；上面的 `mysql` 命令行客户端使用传统协议端口 `3306`。`sql/chat_message_storage.sql` 保留给旧版分步初始化流程，只创建缺失的聊天表，不会升级已有表结构；新库不需要再执行它。
 
 已有数据库若尚无聊天表，可执行 `sql/chat_message_storage.sql` 补建当前结构；已有旧消息表按需执行图片/文件与回执迁移。已有旧群表必须停写备份后执行一次 `sql/chat_group_migration.sql`，增加 owner_uid/active、统一角色0/2及 RESTRICT 外键，再部署新版 ChatServer。重跑 CREATE TABLE IF NOT EXISTS 不会升级已有表。解散仅active=0，历史不删除；群消息每条只写一行recv_id=0，提交后按成员UID扇出，实时失败不等于保存失败。
+
+群管理结构升级使用新增的 `sql/chat_group_management_migration.sql`：对已具有 owner_uid/active 的旧群库停写、备份后执行一次，保留全部角色和历史。不重跑 `chat_group_migration.sql`，该旧脚本会把管理员重置为普通成员。此增量结构与旧 ChatServer 的删除成员行为不兼容，必须与新版服务同步部署；协议定义不等于七项业务已经运行验收。
 
 ### 2. 配置服务端连接信息
 

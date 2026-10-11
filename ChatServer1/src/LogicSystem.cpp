@@ -1649,7 +1649,8 @@ bool LogicSystem::ForwardGroup(int targetUid, int senderUid, std::uint64_t threa
     }
     message::GroupNotifyReq request;
     request.set_thread_id(threadId); request.set_sender_uid(senderUid);
-    request.set_target_member_uid(targetUid); request.set_state_change(stateChange);
+    request.set_target_member_uid(targetUid);
+    request.set_event_type(stateChange ? message::GROUP_EVENT_INVALIDATED : message::GROUP_EVENT_TEXT);
     request.set_payload_json(payload);
     return ChatGrpcClient::GetInstance()->NotifyGroup(server, request).error() == Success;
 }
