@@ -1657,24 +1657,45 @@ bool LogicSystem::ForwardGroup(int targetUid, int senderUid, std::uint64_t threa
 void LogicSystem::HandleGroup(std::shared_ptr<CSession> session, const short& id, const std::string& data) {
     if (!session) return;
     const short responseId = id + 1;
+    const int uid = session->GetUserId();
+    const bool mutation = id != ID_LOAD_GROUP_LIST_REQ && id != ID_SEARCH_GROUP_REQ &&
+        id != ID_LOAD_GROUP_MEMBERS_REQ && id != ID_GROUP_TEXT_MSG_REQ &&
+        id != ID_LOAD_GROUP_REQUESTS_REQ;
     Json::Value request, response;
-    response["error"] = Error_Json; response["type"] = "group";
+    response["error"] = Error_Json;
+    response["type"] = "group";
+    response["uid"] = uid; // 分页candidate也必须计算最终uid字段，不能发出后才超预算。
+    auto attachEnvelope = [&](Json::Value& payload) {
+        payload["uid"] = uid;
+        if (!request.isObject()) return;
+        if (request["request_id"].isString()) payload["request_id"] = request["request_id"];
+        if (mutation && request["operation_id"].isString())
+            payload["operation_id"] = request["operation_id"];
+        std::uint64_t echoedThread = 0;
+        if (!payload.isMember("thread_id") && GroupId(request, "thread_id", echoedThread) &&
+            echoedThread != 0)
+            payload["thread_id"] = Json::UInt64(echoedThread);
+    };
     Defer reply([&]() {
-        response["uid"]=session->GetUserId();
-        if (request["request_id"].isString()) response["request_id"]=request["request_id"];
-        auto serialized=SerializeCompactJson(response);
-        if(serialized.size()>kMaxHistoryResponseJsonBytes) {
-            response=Json::Value();response["error"]=MessageTooLarge;response["request_id"]=request["request_id"];
-            serialized=SerializeCompactJson(response);
+        attachEnvelope(response); // 纯相关字段，不把请求中的UID/角色/版本当身份证明。
+        auto serialized = SerializeCompactJson(response);
+        if (serialized.size() > kMaxHistoryResponseJsonBytes) {
+            const auto thread = response["thread_id"];
+            response = Json::Value(Json::objectValue);
+            response["error"] = MessageTooLarge;
+            if (!thread.isNull()) response["thread_id"] = thread;
+            attachEnvelope(response);
+            serialized = SerializeCompactJson(response);
         }
-        session->Send(serialized,responseId);
+        session->Send(serialized, responseId);
     });
     Json::CharReaderBuilder reader; std::string errors; std::istringstream stream(data);
     if (!Json::parseFromStream(reader, stream, &request, &errors) || !request.isObject()) return;
     if (request["request_id"].isString()) response["request_id"] = request["request_id"];
+    if (mutation && request["operation_id"].isString())
+        response["operation_id"] = request["operation_id"];
     if (id != ID_GROUP_TEXT_MSG_REQ && (!request["request_id"].isString() ||
         request["request_id"].asString().empty() || request["request_id"].asString().size() > 128)) return;
-    const int uid = session->GetUserId();
     if (uid <= 0) return;
     std::uint64_t thread = 0;
     if (id != ID_CREATE_GROUP_REQ && id != ID_LOAD_GROUP_LIST_REQ && id != ID_LOAD_GROUP_REQUESTS_REQ &&
@@ -1729,7 +1750,7 @@ void LogicSystem::HandleGroup(std::shared_ptr<CSession> session, const short& id
             snapshot.uid = uid;
         } else if (snapshot.uid != uid || snapshot.next != after) return;
         response["groups"] = Json::Value(Json::arrayValue);
-        response["error"] = Success; response["load_more"] = true;
+        response["error"] = Success; response["load_more"] = false; // false比true多一字节。
         std::uint64_t next = after; size_t count = 0;
         auto pos = std::upper_bound(snapshot.groups.begin(), snapshot.groups.end(), after,
             [](std::uint64_t value, const GroupChatThread& group) { return value < group.threadId; });
@@ -1737,12 +1758,13 @@ void LogicSystem::HandleGroup(std::shared_ptr<CSession> session, const short& id
             Json::Value candidate = response;
             candidate["groups"].append(BuildGroupJson(*pos,"snapshot"));
             candidate["next_thread_id"] = static_cast<Json::UInt64>(pos->threadId);
-            if (SerializeCompactJson(candidate).size() + 1 > kMaxHistoryResponseJsonBytes) break;
+            if (SerializeCompactJson(candidate).size() > kMaxHistoryResponseJsonBytes) break;
             response = std::move(candidate); next = pos->threadId; ++pos; ++count;
         }
         response["next_thread_id"] = static_cast<Json::UInt64>(next);
-        response["load_more"] = pos != snapshot.groups.end(); snapshot.next = next;
+        response["load_more"] = pos != snapshot.groups.end();
         if (count == 0 && pos != snapshot.groups.end()) response["error"] = MessageTooLarge;
+        else snapshot.next = next; // 只记录真正能发出的成功页，不推进超预算失败游标。
         return;
     }
     GroupAction action = GroupAction::Search;
@@ -1778,14 +1800,14 @@ void LogicSystem::HandleGroup(std::shared_ptr<CSession> session, const short& id
     if (action == GroupAction::Search || action == GroupAction::Members)
         response["group"] = BuildGroupJson(group,"snapshot");
     if (action == GroupAction::Members) {
-        response["members"] = Json::Value(Json::arrayValue); response["load_more"] = true;
+        response["members"] = Json::Value(Json::arrayValue); response["load_more"] = false;
         int next = static_cast<int>(after); size_t count = 0;
         for (const auto& member : members) {
             if (count >= static_cast<size_t>(page)) break;
             Json::Value item; item["uid"]=member.uid; item["nick"]=member.nick; item["role"]=member.role;
             item["membership_version"]=Json::UInt64(member.membershipVersion);
             Json::Value candidate=response; candidate["members"].append(item); candidate["next_uid"]=member.uid;
-            if (SerializeCompactJson(candidate).size()+1 > kMaxHistoryResponseJsonBytes) break;
+            if (SerializeCompactJson(candidate).size() > kMaxHistoryResponseJsonBytes) break;
             response=std::move(candidate); next=member.uid; ++count;
         }
         response["next_uid"]=next; response["load_more"]=count < members.size();

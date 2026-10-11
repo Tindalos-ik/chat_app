@@ -80,9 +80,14 @@ HTTP 负责注册、登录、验证码和重置密码等短请求。登录拿到
 | `ID_UPDATE_GROUP_AVATAR_REQ/RSP` | `{request_id,operation_id,thread_id,resource_id}` | 可信群头像核验/发布契约 |
 | `ID_NOTIFY_GROUP_EVENT` | event_type inbox/result/metadata/members/invalidated | 非成员信箱/结果不携带有效成员证明 |
 
-群管理 mutation 均要求 operation_id（现有 create/join/kick/dissolve 同样适用）。准入响应 entries 使用 `{kind,id,thread_id,group_name,inviter_uid,applicant_uid,target_uid,status,explanation,created_at_ms,updated_at_ms}`，next_id 为全局准入游标。group 对象扩展 version、approval_required、announcement、announcement_version、announcement_author_uid、announcement_updated_at_ms、avatar_resource_id、avatar_mime_type、avatar_size、avatar_width、avatar_height、avatar_version，以及接收者专属 member/role/membership_version/membership_proof/source。source 为 mutation/snapshot/event；只有有效当前成员证明才能恢复新一代成员身份，旧快照和旧踢出事件不能覆盖较新 membership_version。成员项携带 membership_version，成员回包包含最新完整 group。
+群管理 mutation 均要求 operation_id（现有 create/join/kick/dissolve 同样适用）。准入响应 entries 使用 `{kind,id,thread_id,group_name,inviter_uid,applicant_uid,target_uid,status,explanation,created_at_ms,updated_at_ms}`，next_id 为全局准入游标。group包含最新version、审批/公告/头像独立版本与可信元数据，以及接收者专属member/role/membership_version/membership_proof/source；source为mutation/snapshot/event。成员项携带membership_version，成员回包包含完整最新group。
 
-群管理/列表/成员响应原样回传字符串request_id；group对象为 `{thread_id,type:'group',name,owner_uid,active:true}`。身份只用登录session UID。群不可用返回 GroupUnavailable，非成员 GroupNotMember，非群主管理/试图踢群主 GroupPermissionDenied；群号为uint64 thread_id，没有独立编号。群历史使用既有 ID_LOAD_CHAT_MSG_REQ/RSP，type group 或数据库实际类型分派；有效成员可读加入前历史，踢出/解散后拒绝。
+membership_proof不等于激活许可：普通metadata/members只能刷新已有有效身份，不能激活未知群或tombstone。仅实际新增/重入收件人得到event_type='members',source='event',membership_granted=true，其他成员无grant。self显式CREATE/JOIN在当前锁定证明member=true时确认grant，包括已经入群与相同键重放；旧JOIN被踢后重放没有grant。接受邀请仅实际新入群响应有grant，pending/离群重放/接受邀请重放无grant；审批者响应不能代替申请者grant。离线激活只能完整成功快照轮，旧版本不能覆盖新身份。
+
+邀请先确认目标账号存在（否则SearchUserNoExist）和互为好友的两条friend边，再产生pending；一条单向残留关系不成立。终态邀请/申请的新operation_id响应error=0、already_processed=true，status_conflict表示请求决定与entry.status不一致（invalid总是冲突）；不得覆盖终态、重入或将相反审批显示为成功执行。
+
+所有mutation错误响应也回传operation_id、request_id、真实session uid及可验证数值格式的thread_id；这些只关联请求，不授予身份证明。列表/成员/准入分页预算先包含最终UID/相关字段，以较大的load_more=false计整帧，失败页不推进快照游标。
+管理/列表/成员响应原样回传字符串request_id；身份只用登录session UID。群不可用GroupUnavailable，非成员GroupNotMember，权限或版本冲突GroupPermissionDenied；群号uint64 thread_id。群历史复用ID_LOAD_CHAT_MSG_REQ/RSP，有效成员可读加入前历史，踢出/解散后拒绝。
 
 
 ResourceServer 的独立协议使用其自身的上传分片、断点同步消息常量。完成回包包含

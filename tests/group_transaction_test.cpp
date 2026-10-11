@@ -16,7 +16,7 @@ protected:
     std::shared_ptr<MysqlMgr> mysql;
     std::unique_ptr<mysqlx::Session> db;
     std::uint64_t thread=0;
-    int owner=0,member=0,stranger=0,sequence=0;
+    int owner=0,member=0,stranger=0,other=0,sequence=0;
     GroupChatThread group;
     std::vector<GroupChatMember> members;
     std::vector<StoredTextMessage> messages;
@@ -30,12 +30,14 @@ protected:
         std::ostringstream sink;auto previous=std::cout.rdbuf(sink.rdbuf());Defer restore([&](){std::cout.rdbuf(previous);});
         auto config=ConfigMgr::Inst()["Mysql"];if(config["schema"]!=schema)GTEST_SKIP()<<"config.ini mismatches isolated schema";
         try{db=std::make_unique<mysqlx::Session>(config["host"],std::stoi(config["port"]),config["user"],config["passwd"]);db->sql("USE `"+std::string(schema)+"`").execute();mysql=MysqlMgr::GetInstance();}catch(...){FAIL()<<"Explicit isolated connection failed";}
-        auto ticks=std::chrono::steady_clock::now().time_since_epoch().count();owner=1400000000+static_cast<int>(ticks%100000000);member=owner+1;stranger=owner+2;
+        auto ticks=std::chrono::steady_clock::now().time_since_epoch().count();owner=1400000000+static_cast<int>(ticks%100000000);member=owner+1;stranger=owner+2;other=owner+3;
+        for(int uid:{owner,member,stranger,other})db->sql("INSERT INTO user(uid,name,email) VALUES(?,?,?)").bind(uid).bind("group_fixture_"+std::to_string(uid)).bind(std::to_string(uid)+"@group-fixture.invalid").execute();
     }
     void TearDown() override {
         if(!db)return;
-        db->sql("DELETE FROM group_operation WHERE user_id IN (?,?,?)").bind(owner).bind(member).bind(stranger).execute();
-        db->sql("DELETE FROM friend WHERE self_id IN (?,?,?)").bind(owner).bind(member).bind(stranger).execute();
+        db->sql("DELETE FROM group_operation WHERE user_id IN (?,?,?,?)").bind(owner).bind(member).bind(stranger).bind(other).execute();
+        db->sql("DELETE FROM friend WHERE self_id IN (?,?,?,?) OR friend_id IN (?,?,?,?)").bind(owner).bind(member).bind(stranger).bind(other).bind(owner).bind(member).bind(stranger).bind(other).execute();
+        db->sql("DELETE FROM user WHERE uid IN (?,?,?,?)").bind(owner).bind(member).bind(stranger).bind(other).execute();
         if(!thread)return;
         db->sql("DELETE FROM group_admission WHERE thread_id=?").bind(thread).execute();
         db->sql("DELETE FROM chat_message WHERE thread_id=?").bind(thread).execute();
@@ -53,7 +55,7 @@ protected:
     }
     std::uint64_t Version(int who) {auto r=db->sql("SELECT membership_version FROM group_chat_member WHERE thread_id=? AND user_id=?").bind(thread).bind(who).execute().fetchOne();return r?r[0].get<std::uint64_t>():0;}
     int Op(GroupAction a,int uid,std::uint64_t after=0,const std::vector<std::pair<std::string,std::string>>& t={}) {return mysql->GroupOperation(a,uid,thread,after,100,t,group,members,messages,recipients);}
-    void Friend(int a,int b) {db->sql("INSERT INTO friend(self_id,friend_id,back) VALUES(?,?,'')").bind(a).bind(b).execute();}
+    void Friend(int a,int b) {db->sql("INSERT INTO friend(self_id,friend_id,back) VALUES(?,?,'')").bind(a).bind(b).execute();db->sql("INSERT INTO friend(self_id,friend_id,back) VALUES(?,?,'')").bind(b).bind(a).execute();}
     Json::Value Decision(const char* field,std::uint64_t id,bool yes) {auto r=Request();r[field]=Json::UInt64(id);r[std::string(field)=="invitation_id"?"accept":"approve"]=yes;return r;}
     void Approval(bool on) {auto r=Request();r["approval_required"]=on;ASSERT_EQ(Mutate(ID_SET_GROUP_APPROVAL_REQ,owner,r),Success);}
     void Create() {ASSERT_EQ(Mutate(ID_CREATE_GROUP_REQ,owner),Success);ASSERT_GT(thread,0u);}
@@ -102,9 +104,12 @@ TEST_F(GroupTransactionTest, InvitationConsentApprovalOfflineRecoveryAndTerminal
     ASSERT_EQ(mysql->LoadGroupRequests(member,list,inbox),Success);ASSERT_EQ(inbox["entries"].size(),1u);
     auto accept=Decision("invitation_id",invite,true);ASSERT_EQ(Mutate(ID_DECIDE_GROUP_INVITE_REQ,member,accept),Success);EXPECT_EQ(result["admission"].asString(),"pending");auto application=result["application"]["id"].asUInt64();
     ASSERT_EQ(Mutate(ID_DECIDE_GROUP_INVITE_REQ,member,accept),Success);EXPECT_TRUE(result["replayed"].asBool());EXPECT_EQ(Op(GroupAction::Members,member),GroupNotMember);
+    ASSERT_EQ(Mutate(ID_DECIDE_GROUP_INVITE_REQ,member,Decision("invitation_id",invite,false)),Success);
+    EXPECT_TRUE(result["already_processed"].asBool());EXPECT_TRUE(result["status_conflict"].asBool());
+    EXPECT_EQ(result["entry"]["status"].asString(),"accepted");EXPECT_TRUE(events.empty());
     auto approve=Decision("application_id",application,true);ASSERT_EQ(Mutate(ID_DECIDE_GROUP_APPLICATION_REQ,owner,approve),Success);ASSERT_EQ(Op(GroupAction::History,member),Success);
     ASSERT_EQ(Mutate(ID_KICK_GROUP_MEMBER_REQ,owner,Json::Value(),member),Success);
-    ASSERT_EQ(Mutate(ID_DECIDE_GROUP_APPLICATION_REQ,owner,Decision("application_id",application,true)),Success);EXPECT_EQ(Op(GroupAction::History,member),GroupNotMember);
+    ASSERT_EQ(Mutate(ID_DECIDE_GROUP_APPLICATION_REQ,owner,Decision("application_id",application,true)),Success);EXPECT_TRUE(result["already_processed"].asBool());EXPECT_FALSE(result["status_conflict"].asBool());EXPECT_EQ(Op(GroupAction::History,member),GroupNotMember);
     list["scope"]="results";ASSERT_EQ(mysql->LoadGroupRequests(member,list,inbox),Success);ASSERT_EQ(inbox["entries"].size(),2u);EXPECT_EQ(inbox["entries"][1]["status"].asString(),"approved");
 }
 
@@ -114,7 +119,7 @@ TEST_F(GroupTransactionTest, SearchJoinConvertsPendingInvitationAndApprovalOffKe
     auto row=db->sql("SELECT CAST(status AS CHAR) FROM group_admission WHERE id=?").bind(invitation).execute().fetchOne();EXPECT_EQ(row[0].get<std::string>(),"accepted");
     Approval(false);ASSERT_EQ(Mutate(ID_JOIN_GROUP_REQ,member),Success);EXPECT_EQ(result["application"]["id"].asUInt64(),app);EXPECT_EQ(Op(GroupAction::History,member),GroupNotMember);
     ASSERT_EQ(Mutate(ID_DECIDE_GROUP_APPLICATION_REQ,owner,Decision("application_id",app,false)),Success);
-    ASSERT_EQ(Mutate(ID_DECIDE_GROUP_APPLICATION_REQ,owner,Decision("application_id",app,true)),Success);EXPECT_EQ(Op(GroupAction::Authorize,member),GroupNotMember);
+    ASSERT_EQ(Mutate(ID_DECIDE_GROUP_APPLICATION_REQ,owner,Decision("application_id",app,true)),Success);EXPECT_TRUE(result["already_processed"].asBool());EXPECT_TRUE(result["status_conflict"].asBool());EXPECT_EQ(result["entry"]["status"].asString(),"rejected");EXPECT_EQ(Op(GroupAction::Authorize,member),GroupNotMember);
 }
 
 TEST_F(GroupTransactionTest, RolesAtomicTransferLeaveReplayAndInvalidInvitation) {
@@ -131,7 +136,9 @@ TEST_F(GroupTransactionTest, RolesAtomicTransferLeaveReplayAndInvalidInvitation)
 }
 
 TEST_F(GroupTransactionTest, ConcurrentApprovalDoesNotResurrectAndRollbackPreservesPending) {
-    Create();Approval(true);ASSERT_EQ(Mutate(ID_JOIN_GROUP_REQ,member),Success);auto app=result["application"]["id"].asUInt64();
+    Create();ASSERT_EQ(Mutate(ID_JOIN_GROUP_REQ,stranger),Success);ASSERT_EQ(Mutate(ID_JOIN_GROUP_REQ,other),Success);
+    for(int admin:{stranger,other}){auto r=Request();r["role"]=1;ASSERT_EQ(Mutate(ID_SET_GROUP_ADMIN_REQ,owner,r,admin),Success);}
+    Approval(true);ASSERT_EQ(Mutate(ID_JOIN_GROUP_REQ,member),Success);auto app=result["application"]["id"].asUInt64();
     const std::string trigger="group_approval_fail_"+std::to_string(owner);
     db->sql("CREATE TRIGGER `"+trigger+"` BEFORE INSERT ON group_chat_member FOR EACH ROW BEGIN IF NEW.user_id="+std::to_string(member)+" THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='isolated approval failure'; END IF; END").execute();
     bool installed=true;Defer remove([&](){if(installed)db->sql("DROP TRIGGER `"+trigger+"`").execute();});
@@ -139,10 +146,16 @@ TEST_F(GroupTransactionTest, ConcurrentApprovalDoesNotResurrectAndRollbackPreser
     auto row=db->sql("SELECT CAST(status AS CHAR) FROM group_admission WHERE id=?").bind(app).execute().fetchOne();EXPECT_EQ(row[0].get<std::string>(),"pending");
     db->sql("DROP TRIGGER `"+trigger+"`").execute();installed=false;
     auto first=Decision("application_id",app,true),second=Decision("application_id",app,false);
-    auto task=[&](const Json::Value& r){Json::Value out;std::vector<GroupEvent> e;return mysql->MutateGroup(owner,ID_DECIDE_GROUP_APPLICATION_REQ,r,Json::Value(),out,e);};
-    auto a=std::async(std::launch::async,task,first),b=std::async(std::launch::async,task,second);EXPECT_EQ(a.get(),Success);EXPECT_EQ(b.get(),Success);
+    auto task=[&](int admin,const Json::Value& r){Json::Value out;std::vector<GroupEvent> e;int code=mysql->MutateGroup(admin,ID_DECIDE_GROUP_APPLICATION_REQ,r,Json::Value(),out,e);return std::make_pair(code,out);};
+    auto a=std::async(std::launch::async,task,stranger,first),b=std::async(std::launch::async,task,other,second);
+    auto approved=a.get(),rejected=b.get();EXPECT_EQ(approved.first,Success);EXPECT_EQ(rejected.first,Success);
+    EXPECT_EQ(static_cast<int>(approved.second["already_processed"].asBool())+static_cast<int>(rejected.second["already_processed"].asBool()),1);
+    if(approved.second["already_processed"].asBool())EXPECT_TRUE(approved.second["status_conflict"].asBool());
+    if(rejected.second["already_processed"].asBool())EXPECT_TRUE(rejected.second["status_conflict"].asBool());
     row=db->sql("SELECT CAST(status AS CHAR) FROM group_admission WHERE id=?").bind(app).execute().fetchOne();const auto terminal=row[0].get<std::string>();EXPECT_TRUE(terminal=="approved"||terminal=="rejected");
     EXPECT_EQ(Op(GroupAction::Authorize,member),terminal=="approved"?Success:GroupNotMember);
+    row=db->sql("SELECT COUNT(*) FROM group_chat_member WHERE thread_id=? AND user_id=? AND active=1").bind(thread).bind(member).execute().fetchOne();
+    EXPECT_EQ(row[0].get<int>(),terminal=="approved"?1:0);
 }
 
 TEST_F(GroupTransactionTest, VersionedAnnouncementUtf8LimitsAndBusinessInputReplay) {
@@ -200,5 +213,72 @@ TEST_F(GroupTransactionTest, InviterLeaveInvalidatesOnlyUnacceptedInvitations) {
     auto row=db->sql("SELECT CAST(status AS CHAR) FROM group_admission WHERE id=?").bind(application).execute().fetchOne();EXPECT_EQ(row[0].get<std::string>(),"pending");
     ASSERT_EQ(Mutate(ID_DECIDE_GROUP_APPLICATION_REQ,owner,Decision("application_id",application,true)),Success);
     EXPECT_EQ(Op(GroupAction::Authorize,stranger),Success);
+}
+
+TEST_F(GroupTransactionTest, InvitationsRequireExistingAccountAndReciprocalFriendship) {
+    Create();
+    db->sql("INSERT INTO friend(self_id,friend_id) VALUES(?,?)").bind(owner).bind(member).execute();
+    EXPECT_EQ(Mutate(ID_INVITE_GROUP_REQ,owner,Json::Value(),member),GroupPermissionDenied);
+    db->sql("INSERT INTO friend(self_id,friend_id) VALUES(?,?)").bind(member).bind(owner).execute();
+    ASSERT_EQ(Mutate(ID_INVITE_GROUP_REQ,owner,Json::Value(),member),Success);
+    const int nonexistent=owner+4;
+    Friend(owner,nonexistent);
+    EXPECT_EQ(Mutate(ID_INVITE_GROUP_REQ,owner,Json::Value(),nonexistent),SearchUserNoExist);
+    auto count=db->sql("SELECT COUNT(*) FROM group_admission WHERE thread_id=?").bind(thread).execute().fetchOne();
+    EXPECT_EQ(count[0].get<int>(),1);
+}
+
+TEST_F(GroupTransactionTest, AdministratorRoleAndKickPermissionMatrix) {
+    Create();ASSERT_EQ(Mutate(ID_JOIN_GROUP_REQ,member),Success);ASSERT_EQ(Mutate(ID_JOIN_GROUP_REQ,stranger),Success);
+    for(int admin:{member,stranger}){auto r=Request();r["role"]=1;ASSERT_EQ(Mutate(ID_SET_GROUP_ADMIN_REQ,owner,r,admin),Success);}
+    auto demote=Request();demote["role"]=0;
+    EXPECT_EQ(Mutate(ID_SET_GROUP_ADMIN_REQ,member,demote,stranger),GroupPermissionDenied);
+    EXPECT_EQ(Mutate(ID_KICK_GROUP_MEMBER_REQ,member,Json::Value(),stranger),GroupPermissionDenied);
+    EXPECT_EQ(Mutate(ID_KICK_GROUP_MEMBER_REQ,member,Json::Value(),owner),GroupPermissionDenied);
+    ASSERT_EQ(Mutate(ID_KICK_GROUP_MEMBER_REQ,owner,Json::Value(),stranger),Success);
+    ASSERT_EQ(Mutate(ID_KICK_GROUP_MEMBER_REQ,owner,Json::Value(),member),Success);
+    EXPECT_EQ(Op(GroupAction::Authorize,stranger),GroupNotMember);
+    EXPECT_EQ(Op(GroupAction::Authorize,member),GroupNotMember);
+}
+
+TEST_F(GroupTransactionTest, TransferOwnerUpdateFailureRollsBackBothRolesAndVersions) {
+    Create();ASSERT_EQ(Mutate(ID_JOIN_GROUP_REQ,member),Success);
+    auto appoint=Request();appoint["role"]=1;ASSERT_EQ(Mutate(ID_SET_GROUP_ADMIN_REQ,owner,appoint,member),Success);
+    ASSERT_EQ(Op(GroupAction::Members,owner),Success);const auto groupVersion=group.version;
+    const auto ownerVersion=Version(owner),memberVersion=Version(member);
+    const std::string trigger="group_transfer_fail_"+std::to_string(owner);
+    db->sql("CREATE TRIGGER `"+trigger+"` BEFORE UPDATE ON group_chat FOR EACH ROW BEGIN IF NEW.thread_id="+std::to_string(thread)+" AND NEW.owner_uid<>OLD.owner_uid THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='isolated owner update failure'; END IF; END").execute();
+    bool installed=true;Defer remove([&](){if(installed)db->sql("DROP TRIGGER `"+trigger+"`").execute();});
+    EXPECT_EQ(Mutate(ID_TRANSFER_GROUP_OWNER_REQ,owner,Json::Value(),member),ServerBusy);EXPECT_TRUE(events.empty());
+    ASSERT_EQ(Op(GroupAction::Members,owner),Success);EXPECT_EQ(group.ownerUid,owner);EXPECT_EQ(group.version,groupVersion);
+    ASSERT_EQ(members.size(),2u);EXPECT_EQ(members[0].uid,owner);EXPECT_EQ(members[0].role,2);EXPECT_EQ(members[1].uid,member);EXPECT_EQ(members[1].role,1);
+    EXPECT_EQ(Version(owner),ownerVersion);EXPECT_EQ(Version(member),memberVersion);
+    db->sql("DROP TRIGGER `"+trigger+"`").execute();installed=false;
+    ASSERT_EQ(Mutate(ID_TRANSFER_GROUP_OWNER_REQ,owner,Json::Value(),member),Success);
+}
+
+TEST_F(GroupTransactionTest, OnlyExplicitMembershipConfirmationCanGrantActivation) {
+    Create();EXPECT_TRUE(result["membership_granted"].asBool());
+    auto join=Request();
+    ASSERT_EQ(Mutate(ID_JOIN_GROUP_REQ,member,join),Success);EXPECT_TRUE(result["membership_granted"].asBool());
+    bool newMemberGrant=false,ownerGrant=false;
+    for(const auto& event:events){if(event.targetUid==member&&event.type=="members")newMemberGrant=event.payload["membership_granted"].asBool();if(event.targetUid==owner)ownerGrant|=event.payload["membership_granted"].asBool();}
+    EXPECT_TRUE(newMemberGrant);EXPECT_FALSE(ownerGrant);
+    ASSERT_EQ(Mutate(ID_JOIN_GROUP_REQ,member,join),Success);EXPECT_TRUE(result["replayed"].asBool());EXPECT_TRUE(result["membership_granted"].asBool());EXPECT_TRUE(events.empty());
+    ASSERT_EQ(Mutate(ID_JOIN_GROUP_REQ,member),Success);EXPECT_TRUE(result["membership_granted"].asBool());EXPECT_TRUE(events.empty());
+    auto announcement=Request();announcement["announcement"]="metadata cannot grant";announcement["expected_announcement_version"]=Json::UInt64(0);
+    ASSERT_EQ(Mutate(ID_UPDATE_GROUP_ANNOUNCEMENT_REQ,owner,announcement),Success);
+    for(const auto& event:events){EXPECT_EQ(event.type,"metadata");EXPECT_FALSE(event.payload["membership_granted"].asBool());}
+    ASSERT_EQ(Mutate(ID_KICK_GROUP_MEMBER_REQ,owner,Json::Value(),member),Success);
+    ASSERT_EQ(Mutate(ID_JOIN_GROUP_REQ,member,join),Success);EXPECT_TRUE(result["replayed"].asBool());EXPECT_FALSE(result["membership_granted"].asBool());EXPECT_TRUE(events.empty());EXPECT_EQ(Op(GroupAction::Authorize,member),GroupNotMember);
+    Approval(true);ASSERT_EQ(Mutate(ID_JOIN_GROUP_REQ,member),Success);EXPECT_FALSE(result["membership_granted"].asBool());
+    auto application=result["application"]["id"].asUInt64();
+    ASSERT_EQ(Mutate(ID_DECIDE_GROUP_APPLICATION_REQ,owner,Decision("application_id",application,true)),Success);
+    newMemberGrant=false;
+    for(const auto& event:events){if(event.targetUid==member&&event.type=="members")newMemberGrant=event.payload["membership_granted"].asBool();if(event.type=="result"){EXPECT_FALSE(event.payload["membership_proof"].asBool());EXPECT_FALSE(event.payload["membership_granted"].asBool());}}
+    EXPECT_TRUE(newMemberGrant);EXPECT_FALSE(result["membership_granted"].asBool());
+    ASSERT_EQ(Mutate(ID_KICK_GROUP_MEMBER_REQ,owner,Json::Value(),member),Success);
+    auto terminalRetry=Decision("application_id",application,true);
+    ASSERT_EQ(Mutate(ID_DECIDE_GROUP_APPLICATION_REQ,owner,terminalRetry),Success);EXPECT_TRUE(result["already_processed"].asBool());EXPECT_FALSE(result["membership_granted"].asBool());EXPECT_TRUE(events.empty());
 }
 } // namespace
