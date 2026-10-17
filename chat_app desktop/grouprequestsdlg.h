@@ -1,39 +1,50 @@
 #ifndef GROUPREQUESTSDLG_H
 #define GROUPREQUESTSDLG_H
 
-#include <QDialog>
+#include <QWidget>
 #include <QHash>
 #include <QPointer>
 #include <QJsonObject>
 #include "userdata.h"
-class QComboBox;
+class QLabel;
 class QListWidget;
 class QPushButton;
 class QTabWidget;
 
-// 文件职责：区分个人邀请/申请/结果收件箱与群管理员审批页，按窗口代次拒绝迟到页面和终态回退。
-class GroupRequestsDialog final : public QDialog
+// 文件职责：共享账号群通知与管理审批的分页、终态合并和决定逻辑。
+class GroupRequestsPage final : public QWidget
 {
     Q_OBJECT
 public:
-    /** 打开当前登录账号的邀请、申请及处理结果收件箱；parent 为父窗体。 */
-    explicit GroupRequestsDialog(QWidget *parent = nullptr);
-    /** 打开 group 对应群的管理员审批页；parent 为父窗体。 */
-    GroupRequestsDialog(const GroupInfo &group, QWidget *parent = nullptr);
+    /** 创建可嵌入的账号群通知；登录完成后由调用方 Refresh。 */
+    explicit GroupRequestsPage(QWidget *parent = nullptr);
+    /** 创建可嵌入的单群审批组件。 */
+    GroupRequestsPage(const GroupInfo &group, QWidget *parent = nullptr);
     /** 合并同群最新状态并撤销已失去的审批权限；忽略线程或版本回退。 */
     void UpdateGroup(const GroupInfo &group);
+    /** 刷新所有当前 scope；账号和登录代次不匹配时不发送请求。 */
+    void Refresh();
+
+signals:
+    void sig_close_requested();
 
 private:
     struct ScopeView {
         QListWidget *list = nullptr;
         QPushButton *more = nullptr;
+        QLabel *status = nullptr;
+        QPushButton *refresh = nullptr;
+        QString outcome;
         qint64 nextId = 0;
         QString requestId;
         quint64 generation = 0;
         bool loadMore = false;
     };
 
-    /** 连接 TCP 的请求页、终态事件和管理权限信号；无参数，无返回值。 */
+    /** 检查创建组件时的账号及登录代次仍有效。 */
+    bool IsCurrentAccount() const;
+    /** 更新 scope 的内嵌加载状态并保留最近操作结果。 */
+    void SetStatus(const QString &scope, const QString &text);
     void ConnectSignals();
     /** 创建个人邀请/申请/结果三类分页视图；无参数，无返回值。 */
     void BuildAccountViews();
@@ -78,6 +89,7 @@ private:
     QString _decisionKind;
     QHash<QString, QString> _admissionStatuses;
     qint64 _accountUid = 0;
+    quint64 _loginGeneration = 0;
     QPointer<QPushButton> _acceptButton;
     QPointer<QPushButton> _rejectButton;
 };

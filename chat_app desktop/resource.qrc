@@ -4,7 +4,6 @@
         <file>res/add_friend.png</file>
         <file>res/add_friend_hover.png</file>
         <file>res/add_friend_normal.png</file>
-        <file>res/addtip.png</file>
         <file>res/arowdown.png</file>
         <file>res/chat_app.png</file>
         <file>res/chat_icon.png</file>
@@ -35,8 +34,13 @@
         <file>res/msg_chat_press.png</file>
         <file>res/readed.png</file>
         <file>res/red_point.png</file>
-        <file>res/right_tip.png</file>
         <file>res/search.png</file>
+        <file>res/search_user.png</file>
+        <file>res/search_group.png</file>
+        <file>res/create_group.png</file>
+        <file>res/group_notifications_normal.png</file>
+        <file>res/group_notifications_hover.png</file>
+        <file>res/group_notifications_selected.png</file>
         <file>res/send_fail.png</file>
         <file>res/settings.png</file>
         <file>res/settings_hover.png</file>

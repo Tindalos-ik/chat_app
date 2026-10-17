@@ -286,7 +286,7 @@ void GroupManagementDialog::UpdateGroup(const GroupInfo &group)
     if (!changed) return;
     _group = group;
     if (_avatarTransfer) _avatarTransfer->RequestAvatar(_group);
-    if (_approvalsDialog) _approvalsDialog->UpdateGroup(group);
+    if (_approvalsPage) _approvalsPage->UpdateGroup(group);
     UpdateControls();
     if (!group.active || !CanUseCurrentGroup()) {
         if (_approvalsDialog) _approvalsDialog->close();
@@ -652,10 +652,24 @@ void GroupManagementDialog::DissolveGroup()
 void GroupManagementDialog::OpenApprovals()
 {
     if (!CanManageAnnouncement()) return;
-    if (_approvalsDialog) { _approvalsDialog->raise(); return; }
-    _approvalsDialog = new GroupRequestsDialog(_group, this);
-    _approvalsDialog->setAttribute(Qt::WA_DeleteOnClose);
-    _approvalsDialog->show();
+    if (_approvalsDialog) {
+        _approvalsDialog->show();
+        _approvalsDialog->raise();
+        _approvalsDialog->activateWindow();
+        return;
+    }
+    auto *dialog = new QDialog(this);
+    dialog->setWindowTitle(tr("待审批申请：%1").arg(_group.name));
+    dialog->setObjectName(QStringLiteral("group_approvals_dialog"));
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->resize(560, 440);
+    auto *layout = new QVBoxLayout(dialog);
+    auto *page = new GroupRequestsPage(_group, dialog);
+    layout->addWidget(page);
+    connect(page, &GroupRequestsPage::sig_close_requested, dialog, &QDialog::close);
+    _approvalsDialog = dialog;
+    _approvalsPage = page;
+    dialog->show();
 }
 
 void GroupManagementDialog::EditAnnouncement()

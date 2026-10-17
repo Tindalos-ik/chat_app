@@ -143,7 +143,8 @@ signals:
     void sig_connection_lost(); // 已登录连接被服务端关闭，但未完整收到踢人通知
     void sig_heartbeat_timeout(); // 60 秒未收到有效心跳回复，交给主窗口显示专用提示
     void sig_group_info(const GroupInfo &group, bool confirmedMembership);
-    void sig_group_search_result(const GroupInfo &group);
+    // 搜索展示携带原请求身份及错误；仅改变前端接线，不授予成员身份。
+    void sig_group_search_result(const QString &requestId, int error, const GroupInfo &group);
     void sig_group_operation_result(const QString &requestId, int error);
     void sig_group_state(qint64 threadId, bool active, const QString &reason, qint64 targetUid);
     // Pages carry their server group version so open dialogs can discard pages captured before a role change.

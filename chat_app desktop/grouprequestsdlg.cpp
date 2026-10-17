@@ -10,7 +10,6 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QListWidget>
-#include <QMessageBox>
 #include <QPointer>
 #include <QPushButton>
 #include <QTabWidget>
@@ -28,21 +27,18 @@ QString StatusText(const QString &status)
 }
 }
 
-GroupRequestsDialog::GroupRequestsDialog(QWidget *parent)
-    : QDialog(parent)
+GroupRequestsPage::GroupRequestsPage(QWidget *parent)
+    : QWidget(parent)
 {
     const auto user = UserMgr::GetInstance()->GetUserInfo();
     _accountUid = user ? user->_uid : 0;
-    setWindowTitle(tr("群邀请与申请"));
-    setObjectName(QStringLiteral("group_requests_dialog"));
-    resize(560, 440);
+    _loginGeneration = TcpMgr::GetInstance()->LoginGeneration();
+    setObjectName(QStringLiteral("group_requests_page"));
+    setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     BuildAccountViews();
     ConnectSignals();
-    RequestPage(QStringLiteral("inbox"), true);
-    RequestPage(QStringLiteral("applications"), true);
-    RequestPage(QStringLiteral("results"), true);
 }
-void GroupRequestsDialog::ConnectSignals()
+void GroupRequestsPage::ConnectSignals()
 {
     const auto tcp = TcpMgr::GetInstance();
     connect(tcp.get(), &TcpMgr::sig_group_requests, this,
@@ -72,29 +68,34 @@ void GroupRequestsDialog::ConnectSignals()
 }
 
 
-GroupRequestsDialog::GroupRequestsDialog(const GroupInfo &group, QWidget *parent)
-    : QDialog(parent), _group(group), _approvalsOnly(true)
+GroupRequestsPage::GroupRequestsPage(const GroupInfo &group, QWidget *parent)
+    : QWidget(parent), _group(group), _approvalsOnly(true)
 {
     const auto user = UserMgr::GetInstance()->GetUserInfo();
     _accountUid = user ? user->_uid : 0;
-    setWindowTitle(tr("待审批申请：%1").arg(group.name));
-    setObjectName(QStringLiteral("group_approvals_dialog"));
-    resize(560, 440);
+    _loginGeneration = TcpMgr::GetInstance()->LoginGeneration();
+    setObjectName(QStringLiteral("group_approvals_page"));
     BuildApprovalView();
     ConnectSignals();
     if (CanManageApprovals()) RequestPage(QStringLiteral("approvals"), true);
     else _revoked = true;
 }
 
-void GroupRequestsDialog::BuildAccountViews()
+void GroupRequestsPage::BuildAccountViews()
 {
     auto *layout = new QVBoxLayout(this);
+    layout->setContentsMargins(14, 12, 14, 12);
+    layout->setSpacing(6);
+    auto *title = new QLabel(tr("群通知"), this);
+    title->setObjectName(QStringLiteral("group_notifications_title"));
+    layout->addWidget(title);
     _tabs = new QTabWidget(this);
-    layout->addWidget(_tabs);
-    for (const auto &tab : {qMakePair(QStringLiteral("inbox"), tr("收到的邀请")),
+    layout->addWidget(_tabs, 1);
+    for (const auto &tab : {qMakePair(QStringLiteral("inbox"), tr("群邀请")),
                             qMakePair(QStringLiteral("applications"), tr("我的申请")),
                             qMakePair(QStringLiteral("results"), tr("处理结果"))}) {
         auto *page = new QWidget(_tabs);
+        page->setProperty("scope", tab.first);
         auto *pageLayout = new QVBoxLayout(page);
         auto *list = new QListWidget(page);
         const QString listName = tab.first == QStringLiteral("inbox")
@@ -102,33 +103,46 @@ void GroupRequestsDialog::BuildAccountViews()
             : tab.first == QStringLiteral("applications")
                 ? QStringLiteral("group_application_list") : QStringLiteral("group_admission_results");
         list->setObjectName(listName);
+        list->setWordWrap(true);
+        list->setTextElideMode(Qt::ElideNone);
+        list->setResizeMode(QListView::Adjust);
+        list->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         auto *more = new QPushButton(tr("加载更多"), page);
         more->setEnabled(false);
-        pageLayout->addWidget(list);
-        pageLayout->addWidget(more);
+        auto *status = new QLabel(tr("点击刷新加载群通知。"), page);
+        status->setWordWrap(true);
+        auto *refresh = new QPushButton(tr("刷新"), page);
+        auto *tools = new QHBoxLayout;
+        tools->addWidget(refresh);
+        tools->addWidget(more);
+        tools->addStretch();
+        if (tab.first == QStringLiteral("inbox")) {
+            _acceptButton = new QPushButton(tr("接受邀请"), page);
+            _rejectButton = new QPushButton(tr("拒绝邀请"), page);
+            tools->addWidget(_acceptButton);
+            tools->addWidget(_rejectButton);
+            connect(_acceptButton, &QPushButton::clicked, this, [this] { Decide(true); });
+            connect(_rejectButton, &QPushButton::clicked, this, [this] { Decide(false); });
+        }
+        pageLayout->addWidget(status);
+        pageLayout->addLayout(tools);
+        pageLayout->addWidget(list, 1);
         ScopeView view;
         view.list = list;
         view.more = more;
+        view.status = status;
+        view.refresh = refresh;
         _views.insert(tab.first, view);
         _tabs->addTab(page, tab.second);
         connect(more, &QPushButton::clicked, this, [this, scope = tab.first] {
             RequestPage(scope, false);
         });
+        connect(refresh, &QPushButton::clicked, this, [this, scope = tab.first] {
+            RequestPage(scope, true);
+        });
         connect(list, &QListWidget::currentItemChanged, this,
                 [this](QListWidgetItem *, QListWidgetItem *) { UpdateActions(); });
     }
-    auto *actions = new QHBoxLayout;
-    _acceptButton = new QPushButton(tr("接受邀请"), this);
-    _rejectButton = new QPushButton(tr("拒绝邀请"), this);
-    actions->addWidget(_acceptButton);
-    actions->addWidget(_rejectButton);
-    actions->addStretch();
-    auto *close = new QPushButton(tr("关闭"), this);
-    actions->addWidget(close);
-    layout->addLayout(actions);
-    connect(_acceptButton, &QPushButton::clicked, this, [this] { Decide(true); });
-    connect(_rejectButton, &QPushButton::clicked, this, [this] { Decide(false); });
-    connect(close, &QPushButton::clicked, this, &QDialog::close);
     connect(_tabs, &QTabWidget::currentChanged, this, [this](int index) {
         const QWidget *page = _tabs->widget(index);
         _activeScope = page ? page->property("scope").toString() : QString();
@@ -143,24 +157,37 @@ void GroupRequestsDialog::BuildAccountViews()
     UpdateActions();
 }
 
-void GroupRequestsDialog::BuildApprovalView()
+void GroupRequestsPage::BuildApprovalView()
 {
     auto *layout = new QVBoxLayout(this);
     auto *summary = new QLabel(tr("%1（群号 %2）").arg(_group.name, QString::number(_group.threadId)), this);
+    summary->setWordWrap(true);
     layout->addWidget(summary);
     auto *list = new QListWidget(this);
     list->setObjectName(QStringLiteral("group_pending_approvals"));
+    list->setWordWrap(true);
+    list->setTextElideMode(Qt::ElideNone);
+    list->setResizeMode(QListView::Adjust);
+    list->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     auto *more = new QPushButton(tr("加载更多待审批申请"), this);
     more->setEnabled(false);
     ScopeView view;
+    auto *status = new QLabel(this);
+    status->setWordWrap(true);
+    auto *refresh = new QPushButton(tr("刷新"), this);
+    layout->addWidget(status);
     view.list = list;
     view.more = more;
+    view.status = status;
+    view.refresh = refresh;
     _views.insert(QStringLiteral("approvals"), view);
     layout->addWidget(list);
+    layout->addWidget(refresh);
     layout->addWidget(more);
     connect(more, &QPushButton::clicked, this, [this] {
         RequestPage(QStringLiteral("approvals"), false);
     });
+    connect(refresh, &QPushButton::clicked, this, [this] { Refresh(); });
     connect(list, &QListWidget::currentItemChanged, this,
             [this](QListWidgetItem *, QListWidgetItem *) { UpdateActions(); });
     auto *actions = new QHBoxLayout;
@@ -174,16 +201,14 @@ void GroupRequestsDialog::BuildApprovalView()
     layout->addLayout(actions);
     connect(_acceptButton, &QPushButton::clicked, this, [this] { Decide(true); });
     connect(_rejectButton, &QPushButton::clicked, this, [this] { Decide(false); });
-    connect(close, &QPushButton::clicked, this, &QDialog::close);
+    connect(close, &QPushButton::clicked, this, &GroupRequestsPage::sig_close_requested);
     _activeScope = QStringLiteral("approvals");
     UpdateActions();
 }
 
-bool GroupRequestsDialog::CanManageApprovals() const
+bool GroupRequestsPage::CanManageApprovals() const
 {
-    if (!_approvalsOnly || _revoked || _accountUid <= 0) return false;
-    const auto user = UserMgr::GetInstance()->GetUserInfo();
-    if (!user || user->_uid != _accountUid) return false;
+    if (!_approvalsOnly || _revoked || !IsCurrentAccount()) return false;
     for (const LocalChatThread &thread : LocalChatStorageMgr::GetInstance()->LoadAllThreads()) {
         if (thread.threadId == _group.threadId && thread.threadType == QStringLiteral("group"))
             return thread.active && thread.version == _group.version
@@ -192,13 +217,15 @@ bool GroupRequestsDialog::CanManageApprovals() const
     return false;
 }
 
-void GroupRequestsDialog::RequestPage(const QString &scope, bool reset)
+void GroupRequestsPage::RequestPage(const QString &scope, bool reset)
 {
+    if (!IsCurrentAccount()) return;
     auto it = _views.find(scope);
     if (it == _views.end() || (!reset && !it->requestId.isEmpty())) return;
     if (_approvalsOnly && !CanManageApprovals()) {
         _revoked = true;
         UpdateActions();
+        emit sig_close_requested();
         return;
     }
     ScopeView &view = it.value();
@@ -211,21 +238,27 @@ void GroupRequestsDialog::RequestPage(const QString &scope, bool reset)
         view.loadMore = false;
         if (view.list) view.list->clear();
         if (view.more) view.more->setEnabled(false);
+        if (view.refresh) view.refresh->setEnabled(true);
     }
     const QString requestId = TcpMgr::GetInstance()->LoadGroupRequests(
         scope, view.nextId, _approvalsOnly ? _group.threadId : 0);
     if (requestId.isEmpty()) {
-        QMessageBox::warning(this, tr("群申请"), tr("请求未发送，请检查连接后重试。"));
+        SetStatus(scope, tr("请求未发送，请检查连接后刷新重试。"));
         return;
     }
     view.requestId = requestId;
     _pendingGenerations.insert(requestId, view.generation);
     if (view.more) view.more->setEnabled(false);
+    if (view.refresh) view.refresh->setEnabled(false);
+    SetStatus(scope, tr("正在加载…"));
+    UpdateActions();
 }
 
-void GroupRequestsDialog::UpdateGroup(const GroupInfo &group)
+void GroupRequestsPage::UpdateGroup(const GroupInfo &group)
 {
-    if (!_approvalsOnly || group.threadId != _group.threadId || group.version < _group.version) return;
+    if (!IsCurrentAccount()) return;
+    if (!_approvalsOnly || group.threadId != _group.threadId || group.version < _group.version
+        || group.membershipVersion < _group.membershipVersion) return;
     const bool changed = group.version != _group.version
         || group.membershipVersion != _group.membershipVersion || group.role != _group.role
         || group.ownerUid != _group.ownerUid || group.active != _group.active;
@@ -239,18 +272,17 @@ void GroupRequestsDialog::UpdateGroup(const GroupInfo &group)
             view.list->clear();
             view.more->setEnabled(false);
         }
-        QMessageBox::information(this, tr("审批权限已变更"),
-            tr("你已不再是此群的有效管理员，待审批列表已关闭。"));
-        close();
+        emit sig_close_requested();
         return;
     }
     if (changed) RequestPage(QStringLiteral("approvals"), true);
 }
 
-void GroupRequestsDialog::HandlePage(const QString &requestId, const QString &scope, qint64 threadId,
+void GroupRequestsPage::HandlePage(const QString &requestId, const QString &scope, qint64 threadId,
                                     int error, qint64 groupVersion,
                                     const QList<GroupAdmissionInfo> &entries, qint64 nextId, bool loadMore)
 {
+    if (!IsCurrentAccount()) return;
     // 分页只能在本窗口代次及同一群版本内落地；撤权或版本变化时旧页立即失效。
     auto it = _views.find(scope);
     if (it == _views.end() || it->requestId != requestId
@@ -260,10 +292,11 @@ void GroupRequestsDialog::HandlePage(const QString &requestId, const QString &sc
         || (!_approvalsOnly && (scope == QStringLiteral("approvals") || threadId != 0))) return;
     ScopeView &view = it.value();
     view.requestId.clear();
+    if (view.refresh) view.refresh->setEnabled(true);
     if (_approvalsOnly && (!CanManageApprovals() || groupVersion != _group.version)) {
         if (!CanManageApprovals()) {
             _revoked = true;
-            close();
+            emit sig_close_requested();
         } else {
             RequestPage(scope, true);
         }
@@ -273,11 +306,9 @@ void GroupRequestsDialog::HandlePage(const QString &requestId, const QString &sc
         if (_approvalsOnly && (error == ErrorCodes::GroupNotMember
             || error == ErrorCodes::GroupPermissionDenied)) {
             _revoked = true;
-            QMessageBox::information(this, tr("审批权限已变更"),
-                tr("服务端已撤销此群审批权限，待审批列表已关闭。"));
-            close();
+            emit sig_close_requested();
         } else {
-            QMessageBox::warning(this, tr("群申请"), tr("加载失败（%1）。").arg(error));
+            SetStatus(scope, tr("加载失败（%1），请刷新重试。").arg(error));
         }
         UpdateActions();
         return;
@@ -296,7 +327,7 @@ void GroupRequestsDialog::HandlePage(const QString &requestId, const QString &sc
             view.list->clear();
             view.nextId = 0;
             view.loadMore = false;
-            QMessageBox::warning(this, tr("群申请"), tr("服务端申请页顺序或类型无效，已丢弃。"));
+            SetStatus(scope, tr("申请页顺序或类型无效，请刷新重试。"));
             UpdateActions();
             return;
         }
@@ -339,30 +370,38 @@ void GroupRequestsDialog::HandlePage(const QString &requestId, const QString &sc
         view.list->clear();
         view.nextId = 0;
         view.loadMore = false;
-        QMessageBox::warning(this, tr("群申请"), tr("服务端分页游标无效，已丢弃当前列表。"));
+        SetStatus(scope, tr("分页游标无效，请刷新重试。"));
         UpdateActions();
         return;
     }
     view.nextId = canContinue ? nextId : lastId;
     view.loadMore = canContinue;
     if (view.more) view.more->setEnabled(canContinue);
+    SetStatus(scope, view.list->count() == 0 ? tr("暂无记录。")
+        : canContinue ? tr("已加载 %1 条，可继续加载。").arg(view.list->count())
+                      : tr("已加载全部 %1 条记录。").arg(view.list->count()));
     UpdateActions();
 }
 
-void GroupRequestsDialog::HandleMutation(const QString &requestId, int requestType, int error,
+void GroupRequestsPage::HandleMutation(const QString &requestId, int requestType, int error,
                                          const QJsonObject &response)
 {
-    if (requestId != _decisionRequestId) return;
+    if (!IsCurrentAccount() || requestId.isEmpty() || requestId != _decisionRequestId) return;
+    const QString decisionScope = requestType == ID_DECIDE_GROUP_INVITE_REQ
+        ? QStringLiteral("inbox") : QStringLiteral("approvals");
     _decisionRequestId.clear();
     if (_acceptButton) _acceptButton->setEnabled(true);
     if (_rejectButton) _rejectButton->setEnabled(true);
     if (error != ErrorCodes::SUCCESS) {
-        QMessageBox::warning(this, tr("处理群申请"), tr("服务端拒绝操作（%1）。").arg(error));
+        SetStatus(decisionScope, tr("操作失败（%1），可重试。").arg(error));
         _decisionAdmissionId = 0;
         _decisionThreadId = 0;
         _decisionKind.clear();
         if (_approvalsOnly && (error == ErrorCodes::GroupNotMember
-            || error == ErrorCodes::GroupPermissionDenied)) close();
+            || error == ErrorCodes::GroupPermissionDenied)) {
+            _revoked = true;
+            emit sig_close_requested();
+        }
         else UpdateActions();
         return;
     }
@@ -383,17 +422,17 @@ void GroupRequestsDialog::HandleMutation(const QString &requestId, int requestTy
     _decisionThreadId = 0;
     _decisionKind.clear();
     if (conflict || already) {
-        QMessageBox::information(this, tr("群申请状态已更新"),
-            tr("该申请已由其他操作处理，当前状态：%1。").arg(StatusText(status)));
+        _views[decisionScope].outcome = tr("该记录已处理，当前状态：%1。").arg(StatusText(status));
     } else {
-        QMessageBox::information(this, tr("群申请"),
-            requestType == ID_DECIDE_GROUP_INVITE_REQ ? tr("邀请处理完成。") : tr("申请处理完成。"));
+        _views[decisionScope].outcome = requestType == ID_DECIDE_GROUP_INVITE_REQ
+            ? tr("邀请处理完成。") : tr("申请处理完成。");
     }
     RefreshCurrentViews();
 }
 
-void GroupRequestsDialog::HandleGroupInvalidation(qint64 threadId, bool active)
+void GroupRequestsPage::HandleGroupInvalidation(qint64 threadId, bool active)
 {
+    if (!IsCurrentAccount()) return;
     if (!_approvalsOnly || threadId != _group.threadId || active) return;
     _revoked = true;
     for (ScopeView &view : _views) {
@@ -402,15 +441,15 @@ void GroupRequestsDialog::HandleGroupInvalidation(qint64 threadId, bool active)
         view.requestId.clear();
         if (view.more) view.more->setEnabled(false);
     }
-    close();
+    emit sig_close_requested();
 }
 
-QString GroupRequestsDialog::AdmissionKey(const QString &kind, qint64 id)
+QString GroupRequestsPage::AdmissionKey(const QString &kind, qint64 id)
 {
     return kind + QLatin1Char(':') + QString::number(id);
 }
 
-QString GroupRequestsDialog::RememberAdmissionStatus(const GroupAdmissionInfo &entry)
+QString GroupRequestsPage::RememberAdmissionStatus(const GroupAdmissionInfo &entry)
 {
     const QString key = AdmissionKey(entry.kind, entry.id);
     const QString oldStatus = _admissionStatuses.value(key);
@@ -427,9 +466,10 @@ QString GroupRequestsDialog::RememberAdmissionStatus(const GroupAdmissionInfo &e
     return _admissionStatuses.value(key, entry.status);
 }
 
-void GroupRequestsDialog::HandleAdmissionEvent(const QString &eventType,
+void GroupRequestsPage::HandleAdmissionEvent(const QString &eventType,
                                                const GroupAdmissionInfo &entry)
 {
+    if (!IsCurrentAccount()) return;
     if ((eventType != QStringLiteral("inbox") && eventType != QStringLiteral("result"))
         || entry.id <= 0 || entry.threadId <= 0
         || (entry.kind != QStringLiteral("invitation")
@@ -446,7 +486,7 @@ void GroupRequestsDialog::HandleAdmissionEvent(const QString &eventType,
     RefreshCurrentViews();
 }
 
-void GroupRequestsDialog::RefreshCurrentViews()
+void GroupRequestsPage::RefreshCurrentViews()
 {
     if (_approvalsOnly) {
         RequestPage(QStringLiteral("approvals"), true);
@@ -457,25 +497,30 @@ void GroupRequestsDialog::RefreshCurrentViews()
     }
 }
 
-void GroupRequestsDialog::UpdateActions()
+void GroupRequestsPage::UpdateActions()
 {
     if (!_acceptButton || !_rejectButton) return;
     ScopeView *view = _views.contains(_activeScope) ? &_views[_activeScope] : nullptr;
     const QListWidgetItem *item = view && view->list ? view->list->currentItem() : nullptr;
     const bool pending = item && item->data(Qt::UserRole + 3).toString() == QStringLiteral("pending");
     const QString kind = item ? item->data(Qt::UserRole + 2).toString() : QString();
-    const bool allowed = pending && !_decisionRequestId.size()
+    const bool allowed = IsCurrentAccount() && pending && _decisionRequestId.isEmpty()
         && (!_approvalsOnly || CanManageApprovals());
     _acceptButton->setEnabled(allowed && ((_activeScope == QStringLiteral("inbox")
         && kind == QStringLiteral("invitation")) || (_activeScope == QStringLiteral("approvals")
         && kind == QStringLiteral("application"))));
     _rejectButton->setEnabled(_acceptButton->isEnabled());
+    const bool showDecisions = _approvalsOnly || _activeScope == QStringLiteral("inbox");
+    _acceptButton->setVisible(showDecisions);
+    _rejectButton->setVisible(showDecisions);
     if (view && view->more) view->more->setEnabled(view->loadMore && view->requestId.isEmpty());
 }
 
-void GroupRequestsDialog::Decide(bool approve)
+void GroupRequestsPage::Decide(bool approve)
 {
+    if (!IsCurrentAccount()) return;
     if (_decisionRequestId.isEmpty()) {
+        if (_views.contains(_activeScope)) _views[_activeScope].outcome.clear();
         auto it = _views.find(_activeScope);
         if (it == _views.end() || !it->list || !it->list->currentItem()) return;
         const QListWidgetItem *item = it->list->currentItem();
@@ -483,7 +528,7 @@ void GroupRequestsDialog::Decide(bool approve)
         const qint64 id = item->data(Qt::UserRole).toLongLong();
         const qint64 threadId = item->data(Qt::UserRole + 1).toLongLong();
         const QString kind = item->data(Qt::UserRole + 2).toString();
-        if (_approvalsOnly && !CanManageApprovals()) { close(); return; }
+        if (_approvalsOnly && !CanManageApprovals()) { emit sig_close_requested(); return; }
         if (_activeScope == QStringLiteral("inbox") && kind == QStringLiteral("invitation")) {
             _decisionRequestId = TcpMgr::GetInstance()->DecideGroupInvitation(id, threadId, approve);
         } else if (_activeScope == QStringLiteral("approvals")
@@ -497,12 +542,41 @@ void GroupRequestsDialog::Decide(bool approve)
             _decisionAdmissionId = 0;
             _decisionThreadId = 0;
             _decisionKind.clear();
-            QMessageBox::warning(this, tr("群申请"), tr("操作未发送，请检查连接和权限。"));
+            SetStatus(_activeScope, tr("操作未发送，请检查连接和权限后重试。"));
             return;
         }
         if (_acceptButton) _acceptButton->setEnabled(false);
         if (_rejectButton) _rejectButton->setEnabled(false);
+        SetStatus(_activeScope, tr("正在提交，请勿重复操作…"));
         return;
     }
 }
 
+
+bool GroupRequestsPage::IsCurrentAccount() const
+{
+    const auto user = UserMgr::GetInstance()->GetUserInfo();
+    return _accountUid > 0 && user && user->_uid == _accountUid
+        && TcpMgr::GetInstance()->LoginGeneration() == _loginGeneration;
+}
+
+void GroupRequestsPage::SetStatus(const QString &scope, const QString &text)
+{
+    auto it = _views.find(scope);
+    if (it != _views.end() && it->status) {
+        it->status->setText(it->outcome.isEmpty()
+            ? text : it->outcome + QLatin1Char('\n') + text);
+    }
+}
+
+void GroupRequestsPage::Refresh()
+{
+    if (!_accountUid) {
+        const auto user = UserMgr::GetInstance()->GetUserInfo();
+        if (!user || user->_uid <= 0) return;
+        _accountUid = user->_uid;
+        _loginGeneration = TcpMgr::GetInstance()->LoginGeneration();
+    }
+    if (!IsCurrentAccount()) return;
+    RefreshCurrentViews();
+}

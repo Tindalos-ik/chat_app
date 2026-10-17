@@ -691,7 +691,7 @@ void TcpMgr::initHandlers()
         Q_UNUSED(len);
         qDebug() << "handle id is " << id << "data is " << data;
 
-        // 搜索失败统一走 sig_user_search(nullptr)，让 SearchList 弹 FindFailDlg
+        // 用户查找失败交给搜索组件内嵌展示。
         auto emit_search_fail = [this]{
             std::shared_ptr<SearchInfo> null_si;
             emit sig_user_search(null_si);
@@ -1733,11 +1733,14 @@ void TcpMgr::initHandlers()
             && _groupStateEpochs.value(requestedThread, 0) != requestEpoch;
         const bool staleJoinResponse = requestType == ID_JOIN_GROUP_REQ && stateEpochChanged;
         if (requestType == ID_SEARCH_GROUP_REQ) {
-            if (error == ErrorCodes::SUCCESS) {
-                GroupInfo group;
-                if (parseGroup(response.value("group").toObject(), &group)
-                    && group.threadId == requestedThread) emit sig_group_search_result(group);
+            GroupInfo group;
+            int searchError = error;
+            if (error == ErrorCodes::SUCCESS
+                && (!parseGroup(response.value("group").toObject(), &group)
+                    || group.threadId != requestedThread)) {
+                searchError = ErrorCodes::ERR_JSON;
             }
+            emit sig_group_search_result(requestId, searchError, group);
             return;
         }
         if (staleJoinResponse) {

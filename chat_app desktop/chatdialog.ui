@@ -187,6 +187,22 @@
          </widget>
         </item>
         <item>
+         <widget class="StateWidget" name="side_group_notifications_lb" native="true">
+          <property name="minimumSize">
+           <size><width>44</width><height>44</height></size>
+          </property>
+          <property name="maximumSize">
+           <size><width>44</width><height>44</height></size>
+          </property>
+          <property name="toolTip">
+           <string>群通知</string>
+          </property>
+          <property name="accessibleName">
+           <string>群通知</string>
+          </property>
+         </widget>
+        </item>
+        <item>
          <widget class="StateWidget" name="side_settings_lb" native="true">
           <property name="minimumSize">
            <size>
@@ -236,7 +252,7 @@
         </size>
        </property>
        <property name="styleSheet">
-        <string notr="true">background-color: #f0f1f2;</string>
+        <string notr="true">QWidget#chat_user_wid { background-color: #f0f1f2; }</string>
        </property>
        <layout class="QVBoxLayout" name="user_layout">
         <property name="spacing">
@@ -337,7 +353,7 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: trans
           </widget>
           <widget class="SearchList" name="search_list">
            <property name="styleSheet">
-            <string notr="true">background-color: transparent; border: none;
+            <string notr="true">QListWidget#search_list { background-color: transparent; border: none; }
 QScrollBar:vertical { background: transparent; width: 6px; margin: 0; }
 QScrollBar::handle:vertical { background: #c8c9cc; border-radius: 3px; min-height: 30px; }
 QScrollBar::handle:vertical:hover { background: #b0b3b8; }
@@ -353,7 +369,7 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: trans
      <item>
       <widget class="QWidget" name="chat_data_wid" native="true">
        <property name="styleSheet">
-        <string notr="true">background-color: #ffffff;</string>
+        <string notr="true">QWidget#chat_data_wid { background-color: #ffffff; }</string>
        </property>
        <layout class="QVBoxLayout" name="data_layout">
         <property name="spacing">

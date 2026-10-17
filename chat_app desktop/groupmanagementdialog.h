@@ -15,7 +15,7 @@ class QListWidget;
 struct LocalChatThread;
 class QPlainTextEdit;
 class QPushButton;
-class GroupRequestsDialog;
+class GroupRequestsPage;
 // 文件职责：展示指定群的成员、权限、入群审批与群公告，并以缓存版本保护所有异步界面更新。
 class GroupManagementDialog final : public QDialog
 {
@@ -116,7 +116,8 @@ private:
     QHash<qint64, GroupMemberInfo> _membersByUid;
     QHash<qint64, GroupMemberInfo> _knownMembers;
     QHash<QString, Action> _mutations;
-    QPointer<GroupRequestsDialog> _approvalsDialog;
+    QPointer<QDialog> _approvalsDialog;
+    QPointer<GroupRequestsPage> _approvalsPage;
     QLabel *_summary = nullptr;
     QLabel *_announcementMetadata = nullptr;
     QPlainTextEdit *_announcement = nullptr;

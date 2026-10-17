@@ -25,7 +25,7 @@ struct LocalChatMessage;
 class GroupManagementDialog;
 class GroupAvatarTransfer;
 class QLabel;
-class GroupRequestsDialog;
+class GroupRequestsPage;
 struct LocalChatThread;
 
 class ChatDialog : public QDialog
@@ -51,6 +51,7 @@ private slots:
     void slot_send_message(); // 发送消息
     void slot_side_chat();      // 侧边栏：聊天
     void slot_side_contact();   // 侧边栏：联系人
+    void slot_side_group_notifications(); // 侧边栏：账号群邀请、申请与结果
     void slot_side_setting();   // 侧边栏：打开个人设置界面
     void slot_hide_setting();   // 关闭个人设置界面
     void slot_apply_friend(std::shared_ptr<AddFriendApply>& apply_info); // 添加好友申请
@@ -70,13 +71,9 @@ private slots:
                                  qint64 readThroughMessageId);
     // group为服务端群元数据；confirmedMembership仅新create/join的匹配确认，列表不能激活tombstone。
     void slot_group_info(const GroupInfo &group, bool confirmedMembership);
-    // 搜索结果group包含精确群号/名称；只展示“加入群”，不创建伪造好友身份。
-    void slot_group_search_result(const GroupInfo &group);
     // threadId指定失效群；active仅接受false；reason解释踢出/解散；targetUid为本账号通知身份。
     // 保留本地历史/账号连接，active=true不是激活证据。
     void slot_group_state(qint64 threadId, bool active, const QString &reason, qint64 targetUid);
-    void slot_group_mutation_result(const QString &requestId, int requestType,
-                                    int error, const QJsonObject &response);
     // 下载回调身份含账号/登录代次/thread/avatar版本/resource；groupVersion只做“不落后于缓存”检查。
     void slot_group_avatar_ready(int accountUid, quint64 loginGeneration, qint64 threadId,
                                  qint64 groupVersion, qint64 avatarVersion,
@@ -91,6 +88,13 @@ private:
     int _cur_mode = 0;   // 0=聊天列表 1=好友列表，搜索清空后回到当前模式
     QVector<StateWidget*> _lb_list;  // 侧边栏按钮组，保证一次只高亮一个
     SettingDialog *_setting_page = nullptr;
+    GroupRequestsPage *_group_notifications_page = nullptr;
+    QPointer<QWidget> _content_return_page;
+    // 搜索仅覆盖左侧列表；关闭时撤销当前展示请求并恢复导航列表。
+    void ShowSearch();
+    void CloseSearch();
+    void RestoreContentPage();
+    void EnterSearchGroup(qint64 threadId);
 
     bool _b_loading = false;       // 防抖标志：加载期间忽略重复触发
     int _loaded_chat_count = 0;   // 已加载的聊天会话条数（示例数据计数）
@@ -141,7 +145,6 @@ private:
     bool _current_is_group = false;
     GroupInfo _current_group;
     QPointer<QDialog> _group_info_dialog;
-    QPointer<QDialog> _group_requests_dialog;
     QPushButton *_group_info_button = nullptr;
     qint64 _group_info_thread_id = 0;
     QLabel *_group_title_avatar = nullptr;

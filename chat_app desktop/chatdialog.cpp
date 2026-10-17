@@ -20,6 +20,7 @@
 #include "messagetextedit.h"
 #include "chatitembase.h"
 #include <QMouseEvent>
+#include <QKeyEvent>
 #include "tcpmgr.h"
 #include "usermgr.h"
 #include "localchatstoragemgr.h"
@@ -38,14 +39,8 @@
 #include <QPushButton>
  
 #include <QFileInfo>
-#include <QInputDialog>
-#include <QMenu>
 #include <QHBoxLayout>
-#include <QVBoxLayout>
-#include <QDialogButtonBox>
-#include <QClipboard>
 #include <QLabel>
-#include <limits>
 
 namespace {
 constexpr int kLocalHistoryPageSize = 50;
@@ -258,70 +253,32 @@ ChatDialog::ChatDialog(QWidget *parent)
                                   "selected", "selected_hover", "selected_pressed");
     ui->side_settings_lb->SetState("normal", "hover", "pressed",
                                    "selected", "selected_hover", "selected_pressed");
+    ui->side_group_notifications_lb->SetState("normal", "hover", "pressed",
+                                               "selected", "selected_hover", "selected_pressed");
 
     // 加入互斥组：一次只能高亮一个
     AddLBGroup(ui->side_chat_lb);
     AddLBGroup(ui->side_contact_lb);
     AddLBGroup(ui->side_settings_lb);
+    AddLBGroup(ui->side_group_notifications_lb);
 
     connect(ui->side_chat_lb, &StateWidget::clicked, this, &ChatDialog::slot_side_chat);
     connect(ui->side_contact_lb, &StateWidget::clicked, this, &ChatDialog::slot_side_contact);
     connect(ui->side_settings_lb, &StateWidget::clicked, this, &ChatDialog::slot_side_setting);
+    connect(ui->side_group_notifications_lb, &StateWidget::clicked,
+            this, &ChatDialog::slot_side_group_notifications);
 
     ui->side_chat_lb->SetSelected(true); // 默认选中聊天
 
-    // 搜索框有内容 -> 切到搜索列表（索引2）；清空 -> 回到当前模式对应的列表
-    connect(ui->search_edit, &QLineEdit::textChanged, this, [this](const QString &text){
-        ui->list_stack->setCurrentIndex(text.isEmpty() ? _cur_mode : 2);
+    // 搜索入口和表单由 SearchList 管理，聊天页只处理面板与会话导航。
+    connect(ui->search_edit, &QLineEdit::textChanged, this, [this](const QString &text) {
+        if (text.isEmpty()) CloseSearch();
+        else ShowSearch();
     });
-
-    // 搜索列表：点"查找用户"提示项时拿到搜索框文字
     ui->search_list->SetSearchEdit(ui->search_edit);
-
-    auto *groupButton = new QPushButton(tr("群聊"), this);
-    groupButton->setObjectName(QStringLiteral("group_actions_button"));
-    groupButton->setMinimumWidth(48);
-    ui->search_edit->parentWidget()->layout()->addWidget(groupButton);
-    auto *groupMenu = new QMenu(groupButton);
-    QAction *createGroupAction = groupMenu->addAction(tr("创建群聊"));
-    QAction *searchGroupAction = groupMenu->addAction(tr("按群号搜索"));
-    QAction *groupRequestsAction = groupMenu->addAction(tr("群邀请与我的申请"));
-    connect(groupButton, &QPushButton::clicked, groupButton, [groupButton, groupMenu] {
-        groupMenu->exec(groupButton->mapToGlobal(QPoint(0, groupButton->height())));
-    });
-    connect(createGroupAction, &QAction::triggered, this, [this] {
-        bool accepted = false;
-        const QString name = QInputDialog::getText(this, tr("创建群聊"), tr("群名称"),
-                                                   QLineEdit::Normal, {}, &accepted);
-        if (!accepted || name.trimmed().isEmpty()) return;
-        if (TcpMgr::GetInstance()->CreateGroup(name).isEmpty())
-            QMessageBox::warning(this, tr("创建失败"), tr("群名称不能为空且不超过255字节。"));
-    });
-    connect(searchGroupAction, &QAction::triggered, this, [this] {
-        bool accepted = false;
-        const QString input = QInputDialog::getText(this, tr("搜索群聊"), tr("完整群号"),
-                                                    QLineEdit::Normal, {}, &accepted).trimmed();
-        if (!accepted || input.isEmpty()) return;
-        bool ok = false;
-        const quint64 unsignedId = input.toULongLong(&ok, 10);
-        if (!ok || unsignedId == 0 || unsignedId > static_cast<quint64>(std::numeric_limits<qint64>::max())) {
-            QMessageBox::warning(this, tr("搜索失败"), tr("请输入完整有效的群号。"));
-            return;
-        }
-        if (TcpMgr::GetInstance()->SearchGroup(static_cast<qint64>(unsignedId)).isEmpty())
-            QMessageBox::warning(this, tr("搜索失败"), tr("无法提交群搜索请求。"));
-    });
-    connect(groupRequestsAction, &QAction::triggered, this, [this] {
-        if (_group_requests_dialog) {
-            _group_requests_dialog->raise();
-            return;
-        }
-        auto *dialog = new GroupRequestsDialog(this);
-        dialog->setAttribute(Qt::WA_DeleteOnClose);
-        _group_requests_dialog = dialog;
-        connect(dialog, &QObject::destroyed, this, [this] { _group_requests_dialog = nullptr; });
-        dialog->show();
-    });
+    ui->search_list->SetAvatarTransfer(_group_avatar_transfer);
+    connect(ui->search_list, &SearchList::sig_enter_group,
+            this, &ChatDialog::EnterSearchGroup);
     auto *titleLayout = ui->chat_title_wid->findChild<QHBoxLayout *>(QStringLiteral("chat_title_layout"));
     if (titleLayout) {
         _group_title_avatar = new QLabel(ui->chat_title_wid);
@@ -347,6 +304,7 @@ ChatDialog::ChatDialog(QWidget *parent)
     connect(ui->session_list, &QListWidget::itemClicked, this, [this](QListWidgetItem *item){
         auto *wid = qobject_cast<ChatUserWid*>(ui->session_list->itemWidget(item));
         if (wid == nullptr) return;
+        slot_side_chat();
         if (wid->IsGroup()) SetCurrentGroup(wid->GetGroupInfo());
         else if (wid->GetUserInfo()) SetCurrentChatUser(wid->GetUserInfo(), wid->GetThreadId());
     });
@@ -430,12 +388,8 @@ ChatDialog::ChatDialog(QWidget *parent)
             this, &ChatDialog::slot_thread_read_cursor);
     connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_group_info,
             this, &ChatDialog::slot_group_info);
-    connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_group_search_result,
-            this, &ChatDialog::slot_group_search_result);
     connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_group_state,
             this, &ChatDialog::slot_group_state);
-    connect(TcpMgr::GetInstance().get(), &TcpMgr::sig_group_mutation_result,
-            this, &ChatDialog::slot_group_mutation_result);
     connect(ui->chat_data, &ChatView::sig_reach_top,
             this, &ChatDialog::slot_load_older_local_messages);
 
@@ -468,9 +422,12 @@ void ChatDialog::RefreshLoginData()
     _current_is_group = false;
     _current_group = {};
     if (_group_info_dialog) _group_info_dialog->close();
-    if (_group_requests_dialog) _group_requests_dialog->close();
+    CloseSearch();
+    delete _group_notifications_page;
+    _group_notifications_page = nullptr;
+    _content_return_page = nullptr;
     _group_info_dialog = nullptr;
-    _group_requests_dialog = nullptr;
+    slot_side_chat();
     _pending_text_items.clear();
     _outgoing_text_items.clear();
     _pending_image_items.clear();
@@ -678,6 +635,7 @@ void ChatDialog::SetCurrentGroup(const GroupInfo &group)
 
 void ChatDialog::slot_group_info(const GroupInfo &group, bool confirmedMembership)
 {
+    Q_UNUSED(confirmedMembership);
     const auto storage = LocalChatStorageMgr::GetInstance();
     for (const LocalChatThread &thread : storage->LoadAllThreads()) {
         if (thread.threadId != group.threadId || thread.threadType != QStringLiteral("group")) continue;
@@ -687,7 +645,8 @@ void ChatDialog::slot_group_info(const GroupInfo &group, bool confirmedMembershi
             if (auto *dialog = qobject_cast<GroupManagementDialog *>(_group_info_dialog.data()))
                 dialog->UpdateGroup(current);
         }
-        if (confirmedMembership || (_current_is_group && _current_thread_id == group.threadId))
+        if (_current_is_group && _current_thread_id == group.threadId
+            && ui->chat_stack->currentWidget() == ui->chat_page)
             SetCurrentGroup(current);
         return;
     }
@@ -716,35 +675,6 @@ void ChatDialog::slot_group_avatar_ready(int accountUid, quint64 loginGeneration
     }
 }
 
-void ChatDialog::slot_group_search_result(const GroupInfo &group)
-{
-    if (group.member && group.membershipProof && group.active) {
-        for (const LocalChatThread &thread : LocalChatStorageMgr::GetInstance()->LoadAllThreads()) {
-            if (thread.threadType == QStringLiteral("group") && thread.threadId == group.threadId
-                && thread.active) {
-                SetCurrentGroup(GroupInfoFromCache(thread));
-                return;
-            }
-        }
-    }
-    QMessageBox prompt(QMessageBox::Question, tr("搜索群聊"),
-        tr("群名称：%1\n群号：%2").arg(group.name, QString::number(group.threadId)),
-        QMessageBox::NoButton, this);
-    auto *join = prompt.addButton(tr("申请加入群"), QMessageBox::AcceptRole);
-    prompt.addButton(QMessageBox::Cancel);
-    prompt.exec();
-    if (prompt.clickedButton() != join) return;
-    bool accepted = false;
-    const QString explanation = QInputDialog::getMultiLineText(
-        this, tr("入群申请"), tr("申请说明（最多 256 UTF-8 字节）"), {}, &accepted);
-    if (!accepted) return;
-    if (explanation.toUtf8().size() > 256) {
-        QMessageBox::warning(this, tr("入群申请"), tr("申请说明不能超过 256 UTF-8 字节，未截断内容。"));
-        return;
-    }
-    if (TcpMgr::GetInstance()->JoinGroup(group.threadId, explanation).isEmpty())
-        QMessageBox::warning(this, tr("加入失败"), tr("连接不可用，或申请说明超过协议限制。"));
-}
 void ChatDialog::slot_group_state(qint64 threadId, bool active, const QString &, qint64)
 {
     if (active) return; // 非权威普通通知不能激活群。
@@ -753,31 +683,13 @@ void ChatDialog::slot_group_state(qint64 threadId, bool active, const QString &,
     for (const LocalChatThread &thread : storage->LoadAllThreads()) {
         if (thread.threadId != threadId || thread.threadType != QStringLiteral("group")) continue;
         addGroupChatWid(thread);
-        if (_current_is_group && _current_thread_id == threadId)
+        if (_current_is_group && _current_thread_id == threadId
+            && ui->chat_stack->currentWidget() == ui->chat_page)
             SetCurrentGroup(GroupInfoFromCache(thread));
         return;
     }
 }
 
-void ChatDialog::slot_group_mutation_result(const QString &requestId, int requestType,
-                                           int error, const QJsonObject &response)
-{
-    Q_UNUSED(requestId);
-    if (requestType != ID_JOIN_GROUP_REQ) return;
-    if (error != ErrorCodes::SUCCESS) {
-        QMessageBox::warning(this, tr("加入群聊"), tr("加入失败（%1）。").arg(error));
-        return;
-    }
-    if (response.value("status_conflict").toBool()
-        || response.value("already_processed").toBool()) {
-        QMessageBox::information(this, tr("加入群聊"),
-            tr("群申请状态已更新：%1。").arg(response.value("status").toString()));
-        return;
-    }
-    if (response.value("admission").toString() == QStringLiteral("pending")) {
-        QMessageBox::information(this, tr("入群申请"), tr("申请已提交，可在“群邀请与我的申请”查看进度。"));
-    }
-}
 
 void ChatDialog::ShowGroupInfo()
 {
@@ -1055,29 +967,85 @@ void ChatDialog::slot_send_message()
     sendTextBatch();
 }
 
+void ChatDialog::ShowSearch()
+{
+    ui->list_stack->setCurrentWidget(ui->search_list);
+}
+
+void ChatDialog::CloseSearch()
+{
+    ui->search_edit->clearFocus();
+    if (!ui->search_edit->text().isEmpty()) ui->search_edit->clear();
+    ui->search_list->ResetSearch();
+    ui->list_stack->setCurrentIndex(_cur_mode);
+    ui->list_stack->currentWidget()->setFocus(Qt::OtherFocusReason);
+}
+
+void ChatDialog::RestoreContentPage()
+{
+    if (ui->chat_stack->currentWidget() == _setting_page
+        || (_group_notifications_page
+            && ui->chat_stack->currentWidget() == _group_notifications_page)) {
+        ui->chat_stack->setCurrentWidget(_content_return_page
+            ? _content_return_page.data() : ui->chat_page);
+    }
+    _content_return_page = nullptr;
+}
+
+void ChatDialog::EnterSearchGroup(qint64 threadId)
+{
+    // 会话 ID 已按值捕获；关闭搜索后仍从本账号缓存读取实际成员身份。
+    slot_side_chat();
+    SetCurrentGroup(GroupInfo{threadId});
+}
+
 void ChatDialog::slot_side_chat()
 {
+    CloseSearch();
     ClearLabelState(ui->side_chat_lb);
+    ui->side_chat_lb->SetSelected(true);
     _cur_mode = 0;
-    ui->list_stack->setCurrentIndex(0); // 聊天列表
+    ui->list_stack->setCurrentIndex(0);
+    RestoreContentPage();
 }
 
 void ChatDialog::slot_side_contact()
 {
+    CloseSearch();
     ClearLabelState(ui->side_contact_lb);
+    ui->side_contact_lb->SetSelected(true);
     _cur_mode = 1;
-    ui->list_stack->setCurrentIndex(1); // 好友列表
+    ui->list_stack->setCurrentIndex(1);
+    RestoreContentPage();
+}
+
+void ChatDialog::slot_side_group_notifications()
+{
+    CloseSearch();
+    RestoreContentPage();
+    _content_return_page = ui->chat_stack->currentWidget();
+    ClearLabelState(ui->side_group_notifications_lb);
+    ui->side_group_notifications_lb->SetSelected(true);
+    if (!_group_notifications_page) {
+        _group_notifications_page = new GroupRequestsPage(ui->chat_stack);
+        ui->chat_stack->addWidget(_group_notifications_page);
+    }
+    ui->chat_stack->setCurrentWidget(_group_notifications_page);
+    _group_notifications_page->Refresh();
 }
 
 void ChatDialog::slot_side_setting()
 {
+    CloseSearch();
+    RestoreContentPage();
+    _content_return_page = ui->chat_stack->currentWidget();
     ClearLabelState(ui->side_settings_lb);
+    ui->side_settings_lb->SetSelected(true);
     ui->chat_stack->setCurrentWidget(_setting_page);
 }
 
 void ChatDialog::slot_hide_setting()
 {
-    ui->chat_stack->setCurrentWidget(ui->chat_page);
     slot_side_chat();
 }
 
@@ -1948,11 +1916,13 @@ void ChatDialog::slot_local_chat_synced(qint64 threadId)
     }
     if (thread.threadType == QStringLiteral("group")) {
         addGroupChatWid(thread);
-        if (_current_is_group && _current_thread_id == threadId)
+        if (_current_is_group && _current_thread_id == threadId
+            && ui->chat_stack->currentWidget() == ui->chat_page)
             SetCurrentGroup(GroupInfo{thread.threadId, thread.title, thread.ownerUid, thread.active});
     }
 
-    if (_current_chatuser && _current_thread_id == threadId) {
+    if (_current_chatuser && _current_thread_id == threadId
+        && ui->chat_stack->currentWidget() == ui->chat_page) {
         // 当前会话已经可见时重新从 SQLite 读取，确保增量消息立即显示，同时不会
         // 依赖网络回包中的临时对象跨线程保存。
         SetCurrentChatUser(_current_chatuser, threadId);
@@ -2343,20 +2313,23 @@ void ChatDialog::SetCurrentChatUser(const std::shared_ptr<UserInfo> &chatUser, q
 
 bool ChatDialog::eventFilter(QObject *watched, QEvent *event)
 {
-    // 鼠标点击事件
-    if(event->type() == QEvent::MouseButtonPress){
-        QMouseEvent* mouseEvent = static_cast<QMouseEvent*>(event);
-        handleGlobalMousePress(mouseEvent);
+    if (watched == ui->search_edit
+        && (event->type() == QEvent::FocusIn || event->type() == QEvent::MouseButtonPress)) {
+        ShowSearch();
+    } else if (event->type() == QEvent::KeyPress
+               && static_cast<QKeyEvent *>(event)->key() == Qt::Key_Escape
+               && ui->list_stack->currentWidget() == ui->search_list) {
+        CloseSearch();
+        return true;
+    } else if (event->type() == QEvent::MouseButtonPress) {
+        handleGlobalMousePress(static_cast<QMouseEvent *>(event));
     }
     return QDialog::eventFilter(watched, event);
 }
 
 void ChatDialog::handleGlobalMousePress(QMouseEvent *mouseEvent)
 {
-    // 只有搜索框里有内容时才需要处理（_cur_mode 只表示聊天/好友，不表示搜索态）
-    if (ui->search_edit->text().isEmpty()) {
-        return;
-    }
+    if (ui->list_stack->currentWidget() != ui->search_list) return;
 
     // 有模态弹窗打开（比如 FindSuccessDlg）时不处理，避免点弹窗也清掉搜索框
     if (QApplication::activeModalWidget() != nullptr) {
@@ -2371,13 +2344,11 @@ void ChatDialog::handleGlobalMousePress(QMouseEvent *mouseEvent)
 
     // 点击搜索列表内部（比如"查找用户"提示项）：不清理
     QPoint posInSearchList = ui->search_list->mapFromGlobal(mouseEvent->globalPosition().toPoint());
-    if (ui->search_list->rect().contains(posInSearchList)) {
+    if (ui->search_list->isVisible() && ui->search_list->rect().contains(posInSearchList)) {
         return;
     }
 
-    // 点击了搜索列表之外：清空搜索框
-    // textChanged 信号会触发，自动切回 _cur_mode 对应的列表（聊天/好友）
-    ui->search_edit->clear();
+    CloseSearch();
 }
 
 void ChatDialog::AddLBGroup(StateWidget *lb)

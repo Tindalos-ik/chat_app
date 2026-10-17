@@ -2,14 +2,14 @@
 #define ADDUSERITEM_H
 
 #include <QWidget>
+#include <QIcon>
 #include "listitembase.h"
 
 namespace Ui {
 class AddUserItem;
 }
 
-// 搜索列表顶部的"查找用户"提示项
-// 点击它 = 用搜索框内容发起添加好友请求（当前客户端还没有搜索协议，先留接口）
+// 搜索列表的紧凑入口；统一图标与间距，点击和选中状态由 SearchList 处理。
 class AddUserItem : public ListItemBase
 {
     Q_OBJECT
@@ -17,9 +17,10 @@ class AddUserItem : public ListItemBase
 public:
     explicit AddUserItem(QWidget *parent = nullptr);
     ~AddUserItem();
+    void SetTip(const QString &text, const QIcon &icon);
 
     QSize sizeHint() const override {
-        return QSize(250, 70); // 和其他列表项保持统一高度
+        return QSize(180, 48);
     }
 
 private:

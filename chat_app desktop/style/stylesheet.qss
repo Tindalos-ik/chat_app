@@ -110,19 +110,33 @@ StateWidget#side_settings_lb[state='selected_pressed']{
    border-image: url(:/res/settings_select_press.png);
 }
 
+StateWidget#side_group_notifications_lb[state='normal']{
+   border-image: url(:/res/group_notifications_normal.png);
+}
+StateWidget#side_group_notifications_lb[state='hover']{
+   border-image: url(:/res/group_notifications_hover.png);
+}
+StateWidget#side_group_notifications_lb[state='pressed'],
+StateWidget#side_group_notifications_lb[state='selected'],
+StateWidget#side_group_notifications_lb[state='selected_hover'],
+StateWidget#side_group_notifications_lb[state='selected_pressed']{
+   border-image: url(:/res/group_notifications_selected.png);
+}
+
 /* 侧边栏按钮右上角的红点（新消息 / 新好友申请提示） */
 StateWidget QLabel#red_point{
    border-image: url(:/res/red_point.png);
 }
 
 
-/* ================= 搜索列表：添加用户提示项 ================= */
-AddUserItem #add_tip{
-   border-image: url(:/res/addtip.png);
+/* 用户与群入口共用提示行；表单和结果留在搜索面板内。 */
+AddUserItem QLabel#search_entry_icon{
+   background: transparent;
 }
-
-AddUserItem #right_tip{
-   border-image: url(:/res/right_tip.png);
+AddUserItem QLabel#search_entry_arrow{
+   background: transparent;
+   color: #999999;
+   font-size: 20px;
 }
 
 AddUserItem #message_tip{
@@ -132,12 +146,123 @@ AddUserItem #message_tip{
 }
 
 /* 搜索列表整行悬停/选中高亮（提示项背景透明，高亮会透出来） */
+QListWidget#search_list::item{
+   border-radius: 6px;
+   background: transparent;
+}
 QListWidget#search_list::item:hover{
-   background-color: rgb(206,207,208);
+   background-color: #e3e7e5;
+}
+QListWidget#search_list::item:selected{
+   background-color: #d8eee2;
+}
+QWidget#group_search_card{
+   background: #ffffff;
+   border-radius: 8px;
+}
+QWidget#group_search_card QLabel{
+   background: transparent;
+   border: none;
+   color: #333333;
+   font-size: 13px;
+}
+QWidget#group_search_card QLabel#group_search_heading,
+QWidget#group_search_card QLabel#group_search_name{
+   font-weight: bold;
+}
+QWidget#group_search_card QLabel#group_search_number,
+QWidget#group_search_card QLabel#group_search_status{
+   color: #758078;
+   font-size: 12px;
+}
+QWidget#group_search_card QLabel#group_search_status[error="true"]{
+   color: #c23b3b;
+}
+QLineEdit#group_search_form{
+   border: 1px solid #dcdcdc;
+   border-radius: 5px;
+   padding: 6px;
+   background: #ffffff;
+   color: #333333;
+}
+QLineEdit#group_search_form:focus{
+   border-color: #07c160;
+}
+QPushButton#group_search_submit{
+   border: none;
+   border-radius: 5px;
+   padding: 7px 8px;
+   background: #07c160;
+   color: #ffffff;
+}
+QPushButton#group_search_submit:hover{
+   background: #06ad56;
+}
+QPushButton#group_search_submit:disabled{
+   background: #e3e8e5;
+   color: #909992;
 }
 
-QListWidget#search_list::item:selected{
-   background-color: rgb(211,215,212);
+/* 嵌入式群通知沿用现有白色内容区与主题绿。 */
+QWidget#group_requests_page, QWidget#group_approvals_page{
+   background: #ffffff;
+}
+#group_requests_page QLabel#group_notifications_title{
+   color: #333333;
+   font-size: 17px;
+   font-weight: bold;
+   padding-bottom: 6px;
+}
+#group_requests_page QTabWidget::pane{
+   border: 1px solid #e5e8e6;
+   border-radius: 6px;
+}
+#group_requests_page QTabBar::tab{
+   background: #f0f1f2;
+   color: #68716b;
+   padding: 9px 16px;
+   border: none;
+}
+#group_requests_page QTabBar::tab:selected{
+   background: #e1f3e9;
+   color: #078a45;
+}
+#group_requests_page QListWidget, #group_approvals_page QListWidget{
+   border: none;
+   background: #ffffff;
+   color: #333333;
+   font-size: 13px;
+}
+#group_requests_page QListWidget::item, #group_approvals_page QListWidget::item{
+   padding: 12px 8px;
+   border-bottom: 1px solid #eef0ef;
+}
+#group_requests_page QListWidget::item:hover, #group_approvals_page QListWidget::item:hover{
+   background: #f0f5f2;
+}
+#group_requests_page QListWidget::item:selected, #group_approvals_page QListWidget::item:selected{
+   background: #e1f3e9;
+   color: #24583b;
+}
+#group_requests_page QLabel, #group_approvals_page QLabel{
+   background: transparent;
+   color: #68716b;
+   font-size: 13px;
+}
+#group_requests_page QPushButton, #group_approvals_page QPushButton{
+   background: #f0f5f2;
+   border: 1px solid #dce6df;
+   border-radius: 5px;
+   padding: 6px 12px;
+   color: #24653e;
+}
+#group_requests_page QPushButton:hover, #group_approvals_page QPushButton:hover{
+   background: #e1f3e9;
+   border-color: #07c160;
+}
+#group_requests_page QPushButton:disabled, #group_approvals_page QPushButton:disabled{
+   color: #a0a7a2;
+   border-color: #e7eae8;
 }
 
 
