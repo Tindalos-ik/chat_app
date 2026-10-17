@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.10)
 project(ChatServer2)
 
-add_compile_options(/utf-8 /wd4819) #蹇界暐缂栫爜璀﹀憡
+add_compile_options(/utf-8 /wd4819) #韫囩晫鏆愮紓鏍垳鐠€锕€鎲?
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -9,13 +9,14 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(redis++ CONFIG REQUIRED)
 
 
-# ==================== 椤圭洰婧愭枃浠?====================
+# ==================== 妞ゅ湱娲板┃鎰瀮娴?====================
 set(JSONCPP_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/jsoncpp/jsoncpp.cpp
 )
 
 set(SOURCE_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/LogicSystem.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/VideoTest.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/CServer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ConfigMgr.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/AsioIOServicePool.cpp
@@ -30,30 +31,30 @@ set(SOURCE_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/DistLock.cpp
 )
 
-link_directories("D:/cppsoft/vcpkg/installed/x64-windows/lib") # 娣诲姞 vcpkg 鐨?lib 璺緞锛屽簱鏂囦欢鎼滅储璺緞
+link_directories("D:/cppsoft/vcpkg/installed/x64-windows/lib") # 濞ｈ濮?vcpkg 閻?lib 鐠侯垰绶為敍灞界氨閺傚洣娆㈤幖婊呭偍鐠侯垰绶?
 
-# ==================== 鍙墽琛屾枃浠?====================
+# ==================== 閸欘垱澧界悰灞炬瀮娴?====================
 add_executable(${PROJECT_NAME} 
     ChatServer.cpp
     ${JSONCPP_SOURCES}  
     ${SOURCE_FILES}
 )
 
-# ==================== 澶存枃浠舵悳绱㈣矾寰?====================
+# ==================== 婢跺瓨鏋冩禒鑸垫偝缁便垼鐭惧?====================
 target_include_directories(${PROJECT_NAME} PRIVATE 
     "C:/local/boost_1_91_0"
     ${CMAKE_CURRENT_SOURCE_DIR}/jsoncpp/json
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-    "D:/cppsoft/vcpkg/installed/x64-windows/include"   # 娣诲姞 vcpkg 鐨?include 璺緞
+    "D:/cppsoft/vcpkg/installed/x64-windows/include"   # 濞ｈ濮?vcpkg 閻?include 鐠侯垰绶?
 )
 
-# ==================== 閾炬帴搴?====================
+# ==================== 闁剧偓甯存惔?====================
 target_link_libraries(${PROJECT_NAME} 
     chat_proto
-    gRPC::grpc++                        #閾炬帴grpc-c++搴?
-    protobuf::libprotobuf               #閾炬帴protobuf搴?
-    redis++::redis++                    #閾炬帴redis-c++搴?
-    mysqlcppconnx                        #閾炬帴mysql-c++搴?
+    gRPC::grpc++                        #闁剧偓甯磄rpc-c++鎼?
+    protobuf::libprotobuf               #闁剧偓甯磒rotobuf鎼?
+    redis++::redis++                    #闁剧偓甯磖edis-c++鎼?
+    mysqlcppconnx                        #闁剧偓甯磎ysql-c++鎼?
 )
 
 if(WIN32)
@@ -63,7 +64,7 @@ if(WIN32)
     )
 endif()
 
-# 閰嶇疆鏂囦欢锛屼篃灏辨槸灏哻onfig.ini鏂囦欢鎷疯礉鍒板彲鎵ц鏂囦欢鎵€鍦ㄧ洰褰?
+# 闁板秶鐤嗛弬鍥︽閿涘奔绡冪亸杈ㄦЦ鐏忓摶onfig.ini閺傚洣娆㈤幏鐤閸掓澘褰查幍褑顢戦弬鍥︽閹碘偓閸︺劎娲拌ぐ?
 configure_file(
     ${CMAKE_CURRENT_SOURCE_DIR}/config.ini
     ${CMAKE_CURRENT_BINARY_DIR}/Debug/config.ini

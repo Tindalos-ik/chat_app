@@ -158,11 +158,11 @@ void GroupManagementDialog::BuildUi()
     _editAnnouncement->setObjectName(QStringLiteral("group_announcement_edit_button"));
     settingsLayout->addWidget(_editAnnouncement, 0, Qt::AlignRight);
     auto *lifecycle = new QHBoxLayout;
-    _leave = new QPushButton(tr("主动退出群聊"), settingsPage);
-    _leave->setObjectName(QStringLiteral("group_leave_button"));
+    _leaveButton = new QPushButton(tr("主动退出群聊"), settingsPage);
+    _leaveButton->setObjectName(QStringLiteral("group_leave_button"));
     _dissolve = new QPushButton(tr("解散群聊"), settingsPage);
     _dissolve->setObjectName(QStringLiteral("group_dissolve_button"));
-    lifecycle->addWidget(_leave);
+    lifecycle->addWidget(_leaveButton);
     lifecycle->addStretch();
     lifecycle->addWidget(_dissolve);
     settingsLayout->addLayout(lifecycle);
@@ -178,7 +178,7 @@ void GroupManagementDialog::BuildUi()
     connect(_role, &QPushButton::clicked, this, &GroupManagementDialog::ChangeSelectedRole);
     connect(_transfer, &QPushButton::clicked, this, &GroupManagementDialog::TransferSelectedOwner);
     connect(_kick, &QPushButton::clicked, this, &GroupManagementDialog::KickSelectedMember);
-    connect(_leave, &QPushButton::clicked, this, &GroupManagementDialog::LeaveGroup);
+    connect(_leaveButton, &QPushButton::clicked, this, &GroupManagementDialog::LeaveGroup);
     connect(_dissolve, &QPushButton::clicked, this, &GroupManagementDialog::DissolveGroup);
     connect(_approvals, &QPushButton::clicked, this, &GroupManagementDialog::OpenApprovals);
     connect(_editAnnouncement, &QPushButton::clicked,
@@ -326,9 +326,9 @@ void GroupManagementDialog::UpdateControls()
     if (_invite) _invite->setEnabled(usable && _friendPicker && _friendPicker->count() > 0);
     if (_role) _role->setVisible(_group.role == 2);
     if (_transfer) _transfer->setVisible(_group.role == 2);
-    if (_leave) {
-        _leave->setEnabled(usable && _group.role != 2);
-        if (_group.role == 2) _leave->setToolTip(tr("群主必须先转让群主或解散群聊。"));
+    if (_leaveButton) {
+        _leaveButton->setEnabled(usable && _group.role != 2);
+        if (_group.role == 2) _leaveButton->setToolTip(tr("群主必须先转让群主或解散群聊。"));
     }
     if (_dissolve) _dissolve->setVisible(_group.role == 2);
     if (_approvals) _approvals->setVisible(_group.role >= 1 && _group.active);

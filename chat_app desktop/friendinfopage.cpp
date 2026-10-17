@@ -3,6 +3,9 @@
 #include "avatarutil.h"
 #include "tcpmgr.h"
 #include "usermgr.h"
+#include "videotestcontroller.h"
+#include <QPushButton>
+#include <QStyle>
 
 #include <QDebug>
 #include <QJsonDocument>
@@ -13,6 +16,16 @@ FriendInfoPage::FriendInfoPage(QWidget *parent)
     , ui(new Ui::FriendInfoPage)
 {
     ui->setupUi(this);
+    // 保留原有通话按钮，额外提供明确标记test的可点击图标入口。
+    auto *testButton = new QPushButton(tr("test"), this);
+    testButton->setObjectName(QStringLiteral("video_test"));
+    testButton->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
+    testButton->setCursor(Qt::PointingHandCursor);
+    testButton->setToolTip(tr("向好友单向播放固定测试文件"));
+    ui->action_layout->insertWidget(ui->action_layout->count() - 1, testButton);
+    connect(testButton, &QPushButton::clicked, this, [this] {
+        TcpMgr::GetInstance()->VideoTest()->Start(_uid);
+    });
 }
 
 FriendInfoPage::~FriendInfoPage()

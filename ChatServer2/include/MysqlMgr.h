@@ -261,6 +261,8 @@ public:
         int uid,
         std::vector<std::shared_ptr<UserInfo>>& friendinfo
     );
+    // 只读检查双向好友关系；返回统一错误码，不创建private_chat或消息。
+    int AuthorizeVideoTest(int uid, int peerUid);
 
     // 将待处理申请更新为最终状态：1=同意，2=拒绝。
     bool UpdateFriendApplyStatus(

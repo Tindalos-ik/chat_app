@@ -41,6 +41,19 @@ ResourceServer -------- gRPC 50052 / MySQL ----> StatusServer / private_chat 鉴
 | ResourceServer | C++、Boost.Asio、gRPC | TCP 9090 / gRPC 50057 | 通用资源分片上传、断点续传和下载；1007 校验登录 token、私聊成员关系与资源归属；以及 ChatServer 的图片/文件资源核验 |
 | MySQL | MySQL 8 | X Protocol 33060 | 用户、好友、会话和消息数据 |
 | Redis | Redis | 6379 | 验证码、token、在线路由和服务负载 |
+| Qt 桌面客户端（本次连通测试） | Qt 6.8.3 MSVC 2022 64-bit；同版 Qt WebEngine、WebChannel、Positioning | — | 本次已验证版本和构建所需组件 |
+
+### 音视频接入设计
+
+一对一通话采用 Qt WebEngine 与 ZLMediaKit：Windows 客户端使用 MSVC Qt kit，通过 QWebChannel 连接 Qt 通话窗口与页面；页面负责设备采集、推拉流和播放，ZLMediaKit 负责 SDP 协商及媒体接入转发。ChatServer 管理邀请、接听、挂断、跨服通知和短时媒体授权，GateServer 承接媒体鉴权回调。
+
+架构、流程和客户端接入补充见 [WebRTC视频通信](note/WebRTC视频通信.md)。本节记录接入设计，运行验收以实际联调结果为准。
+
+### 音视频连通测试
+
+好友资料页 **test** 单向发布固定 WebM 文件，好友自动订阅。ChatServer 负责好友授权、Redis 短期状态和同服/跨服信令；页面直连 ZLMediaKit 协商 SDP。验证环境为 Qt 6.8.3 MSVC + WSL mirrored 回环 UDP，同服与跨服音视频、拒绝、离线和清理流程已实测。
+
+源码、配置、运行命令与结果见 [WebRTC视频通信](note/WebRTC视频通信.md#连通测试)。
 
 ## 目录
 
@@ -170,6 +183,10 @@ build\ResourceServer\Debug\ResourceServer.exe
 
 桌面客户端使用 Qt Creator 打开 `chat_app desktop/CMakeLists.txt`，选择带 Qt SQL 模块的 Qt 6 kit 后构建运行。SQLite 使用 Qt 自带的 `QSQLITE` 驱动，不需要安装或启动独立数据库服务。
 
+本机客户端使用 `Desktop Qt 6.8.3 MSVC2022 64bit` 套件，活动配置为 `Release (imported)`，构建目录为 `build/qt-msvc-release`。Qt Creator 保存该项目的套件选择，MinGW 配置及原有构建目录同时保留。
+
+MSVC 目标通过 `/utf-8` 统一源码字符编码。使用对应 MSVC Qt kit 在 Qt Creator 中构建、运行，客户端入口为 `build/qt-msvc-release/chat_app.exe`。
+
 ## 自动化测试
 
 根目录 `CMakeLists.txt` 已通过 `add_subdirectory(tests)` 接入所有测试，`include(CTest)` 默认打开 `BUILD_TESTING`。先在根目录配置并执行一次默认构建，测试目标就会随项目一起编译：
@@ -269,4 +286,5 @@ curl http://127.0.0.1:8080/get_test
 - [群聊](note/群聊.md)：群聊数据模型、入群与角色管理、事务与业务重放、消息投递、公告头像及客户端 SQLite 同步原理。
 - [资源服务](note/资源服务.md)：资源上传、资源 ID、gRPC 图片核验与 TCP 分片下载协议。
 - [文件传输](note/文件传输.md)：私聊文件消息、手动下载和资源归属鉴权。
+- [WebRTC视频通信](note/WebRTC视频通信.md)：好友页单向固定文件连通测试、ZLMediaKit 本机部署及真实验证边界。
 - [视频通话技术方案与学习路径](note/视频通话技术.md)：拟接入的一对一音视频方案、Qt kit 约束、信令鉴权、coturn 与分阶段验收；不代表当前已支持通话。

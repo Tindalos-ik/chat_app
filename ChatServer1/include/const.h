@@ -31,6 +31,8 @@ enum ErrorCode{
     GroupUnavailable = 1017, // 群不存在或已逻辑解散
     GroupNotMember = 1018, // 当前登录用户不是有效群成员
     GroupPermissionDenied = 1019, // 非群主管理或试图踢群主
+    VideoTestForbidden = 1020, // 视频测试非好友、非参与者或陈旧登录
+    VideoTestUnavailable = 1021, // 视频测试媒体未启用或目标不可投递
 };
 
 //手动定义一个Defer类，里面有一个函数，用于在函数结束时自动执行，比如释放资源，实现类似RAII的功能   这个是go语言中的defer关键字
@@ -142,6 +144,9 @@ enum MSG_IDS {
     ID_UPDATE_GROUP_AVATAR_REQ = 1079,
     ID_UPDATE_GROUP_AVATAR_RSP = 1080,
     ID_NOTIFY_GROUP_EVENT = 1081,
+    ID_VIDEO_TEST_REQ = 1082, // 单向文件测试 start/ready/stop
+    ID_VIDEO_TEST_RSP = 1083,
+    ID_NOTIFY_VIDEO_TEST = 1084,
 };
 
 #define LOGIN_COUNT "login_count"

@@ -148,6 +148,9 @@ void CSession::HandleDisconnect() {
     if (_user_uid == 0) {
         return; // 尚未登录的连接没有 Redis 在线路由
     }
+    // 将旧连接的视频停止交给业务线程，避免在Asio线程等待跨服RPC。
+    LogicSystem::GetInstance()->PostMsgToQue(
+        std::make_shared<LogicNode>(SharedSelf(), nullptr));
 
     // 使用与登录流程相同的用户级分布式锁，避免断线清理和新登录并发改写路由。
     const auto uid_str = std::to_string(_user_uid);

@@ -79,6 +79,10 @@ HTTP 负责注册、登录、验证码和重置密码等短请求。登录拿到
 | `ID_UPDATE_GROUP_ANNOUNCEMENT_REQ/RSP` | `{request_id,operation_id,thread_id,announcement,expected_announcement_version}` | 纯 UTF8 最大1024字节；完整输入仍受2048限制 |
 | `ID_UPDATE_GROUP_AVATAR_REQ/RSP` | `{request_id,operation_id,thread_id,resource_id}` | 可信群头像核验/发布契约 |
 | `ID_NOTIFY_GROUP_EVENT` | event_type inbox/result/metadata/members/invalidated | 非成员信箱/结果不携带有效成员证明 |
+| `ID_VIDEO_TEST_REQ/RSP` | `{op,request_id,touid?}` 或 `{op,request_id,test_id,reason?}` | 单向固定文件测试控制；`start/ready/stop`，身份取登录 session，Redis 保存短期状态 |
+| `ID_NOTIFY_VIDEO_TEST` | `{op,status,test_id,stream_id,app,media_url,fromuid,touid,...}` | 通知好友测试开始、发布就绪或停止；跨服使用专用 `NotifyVideoTest` RPC |
+
+视频测试发送端在 transport connected 且 outbound 视频 bytes 增长时发送 `ready`；接收端随后单次 play，ZLM 以 `maxStreamWaitMS` 等待流注册。`rpc_failed` 统一表示 Redis/MySQL 依赖或跨服 RPC 失败，客户端提示“业务依赖或跨服通知失败”。同服与跨服文件音视频、非好友、离线、素材缺失和清理结果见 [连通测试](WebRTC视频通信.md#连通测试)。
 
 群管理 mutation 均要求 operation_id（现有 create/join/kick/dissolve 同样适用）。准入响应 entries 使用 `{kind,id,thread_id,group_name,inviter_uid,applicant_uid,target_uid,status,explanation,created_at_ms,updated_at_ms}`，next_id 为全局准入游标。group包含最新version、审批/公告/头像独立版本与可信元数据，以及接收者专属member/role/membership_version/membership_proof/source；source为mutation/snapshot/event。成员项携带membership_version，成员回包包含完整最新group。
 
@@ -282,7 +286,7 @@ ChatServer TCP 包固定为：
 | --- | --- | --- |
 | GateServer | 验证码、注册、登录、重置密码 | 登录回包字段可继续补充用户资料 |
 | StatusServer | ChatServer 负载选择、token 签发/校验 | 更完整的在线状态管理 |
-| ChatServer1 | 登录、社交、私聊创建/消息/历史/回执；群创建/精确搜索/加入/分页/文本/群主踢人/逻辑解散 | 撤回、发送幂等重试 |
-| ChatServer 间 gRPC | 社交、私聊文本/资源/回执；群已提交消息与独立群状态转发 | 生产级重试与传输身份边界 |
-| Qt 客户端 | HTTP/TCP登录与社交、SQLite历史/增量同步、私聊文本资源；共享搜索框中的群搜索卡片/创建/加入、侧栏嵌入式群通知、独立thread身份/纯文本/昵称、数字未读、真实成员分页与群管理审批、失效只读和完整快照对账 | 文本发送幂等重试（本次不改） |
+| ChatServer1 | 登录、社交、私聊创建/消息/历史/回执；群创建/精确搜索/加入/分页/文本/群主踢人/逻辑解散；好友单向固定文件测试信令与短期状态，同服/跨服真实好友通知、发布及停止已实测 | 撤回、发送幂等重试 |
+| ChatServer 间 gRPC | 社交、私聊文本/资源/回执；群已提交消息与独立群状态转发；视频测试 `NotifyVideoTest` 按目标 session 跨服投递且发布/停止流程已实测 | 生产级重试与传输身份边界 |
+| Qt 客户端 | HTTP/TCP登录与社交、SQLite历史/增量同步、私聊文本资源；共享搜索框中的群搜索卡片/创建/加入、侧栏嵌入式群通知、独立thread身份/纯文本/昵称、数字未读、真实成员分页与群管理审批、失效只读和完整快照对账；好友资料页 test 单向固定文件发布/接收，同服及跨服音视频已实测 | 文本发送幂等重试（本次不改） |
 | VarifyServer | Redis 验证码、邮件发送 | 邮件失败后的补偿和监控 |

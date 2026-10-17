@@ -1,0 +1,7 @@
+<RCC>
+ <!-- 固定受信页面和媒体脚本随程序嵌入，由chatvideo处理器映射为同源URL；素材路径来自config.ini。 -->
+ <qresource prefix="/video_test">
+  <file alias="index.html">video_test/index.html</file>
+  <file alias="media.js">video_test/media.js</file>
+ </qresource>
+</RCC>

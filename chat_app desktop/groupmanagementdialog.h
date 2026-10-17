@@ -130,7 +130,7 @@ private:
     QPushButton *_role = nullptr;
     QPushButton *_kick = nullptr;
     QPushButton *_transfer = nullptr;
-    QPushButton *_leave = nullptr;
+    QPushButton *_leaveButton = nullptr;
     QPushButton *_dissolve = nullptr;
     QPushButton *_editAnnouncement = nullptr;
     QPushButton *_approvals = nullptr;

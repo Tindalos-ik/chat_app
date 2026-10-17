@@ -10,6 +10,25 @@
 #include "DistLock.h"
 #include "const.h"
 
+// 视频状态操作通过Lua在Redis内完成；有限池等待，命令参数保留长度避免JSON空格截断。
+bool RedisMgr::VideoTestScript(const std::string& script, const std::vector<std::string>& keys,
+                              const std::vector<std::string>& args, std::string& result) {
+    auto* con = _connectionPool->getConnectionFor(std::chrono::milliseconds(500));
+    if (!con) return false;
+    const std::string count = std::to_string(keys.size());
+    std::vector<const char*> argv{"EVAL", script.data(), count.data()};
+    std::vector<size_t> lengths{4, script.size(), count.size()};
+    for (const auto& key : keys) { argv.push_back(key.data()); lengths.push_back(key.size()); }
+    for (const auto& arg : args) { argv.push_back(arg.data()); lengths.push_back(arg.size()); }
+    auto* reply = static_cast<redisReply*>(redisCommandArgv(con, static_cast<int>(argv.size()),
+                                                          argv.data(), lengths.data()));
+    const bool ok = reply && (reply->type == REDIS_REPLY_STRING || reply->type == REDIS_REPLY_INTEGER);
+    if (ok) result = reply->type == REDIS_REPLY_INTEGER ? std::to_string(reply->integer)
+                                                      : std::string(reply->str, reply->len);
+    if (reply) freeReplyObject(reply);
+    _connectionPool->returnConnection(con, con->err != 0);
+    return ok;
+}
 void RedisMgr::Close() 
 {
     if (_connectionPool) {

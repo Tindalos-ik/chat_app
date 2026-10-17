@@ -729,6 +729,24 @@ bool MysqlMgr::UpdateFriendApplyStatus(
     }
 }
 
+// 文件测试只读双向关系，与私聊好友授权一致，数据库故障不伪装成非好友。
+int MysqlMgr::AuthorizeVideoTest(int uid, int peerUid) {
+    if (uid <= 0 || peerUid <= 0 || uid == peerUid) return VideoTestForbidden;
+    auto con = pool_->GetConnection();
+    if (!con) return RPCFaild;
+    Defer defer([&con, this]() { pool_->ReturnConnection(std::move(con)); });
+    try {
+        const auto row = con->sql(
+            "SELECT COUNT(*) FROM friend WHERE (self_id = ? AND friend_id = ?) "
+            "OR (self_id = ? AND friend_id = ?)")
+            .bind(uid).bind(peerUid).bind(peerUid).bind(uid).execute().fetchOne();
+        return row && row[0].get<int>() == 2 ? Success : VideoTestForbidden;
+    } catch (const std::exception& e) {
+        std::cerr << "video friend authorization: " << e.what() << std::endl;
+        return RPCFaild;
+    }
+}
+
 bool MysqlMgr::AddFriend(
     int recipientUid,
     int applicantUid,

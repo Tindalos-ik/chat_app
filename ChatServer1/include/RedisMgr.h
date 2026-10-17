@@ -12,6 +12,8 @@
 #include <chrono>
 #include "DistLock.h"
 
+#include <string>
+#include <vector>
  /* 需要引入redis连接池，为什么呢？
     最开始的单例模式在多线程环境下不是线程安全的，我们引入池的概念，用多个连接去访问redis
     池都是生产者-消费者模型
@@ -243,6 +245,10 @@ public:
      */
     bool ExistsKey(const std::string& key);
 
+    // 执行视频测试专用原子脚本；keys/args为二进制安全参数，result为字符串/整数结果。
+    // 返回false表示Redis故障，与脚本返回的offline/busy等业务结果分离。
+    bool VideoTestScript(const std::string& script, const std::vector<std::string>& keys,
+                         const std::vector<std::string>& args, std::string& result);
     /**
      * @brief 关闭 Redis 连接，释放资源
      */

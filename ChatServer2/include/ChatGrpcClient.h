@@ -143,6 +143,9 @@ public:
     // 转发已提交群通知；server 为路由名，request 明确群/发送者/目标成员；
     // 连接池获取与 RPC 共用三秒截止时间，不参与消息持久化。
     message::GroupNotifyRsp NotifyGroup(const std::string& server, const message::GroupNotifyReq& request);
+    // 专用视频信令RPC；server为Redis路由名，池获取与RPC共用三秒deadline。
+    message::VideoTestNotifyRsp NotifyVideoTest(const std::string& server,
+                                               const message::VideoTestNotifyReq& request);
 
 private:
     ChatGrpcClient();

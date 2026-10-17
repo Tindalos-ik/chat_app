@@ -11,6 +11,7 @@
 #include "usermgr.h"
 #include "userdata.h"
 #include "localchatstoragemgr.h"
+#include "videotestcontroller.h"
 
 namespace {
 constexpr int kHeartbeatIntervalMs = 20 * 1000;
@@ -192,6 +193,20 @@ bool TcpMgr::IsConnected() const
 quint64 TcpMgr::LoginGeneration() const
 {
     return _loginGeneration;
+}
+
+// 控制帧始终由已登录TCP连接发送，媒体SDP不经过聊天服务器。
+QString TcpMgr::SendVideoTest(const QString &op, int toUid,
+                              const QString &testId, const QString &reason)
+{
+    if (!_logged_in || !IsConnected()) return {};
+    const QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    QJsonObject request{{"op", op}, {"request_id", id}};
+    if (op == QStringLiteral("start")) request.insert("touid", toUid);
+    else request.insert("test_id", testId);
+    if (!reason.isEmpty()) request.insert("reason", reason.left(64));
+    emit sig_send_data(ID_VIDEO_TEST_REQ, QJsonDocument(request).toJson(QJsonDocument::Compact));
+    return id;
 }
 QString TcpMgr::SendGroupMutation(ReqId requestType, QJsonObject request, qint64 threadId)
 {
@@ -478,6 +493,7 @@ void TcpMgr::RequestGroupMessages(qint64 threadId)
 
 void TcpMgr::CloseConnection()
 {
+    emit sig_video_test_reset();
     StopHeartbeat();
     if (_socket) {
         _socket->disconnect();
@@ -507,6 +523,7 @@ void TcpMgr::CloseConnection()
 
 void TcpMgr::PrepareForShutdown()
 {
+    emit sig_video_test_reset();
     // 关闭窗口会使 QCoreApplication::exec() 返回。socket 的 abort() 可能同步发出
     // disconnected；若此时仍让回调弹出对话框或重启逻辑，就会在退出析构阶段重入 UI。
     // 因此退出路径只清理网络资源，不再对外发送“连接断开”通知。
@@ -548,6 +565,7 @@ TcpMgr::TcpMgr() : _host(""), _port(0), _b_recy_pending(false), _logged_in(false
     //连接发送信号用来发送数据，在哪里发送信号呢？可以是对话框中点击发送消息信号，在很多地方都可以，我们设计好槽函数及参数就可以统一处理
     // 其他地方把数据传过来，这里发给服务器
     connect(this, &TcpMgr::sig_send_data, this, &TcpMgr::slot_send_data);
+    _videoTest = new VideoTestController(this);
 
     // 心跳仅在 TCP 登录成功后启动；定时器同时承担“发送下一次 ping”和“检查上次 pong”的职责。
     _heartbeat_timer->setInterval(kHeartbeatIntervalMs);
@@ -561,6 +579,16 @@ TcpMgr::TcpMgr() : _host(""), _port(0), _b_recy_pending(false), _logged_in(false
 
 void TcpMgr::initHandlers()
 {
+    // 仅解析登录连接上的对象帧，具体request_id/test_id关联由账号控制器处理。
+    for (const ReqId type : {ID_VIDEO_TEST_RSP, ID_NOTIFY_VIDEO_TEST}) {
+        _handler[type] = [this, type](ReqId, int, QByteArray data) {
+            if (!_logged_in) return;
+            QJsonParseError error;
+            const auto document = QJsonDocument::fromJson(data, &error);
+            if (error.error == QJsonParseError::NoError && document.isObject())
+                emit sig_video_test(document.object(), type == ID_NOTIFY_VIDEO_TEST);
+        };
+    }
     //连接聊天服务器和发送消息过去是分开的
     //登录聊天服务器回包，这一块是和tcp服务通信，和logindialog里面的不一样
     _handler.insert(ReqId::ID_CHAT_LOGIN_RSP, [this](ReqId id, int len, QByteArray data){
@@ -2221,6 +2249,7 @@ void TcpMgr::initSigAndSlot()
             return;
         }
         qWarning() << "disconnected from server:" << _socket->errorString();
+        emit sig_video_test_reset();
         const bool should_notify = _logged_in && !_disconnect_notified;
         if (_logged_in) ++_loginGeneration;
         _logged_in = false;

@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src chatvideo:; style-src 'unsafe-inline'; media-src chatvideo: blob:; connect-src http: https:;">
+<!-- CSP允许chatvideo脚本、chatvideo/blob媒体及HTTP(S)连接；具体资源与SDP端点再由C++ TestRequests限定。 -->
+<title>test 媒体</title>
+<style>html,body{margin:0;background:#15181d;color:white;height:100%;font-family:sans-serif}video{width:100%;height:100%;object-fit:contain}#source{display:none}</style>
+</head><body><video id="source" playsinline preload="auto"></video><video id="remote" playsinline autoplay></video>
+<!-- source解码固定文件供发布，remote播放接收流；自动播放依赖Qt放开手势要求，播放拒绝由JS上报。 -->
+<script src="/qwebchannel.js"></script><script src="/media.js"></script>
+</body></html>

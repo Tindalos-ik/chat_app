@@ -68,6 +68,9 @@ public:
     // 不写chat_message，授权与TCP入队位于同一group_chat行锁事务。
     Status NotifyGroup(ServerContext* context, const message::GroupNotifyReq* request,
                        message::GroupNotifyRsp* response) override;
+    // 校验目标当前session后将视频信令入队；成功仅代表TrySend成功，不代表已播放。
+    Status NotifyVideoTest(ServerContext* context, const message::VideoTestNotifyReq* request,
+                           message::VideoTestNotifyRsp* response) override;
 
     void RegisterServer(std::shared_ptr<CServer> p_server);
 private:

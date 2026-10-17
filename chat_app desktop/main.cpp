@@ -1,6 +1,7 @@
 #include "mainwindow.h"
 #include "tcpmgr.h"
 #include "localchatstoragemgr.h"
+#include "videotestcontroller.h"
 
 #include <QApplication>
 #include <QDebug>
@@ -8,6 +9,8 @@
 
 int main(int argc, char *argv[])
 {
+    // Chromium在QApplication初始化时读取scheme属性，提前注册才能让媒体页使用稳定安全origin。
+    VideoTestController::RegisterScheme();
     QApplication a(argc, argv);
 
     //使用qss文件美化一下

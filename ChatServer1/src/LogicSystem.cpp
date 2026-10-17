@@ -195,6 +195,12 @@ void LogicSystem::DealMsg() {
         auto msg_node = _msg_que.front();
         _msg_que.pop();
         unique_lk.unlock();
+        // 空接收节点为进程内部断线事件，网络帧无法制造。
+        if (!msg_node->_recvnode) {
+            try { DisconnectVideoTest(msg_node->_session); }
+            catch (const std::exception& e) { std::cerr << "video disconnect: " << e.what() << std::endl; }
+            continue;
+        }
         auto call_back_iter = _fun_callbacks.find(msg_node->_recvnode->_msg_id);
         if (call_back_iter == _fun_callbacks.end()) {
             std::cout << "msg id [" << msg_node->_recvnode->_msg_id << "] handler not found" << std::endl;
@@ -219,6 +225,8 @@ void LogicSystem::DealMsg() {
 
 // 注册登录、搜索好友、聊天等业务映射；1023 心跳在 CSession 中处理。
 void LogicSystem::RegisterCallBacks() {
+    _fun_callbacks[ID_VIDEO_TEST_REQ] = [this](std::shared_ptr<CSession> session,
+            const short& id, const std::string& data) { HandleVideoTest(session, id, data); };
     _fun_callbacks[MSG_CHAT_LOGIN] = [this](std::shared_ptr<CSession> session,
                                             const short &msg_id,
                                             const std::string &msg_data) {

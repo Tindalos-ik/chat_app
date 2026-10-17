@@ -310,6 +310,17 @@ message GroupAvatarVerifyRsp {
     uint32 height = 6;
 }
 
+// 单向预定文件测试仅转发信令，不写消息/会话；目标会话代号防止陈旧路由投递新登录。
+message VideoTestNotifyReq {
+    int32 target_uid = 1;
+    string target_session = 2;
+    string payload_json = 3;
+}
+message VideoTestNotifyRsp {
+    int32 error = 1;
+    string status = 2;
+}
+
 // 聊天服务器之间的 gRPC 服务定义。
 service ChatService {
     // 转发好友申请，由接收方所在服务器通知目标用户。
@@ -331,4 +342,5 @@ service ChatService {
     rpc NotifyKickUser (KickUserReq) returns (KickUserRsp) {}
     // 群消息/成员失效通知不关闭用户连接，与重复登录踢人完全独立。
     rpc NotifyGroup (GroupNotifyReq) returns (GroupNotifyRsp) {}
+    rpc NotifyVideoTest (VideoTestNotifyReq) returns (VideoTestNotifyRsp) {}
 }
