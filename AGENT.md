@@ -17,22 +17,13 @@
 7. 同目录下/llfcchat是参考项目
 8. 后续实现或调整任何业务时，必须同步更新相关文档：至少检查对应专题笔记、README/架构总览、协议或消息 ID 状态表及 AGENT.md 文档索引；删除或改写与当前代码冲突的“未实现、占位、后续再做”等旧描述，保证文档记录的是当前真实行为、失败语义与已知边界，不能只在旧文档末尾追加新说明。
 9. 功能完成后，应将它从“待办、问题、缺口、后续计划”等列表中直接删除，不保留“已实现、已完成、已经接入”等完成打卡记录；需要长期保留的协议和设计内容，直接描述当前行为。
+10.gitcommit使用中文描述
 
 ## 代码规范（必须遵守）
 
-| 规范 | 内容 |
-| --- | --- |
-| 表名 / 字段 | 统一 `user` / `pwd`（llfc1），**不要改回 users/password** |
-| `desc` 列 | MySQL 保留字，SQL 里必须写反引号：`` `desc` `` |
-| MySQL API | mysqlcppconnx（X DevAPI）：端口 33060、列下标从 0 开始、参数用 `?` + `bind()` 防注入 |
-| 连接池 | 拿到的连接必须用 `Defer` 自动归还；使用前判空（池关闭时返回 nullptr） |
-| 三份 MysqlMgr | GateServer / StatusServer / ChatServer 三份默认保持同步；只改一份时必须说明原因 |
-| 密码 | 存的是客户端 xorString 后的串（可逆），不要当安全方案宣传 |
-| 协议 | 消息 ID / 错误码见 `ChatServer/include/const.h` 与 `chat_app desktop/global.h`；改协议前后端要同步 |
-| 单例 | HttpMgr / TcpMgr / MysqlMgr 等用 Singleton 模板基类：构造私有 + friend，不要破坏 |
-| ChatServer | 修改代码只需要修改ChatServer1，不需要2，
-
 新增功能，头文件要清楚注释，文件功能，函数功能，参数等，源文件也要写好注释和逻辑
+
+减少防御性编程，和非必要的测试
 
 ## 文档规范
 
@@ -50,8 +41,8 @@
 | [sql/chat_message_storage.sql](sql/chat_message_storage.sql) | 旧版分步初始化的聊天表兼容脚本；新环境执行统一建表脚本即可 |
 | [sql/chat_image_message_migration.sql](sql/chat_image_message_migration.sql) | 已部署 chat_message 的图片/文件资源字段和消息类型迁移脚本 |
 | [sql/chat_message_receipt_migration.sql](sql/chat_message_receipt_migration.sql) | 已部署 chat_message 的显示确认字段迁移脚本 |
-| [sql/chat_group_management_migration.sql](sql/chat_group_management_migration.sql) | 已部署群管理结构增量升级：保留管理员/历史，增加版本、准入与业务重放结果 |
 | [sql/chat_group_migration.sql](sql/chat_group_migration.sql) | 已部署群表 owner_uid/active、角色0/2与 RESTRICT 外键迁移 |
+| [sql/chat_group_management_migration.sql](sql/chat_group_management_migration.sql) | 已部署群管理结构增量升级：保留管理员/历史，增加版本、准入与业务重放结果 |
 | [疑惑.md](note/疑惑.md) | 常见小知识点解答（uid/token、分布式、Qt 并发安全、MySQL/Redis 边界等） |
 | [全栈聊天室.md](note/全栈聊天室.md) | 架构总览 |
 | [分布式聊天服务设计.md](note/分布式聊天服务设计.md) | 分布式设计总结：服务拆分、双通道登录、负载均衡/在线路由/跨服转发 |
@@ -66,7 +57,7 @@
 | [聊天可靠性与资源安全提升.md](note/聊天可靠性与资源安全提升.md) | 消息 ACK、已读与未读、历史分包、图片下载鉴权和故障恢复边界 |
 | [聊天服务器服务.md](note/聊天服务器服务.md) | proto 中定义的 ChatServer gRPC 服务、消息字段与跨服转发约定 |
 | [聊天信息收发.md](note/聊天信息收发.md) | 私聊与纯文本群聊先持久化后投递、群行锁授权、独立群失效通知与帧边界 |
-| [总结群聊.md](note/总结群聊.md) | 群聊全链路知识：后端事务/跨服、Qt会话与文本、SQLite补拉/失效对账，附真实源码片段与阅读路线 |
+| [群聊.md](note/群聊.md) | 群聊全链路：18个TCP接口逐函数调用与检查、事务/重放/跨服、头像资源认证、Qt/SQLite补拉与失效对账 |
 | [服务器踢人.md](note/服务器踢人.md) | 同服/跨服重复登录互踢、1021 投递、会话清理与当前边界 |
 | [心跳检测.md](note/心跳检测.md) | 1023/1024 双端心跳、单调时钟、超时参数、幂等清理与复测步骤 |
 | [异常处理.md](note/异常处理.md) | TCP/心跳异常、Qt/Asio 异步回调对象生命周期与服务端、客户端停止顺序 |
@@ -80,3 +71,4 @@
 | [资源服务.md](note/资源服务.md) | ResourceServer 上传任务、资源 ID 与分片下载协议 |
 | [总结图片传输.md](note/总结图片传输.md) | 图片上传、核验、路由、下载、持久化与联调边界总结 |
 | [文件传输.md](note/文件传输.md) | 私聊文件上传、可信元数据、手动下载鉴权与历史同步 |
+| [视频通话技术.md](note/视频通话技术.md) | 音视频接入设计与学习路径：Qt WebEngine/MSVC、独立WSS信令、coturn、鉴权、状态机与验收；非已实现功能 |
