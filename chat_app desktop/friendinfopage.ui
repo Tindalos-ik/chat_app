@@ -13,46 +13,15 @@
   <property name="windowTitle">
    <string>Form</string>
   </property>
-  <property name="styleSheet">
-   <string notr="true">QWidget#FriendInfoPage { background-color: #ffffff; }
-
-QLabel#name_lb { font-size: 22px; font-weight: bold; color: #161616; }
-
-QLabel#nick_tip, QLabel#nick_lb, QLabel#bak_tip, QLabel#bak_lb {
-    font-size: 14px;
-    color: #888888;
-}
-
-QPushButton#msg_chat {
-    border: none;
-    border-image: url(:/res/msg_chat_normal.png);
-}
-QPushButton#msg_chat:hover { border-image: url(:/res/msg_chat_hover.png); }
-QPushButton#msg_chat:pressed { border-image: url(:/res/msg_chat_press.png); }
-
-QPushButton#voice_chat {
-    border: none;
-    border-image: url(:/res/voice_chat_normal.png);
-}
-QPushButton#voice_chat:hover { border-image: url(:/res/voice_chat_hover.png); }
-QPushButton#voice_chat:pressed { border-image: url(:/res/voice_chat_press.png); }
-
-QPushButton#video_chat {
-    border: none;
-    border-image: url(:/res/video_chat_normal.png);
-}
-QPushButton#video_chat:hover { border-image: url(:/res/video_chat_hover.png); }
-QPushButton#video_chat:pressed { border-image: url(:/res/video_chat_press.png); }</string>
-  </property>
   <layout class="QVBoxLayout" name="verticalLayout">
    <property name="leftMargin">
-    <number>100</number>
+    <number>40</number>
    </property>
    <property name="topMargin">
-    <number>100</number>
+    <number>40</number>
    </property>
    <property name="rightMargin">
-    <number>100</number>
+    <number>40</number>
    </property>
    <property name="bottomMargin">
     <number>60</number>
@@ -168,6 +137,9 @@ QPushButton#video_chat:pressed { border-image: url(:/res/video_chat_press.png); 
                 <width>40</width>
                 <height>40</height>
                </size>
+              </property>
+              <property name="scaledContents">
+               <bool>true</bool>
               </property>
               <property name="text">
                <string/>

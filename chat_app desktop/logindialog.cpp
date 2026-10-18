@@ -3,8 +3,7 @@
 #include <QJsonObject>
 #include "httpmgr.h"
 #include "clickedlabel.h"
-#include "avatarutil.h"
-#include "logindialog.h"
+#include <QPainter>
 #include "tcpmgr.h"
 
 LoginDialog::LoginDialog(QWidget *parent)
@@ -58,7 +57,31 @@ void LoginDialog::showtip(QString str,QString state)
 
 void LoginDialog::initHead()
 {
-    AvatarUtil::SetRoundAvatar(ui->head_label, 0, {});
+    // 直接绘制双气泡标识，不加载头像或外部图片；按屏幕像素比保持高 DPI 清晰。
+    const qreal ratio = devicePixelRatioF();
+    QPixmap mark(QSize(qRound(80 * ratio), qRound(80 * ratio)));
+    mark.setDevicePixelRatio(ratio);
+    mark.fill(Qt::transparent);
+    QPainter painter(&mark);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor("#e5f4ed"));
+    painter.drawRoundedRect(QRectF(0, 0, 80, 80), 24, 24);
+
+    painter.setBrush(QColor("#91cdb7"));
+    painter.drawRoundedRect(QRectF(31, 31, 33, 27), 9, 9);
+    const QPointF backTail[] = {{53, 54}, {61, 63}, {61, 50}};
+    painter.drawPolygon(backTail, 3);
+
+    painter.setBrush(QColor("#16a078"));
+    painter.drawRoundedRect(QRectF(15, 17, 43, 34), 12, 12);
+    const QPointF frontTail[] = {{19, 43}, {18, 57}, {33, 47}};
+    painter.drawPolygon(frontTail, 3);
+    painter.setBrush(Qt::white);
+    for (int x : {27, 37, 47})
+        painter.drawEllipse(QPointF(x, 34), 2.2, 2.2);
+    painter.end();
+    ui->head_label->setPixmap(mark);
 }
 
 void LoginDialog::on_login_btn_clicked()

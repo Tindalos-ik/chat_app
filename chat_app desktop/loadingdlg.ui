@@ -32,9 +32,6 @@
    </item>
    <item>
     <widget class="QLabel" name="status_lb">
-     <property name="styleSheet">
-      <string notr="true">font-size: 16px; color: #333333;</string>
-     </property>
      <property name="text">
       <string/>
      </property>

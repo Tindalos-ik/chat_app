@@ -11,8 +11,8 @@ TextBubble::TextBubble(ChatRole role, const QString &text, BubbleFrame *parent)
     m_pTextEdit->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_pTextEdit->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_pTextEdit->installEventFilter(this);
-    QFont font("Microsoft YaHei");
-    font.setPointSize(12);
+    QFont font("Microsoft YaHei UI");
+    font.setPixelSize(14);
     m_pTextEdit->setFont(font);
     setPlainText(text);
     setWidget(m_pTextEdit);
@@ -65,7 +65,7 @@ void TextBubble::setPlainText(const QString &text)
 
 void TextBubble::initStyleSheet()
 {
-    m_pTextEdit->setStyleSheet("QTextEdit{background:transparent;border:none}");
+    m_pTextEdit->setStyleSheet("QTextEdit{background:transparent;border:none;padding:0;color:#24362f;font-size:14px;}");
 }
 
 

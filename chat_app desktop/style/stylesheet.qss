@@ -1,342 +1,179 @@
-QDialog#LoginDialog, #RegisterDialog{
-background-color:rgb(255,255,255)
-}
-
-
-QLabel#err_tip[state="normal"]{
-   color: green;
-}
-
-QLabel#err_tip[state="err"]{
-   color: red;
-}
-
-ClickedLabel#pass_visible[state='unvisible']{
-   border-image: url(:/res/unvisible.png);
-}
-
-ClickedLabel#pass_visible[state='unvisible_hover']{
-   border-image: url(:/res/unvisible_hover.png);
-}
-
-ClickedLabel#pass_visible[state='visible']{
-   border-image: url(:/res/visible.png);
-}
-
-ClickedLabel#pass_visible[state='visible_hover']{
-   border-image: url(:/res/visible_hover.png);
-}
-
-ClickedLabel#confirm_visible[state='unvisible']{
-   border-image: url(:/res/unvisible.png);
-}
-
-ClickedLabel#confirm_visible[state='unvisible_hover']{
-   border-image: url(:/res/unvisible_hover.png);
-}
-
-ClickedLabel#confirm_visible[state='visible']{
-   border-image: url(:/res/visible.png);
-}
-
-ClickedLabel#confirm_visible[state='visible_hover']{
-   border-image: url(:/res/visible_hover.png);
-}
-
-ClickedLabel#forget_pwd_label[state='normal'],#forget_pwd_label[state='selected']{
-   color: black;
-}
-
-ClickedLabel#forget_pwd_label[state='hover'],#forget_pwd_label[state='selected_hover']{
-   color: rgb(42,112,241);
-}
-
-
-/* ================= 侧边栏 StateWidget =================
- * 聊天：选中态用 select_hover / select_press 两张图（与 hover/press 同图）
- * 联系人：没有单独的选中图，选中态复用 press 图
- * 设置：选中态用 select_hover / select_press
- */
-StateWidget#side_chat_lb[state='normal']{
-   border-image: url(:/res/chat_icon.png);
-}
-
-StateWidget#side_chat_lb[state='hover']{
-   border-image: url(:/res/chat_icon_hover.png);
-}
-
-StateWidget#side_chat_lb[state='pressed']{
-   border-image: url(:/res/chat_icon_press.png);
-}
-
-/* 选中态统一用绿色（与 press 图一致，主题绿 #07c160） */
-StateWidget#side_chat_lb[state='selected'],
-StateWidget#side_chat_lb[state='selected_hover'],
-StateWidget#side_chat_lb[state='selected_pressed']{
-   border-image: url(:/res/chat_icon_select_press.png);
-}
-
-StateWidget#side_contact_lb[state='normal']{
-   border-image: url(:/res/contact_list.png);
-}
-
-StateWidget#side_contact_lb[state='hover']{
-   border-image: url(:/res/contact_list_hover.png);
-}
-
-StateWidget#side_contact_lb[state='pressed'],
-StateWidget#side_contact_lb[state='selected'],
-StateWidget#side_contact_lb[state='selected_hover'],
-StateWidget#side_contact_lb[state='selected_pressed']{
-   border-image: url(:/res/contact_list_press.png);
-}
-
-StateWidget#side_settings_lb[state='normal']{
-   border-image: url(:/res/settings.png);
-}
-
-StateWidget#side_settings_lb[state='hover']{
-   border-image: url(:/res/settings_hover.png);
-}
-
-StateWidget#side_settings_lb[state='pressed']{
-   border-image: url(:/res/settings_press.png);
-}
-
-/* 选中态统一用绿色 */
-StateWidget#side_settings_lb[state='selected'],
-StateWidget#side_settings_lb[state='selected_hover'],
-StateWidget#side_settings_lb[state='selected_pressed']{
-   border-image: url(:/res/settings_select_press.png);
-}
-
-StateWidget#side_group_notifications_lb[state='normal']{
-   border-image: url(:/res/group_notifications_normal.png);
-}
-StateWidget#side_group_notifications_lb[state='hover']{
-   border-image: url(:/res/group_notifications_hover.png);
-}
-StateWidget#side_group_notifications_lb[state='pressed'],
-StateWidget#side_group_notifications_lb[state='selected'],
-StateWidget#side_group_notifications_lb[state='selected_hover'],
-StateWidget#side_group_notifications_lb[state='selected_pressed']{
-   border-image: url(:/res/group_notifications_selected.png);
-}
-
-/* 侧边栏按钮右上角的红点（新消息 / 新好友申请提示） */
-StateWidget QLabel#red_point{
-   border-image: url(:/res/red_point.png);
-}
-
-
-/* 用户与群入口共用提示行；表单和结果留在搜索面板内。 */
-AddUserItem QLabel#search_entry_icon{
-   background: transparent;
-}
-AddUserItem QLabel#search_entry_arrow{
-   background: transparent;
-   color: #999999;
-   font-size: 20px;
-}
-
-AddUserItem #message_tip{
-   font-family: "Microsoft YaHei";
-   font-size: 14px;
-   color: #333333;
-}
-
-/* 搜索列表整行悬停/选中高亮（提示项背景透明，高亮会透出来） */
-QListWidget#search_list::item{
-   border-radius: 6px;
-   background: transparent;
-}
-QListWidget#search_list::item:hover{
-   background-color: #e3e7e5;
-}
-QListWidget#search_list::item:selected{
-   background-color: #d8eee2;
-}
-QWidget#group_search_card{
-   background: #ffffff;
-   border-radius: 8px;
-}
-QWidget#group_search_card QLabel{
-   background: transparent;
-   border: none;
-   color: #333333;
-   font-size: 13px;
-}
-QWidget#group_search_card QLabel#group_search_heading,
-QWidget#group_search_card QLabel#group_search_name{
-   font-weight: bold;
-}
-QWidget#group_search_card QLabel#group_search_number,
-QWidget#group_search_card QLabel#group_search_status{
-   color: #758078;
-   font-size: 12px;
-}
-QWidget#group_search_card QLabel#group_search_status[error="true"]{
-   color: #c23b3b;
-}
-QLineEdit#group_search_form{
-   border: 1px solid #dcdcdc;
-   border-radius: 5px;
-   padding: 6px;
-   background: #ffffff;
-   color: #333333;
-}
-QLineEdit#group_search_form:focus{
-   border-color: #07c160;
-}
-QPushButton#group_search_submit{
-   border: none;
-   border-radius: 5px;
-   padding: 7px 8px;
-   background: #07c160;
-   color: #ffffff;
-}
-QPushButton#group_search_submit:hover{
-   background: #06ad56;
-}
-QPushButton#group_search_submit:disabled{
-   background: #e3e8e5;
-   color: #909992;
-}
-
-/* 嵌入式群通知沿用现有白色内容区与主题绿。 */
-QWidget#group_requests_page, QWidget#group_approvals_page{
-   background: #ffffff;
-}
-#group_requests_page QLabel#group_notifications_title{
-   color: #333333;
-   font-size: 17px;
-   font-weight: bold;
-   padding-bottom: 6px;
-}
-#group_requests_page QTabWidget::pane{
-   border: 1px solid #e5e8e6;
-   border-radius: 6px;
-}
-#group_requests_page QTabBar::tab{
-   background: #f0f1f2;
-   color: #68716b;
-   padding: 9px 16px;
-   border: none;
-}
-#group_requests_page QTabBar::tab:selected{
-   background: #e1f3e9;
-   color: #078a45;
-}
-#group_requests_page QListWidget, #group_approvals_page QListWidget{
-   border: none;
-   background: #ffffff;
-   color: #333333;
-   font-size: 13px;
-}
-#group_requests_page QListWidget::item, #group_approvals_page QListWidget::item{
-   padding: 12px 8px;
-   border-bottom: 1px solid #eef0ef;
-}
-#group_requests_page QListWidget::item:hover, #group_approvals_page QListWidget::item:hover{
-   background: #f0f5f2;
-}
-#group_requests_page QListWidget::item:selected, #group_approvals_page QListWidget::item:selected{
-   background: #e1f3e9;
-   color: #24583b;
-}
-#group_requests_page QLabel, #group_approvals_page QLabel{
-   background: transparent;
-   color: #68716b;
-   font-size: 13px;
-}
-#group_requests_page QPushButton, #group_approvals_page QPushButton{
-   background: #f0f5f2;
-   border: 1px solid #dce6df;
-   border-radius: 5px;
-   padding: 6px 12px;
-   color: #24653e;
-}
-#group_requests_page QPushButton:hover, #group_approvals_page QPushButton:hover{
-   background: #e1f3e9;
-   border-color: #07c160;
-}
-#group_requests_page QPushButton:disabled, #group_approvals_page QPushButton:disabled{
-   color: #a0a7a2;
-   border-color: #e7eae8;
-}
-
-
-/* ================= 联系人列表 ================= */
-/* "联系人"分组标题 */
-#group_tip {
-    background-color: #f0f1f2;
-}
-
-QLabel#group_tip_lb {
-    color: #999999;
-    font-size: 13px;
-}
-
-/* 整行悬停/选中高亮 */
-QListWidget#contact_list::item:hover{
-   background-color: rgb(206,207,208);
-}
-
-QListWidget#contact_list::item:selected{
-   background-color: rgb(211,215,212);
-}
-
-
-/* ================= ApplyFriend 添加好友弹窗 ================= */
-#ApplyFriend {
-    border: 2px solid #f1f1f1;
+/* Shared desktop theme. Local UI files contain layout, not competing themes. */
+QWidget {
+    font-family: "Microsoft YaHei";
     font-size: 14px;
-    background: #f7f7f8;
+    color: #24362f;
+    selection-background-color: #e5f4ed;
+    selection-color: #24362f;
 }
-
-/* 推荐标签（tipslb）：做成小胶囊，未选中浅灰、选中变绿色胶囊 */
-#apply_wid #tipslb {
-    padding: 2px 6px;
-    border-radius: 12px; /* 更圆润 */
+QDialog, QMainWindow { background: #f4f7f5; }
+QLabel { background: transparent; border: none; }
+QToolTip { background: #ffffff; color: #24362f; border: 1px solid #e3ebe7; padding: 6px; }
+QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QSpinBox {
+    background: #ffffff; color: #24362f;
+    border: 1px solid #e3ebe7; border-radius: 6px;
+    padding: 7px 10px;
+    selection-background-color: #e5f4ed;
 }
-
-#apply_wid #tipslb[state='normal'],#apply_wid #tipslb[state='hover'] {
-    background-color: #e1e1e1;
-    color: #1e1e1e;
+QLineEdit, QComboBox, QSpinBox { min-height: 22px; }
+QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus, QComboBox:focus, QSpinBox:focus { border-color: #16a078; }
+QLineEdit:read-only { background: #f4f7f5; color: #7b8b84; }
+QLineEdit:disabled, QTextEdit:disabled, QComboBox:disabled { background: #f4f7f5; color: #7b8b84; }
+QComboBox::drop-down { border: none; width: 24px; }
+QComboBox QAbstractItemView { background: #ffffff; border: 1px solid #e3ebe7; selection-background-color: #e5f4ed; selection-color: #24362f; }
+QPushButton {
+    background: #ffffff; color: #24362f;
+    border: 1px solid #e3ebe7; border-radius: 6px;
+    padding: 7px 14px; min-height: 20px;
 }
-
-#apply_wid #tipslb[state='pressed'],
-#apply_wid #tipslb[state='selected_normal'],
-#apply_wid #tipslb[state='selected_hover'] {
-    background-color: #daf6e7; /* 选中 = 绿色胶囊，和好友标签风格一致 */
-    color: #48bf56;
+QPushButton:hover { background: #e5f4ed; border-color: #16a078; color: #128866; }
+QPushButton:pressed { background: #d5ebdf; }
+QPushButton:focus { border-color: #16a078; }
+QPushButton:disabled { background: #edf2ef; border-color: #e3ebe7; color: #9aa8a1; }
+QPushButton#login_btn, QPushButton#sure_btn, QPushButton#confirm_btn, QPushButton#reset_btn,
+QPushButton#send_btn, QPushButton#submit_btn, QPushButton#group_search_submit,
+FindSuccessDlg QPushButton#add_friend_btn {
+    background: #16a078; color: #ffffff; border: 1px solid #16a078; font-weight: 600;
 }
+QPushButton#login_btn:hover, QPushButton#sure_btn:hover, QPushButton#confirm_btn:hover, QPushButton#reset_btn:hover,
+QPushButton#send_btn:hover, QPushButton#submit_btn:hover, QPushButton#group_search_submit:hover,
+FindSuccessDlg QPushButton#add_friend_btn:hover { background: #128866; border-color: #128866; }
+QPushButton#login_btn:pressed, QPushButton#sure_btn:pressed, QPushButton#confirm_btn:pressed, QPushButton#reset_btn:pressed,
+QPushButton#send_btn:pressed, QPushButton#submit_btn:pressed, QPushButton#group_search_submit:pressed,
+FindSuccessDlg QPushButton#add_friend_btn:pressed { background: #0f7356; border-color: #0f7356; }
+QPushButton#login_btn:disabled, QPushButton#sure_btn:disabled, QPushButton#confirm_btn:disabled, QPushButton#reset_btn:disabled,
+QPushButton#send_btn:disabled, QPushButton#submit_btn:disabled, QPushButton#group_search_submit:disabled { background: #dce8e1; border-color: #dce8e1; color: #8a9d92; }
+QScrollArea { border: none; background: transparent; }
+QListWidget, QListView { border: none; background: #ffffff; outline: none; }
+QListWidget::item { border: none; border-radius: 6px; }
+QListWidget::item:hover { background: #eef5f0; }
+QListWidget::item:selected { background: #e5f4ed; color: #24362f; }
+QScrollBar:vertical { background: transparent; width: 8px; margin: 2px; }
+QScrollBar:horizontal { background: transparent; height: 8px; margin: 2px; }
+QScrollBar::handle:vertical { background: #c5d3cb; border-radius: 2px; min-height: 32px; }
+QScrollBar::handle:horizontal { background: #c5d3cb; border-radius: 2px; min-width: 32px; }
+QScrollBar::handle:hover { background: #93ab9d; }
+QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; border: none; }
+QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
+QTabWidget::pane { background: #ffffff; border: 1px solid #e3ebe7; border-radius: 6px; top: -1px; }
+QTabBar::tab { background: #f4f7f5; color: #7b8b84; padding: 10px 16px; border-bottom: 2px solid transparent; }
+QTabBar::tab:hover { color: #16a078; }
+QTabBar::tab:selected { background: #ffffff; color: #128866; border-bottom-color: #16a078; }
+QGroupBox { background: #ffffff; border: 1px solid #e3ebe7; border-radius: 6px; margin-top: 12px; padding: 16px; }
+QGroupBox::title { subcontrol-origin: margin; left: 14px; padding: 0 5px; color: #7b8b84; }
+QCheckBox, QRadioButton { spacing: 7px; background: transparent; }
+QProgressBar { border: 1px solid #e3ebe7; border-radius: 5px; background: #edf2ef; color: #24362f; text-align: center; }
+QProgressBar::chunk { border-radius: 4px; background: #16a078; }
+QMenu { background: #ffffff; border: 1px solid #e3ebe7; padding: 5px; }
+QMenu::item { padding: 7px 24px 7px 12px; border-radius: 4px; }
+QMenu::item:selected { background: #e5f4ed; color: #128866; }
+QMenu::separator { height: 1px; background: #e3ebe7; margin: 4px; }
+QSplitter::handle { background: #e3ebe7; }
+QSplitter::handle:hover { background: #b9d8c9; }
 
-#apply_wid #tipslb[state='selected_pressed'] {
-    background-color: #daf6e7;
-    color: #1e1e1e;
-}
+/* Authentication shares the desktop palette without any image backdrop. */
+QDialog#LoginDialog, QDialog#RegisterDialog, QDialog#ResetDialog { background: #ffffff; }
+QLabel#auth_title { font-size: 28px; font-weight: 600; color: #24362f; }
+QLabel#err_tip { font-size: 13px; color: #7b8b84; }
+QLabel#err_tip[state="normal"] { color: #128866; }
+QLabel#err_tip[state="err"] { color: #c44e4e; }
+#LoginDialog QPushButton, #RegisterDialog QPushButton, #ResetDialog QPushButton { padding-top: 9px; padding-bottom: 9px; }
+ClickedLabel#forget_pwd_label { color: #7b8b84; font-size: 13px; }
+ClickedLabel#forget_pwd_label[state="hover"], ClickedLabel#forget_pwd_label[state="selected_hover"] { color: #16a078; }
+ClickedLabel#pass_visible[state="unvisible"], ClickedLabel#confirm_visible[state="unvisible"] { border-image: url(:/res/unvisible.png); }
+ClickedLabel#pass_visible[state="unvisible_hover"], ClickedLabel#confirm_visible[state="unvisible_hover"] { border-image: url(:/res/unvisible_hover.png); }
+ClickedLabel#pass_visible[state="visible"], ClickedLabel#confirm_visible[state="visible"] { border-image: url(:/res/visible.png); }
+ClickedLabel#pass_visible[state="visible_hover"], ClickedLabel#confirm_visible[state="visible_hover"] { border-image: url(:/res/visible_hover.png); }
 
-#apply_wid #more_lb {
-    border-image: url(:/res/arowdown.png); /* "更多"下拉箭头 */
-}
+/* Main three-column shell. */
+#ChatDialog { background: #ffffff; }
+QWidget#header_widget { background: #ffffff; border-bottom: 1px solid #e3ebe7; }
+QLabel#header_title { color: #128866; font-size: 17px; font-weight: 600; }
+#ChatDialog QLabel#user_label { color: #7b8b84; font-size: 13px; }
+QWidget#side_bar { background: #edf3ef; border-right: 1px solid #e3ebe7; }
+QWidget#chat_user_wid { background: #f4f7f5; border-right: 1px solid #e3ebe7; }
+QWidget#chat_data_wid, QWidget#chat_page { background: #ffffff; }
+QListWidget#session_list, QListWidget#contact_list, QListWidget#search_list { background: transparent; }
+ChatUserWid, ConUserWid, AddUserItem, ApplyFriendItem { background: transparent; }
+QLabel#user_name_lb { font-weight: 600; color: #24362f; }
+QLabel#user_chat_lb, QLabel#time_lb, QLabel#status_lb { color: #7b8b84; font-size: 12px; }
+QLabel#time_lb { font-size: 11px; }
+QWidget#group_tip { background: transparent; }
+QLabel#group_tip_lb { color: #7b8b84; font-size: 12px; padding: 6px 4px; }
+QLineEdit#search_edit { padding: 6px 10px; border-radius: 6px; }
+#ChatDialog QPushButton#add_friend_btn { padding: 2px; min-height: 0; border: none; background: transparent; }
+#ChatDialog QPushButton#add_friend_btn:hover { background: #e5f4ed; }
+QWidget#chat_title_wid { background: #ffffff; border-bottom: 1px solid #e3ebe7; }
+QLabel#chat_title_label { font-size: 16px; font-weight: 600; }
+ChatView, QWidget#chat_bg, QScrollArea#chat_area { background: #f4f7f5; }
+QWidget#input_wid { background: #ffffff; border-top: 1px solid #e3ebe7; }
+QTextEdit#input_edit { background: #ffffff; border: none; padding: 4px; }
+QPushButton#send_btn { padding: 5px 22px; }
+QPushButton#group_info_button { padding: 4px 12px; }
+StateWidget { background: transparent; }
+StateWidget#side_chat_lb[state="normal"] { border-image: url(:/res/chat_icon.png); }
+StateWidget#side_chat_lb[state="hover"] { border-image: url(:/res/chat_icon_hover.png); }
+StateWidget#side_chat_lb[state="pressed"] { border-image: url(:/res/chat_icon_press.png); }
+StateWidget#side_chat_lb[state="selected"], StateWidget#side_chat_lb[state="selected_hover"], StateWidget#side_chat_lb[state="selected_pressed"] { border-image: url(:/res/chat_icon_select_press.png); }
+StateWidget#side_contact_lb[state="normal"] { border-image: url(:/res/contact_list.png); }
+StateWidget#side_contact_lb[state="hover"] { border-image: url(:/res/contact_list_hover.png); }
+StateWidget#side_contact_lb[state="pressed"], StateWidget#side_contact_lb[state="selected"], StateWidget#side_contact_lb[state="selected_hover"], StateWidget#side_contact_lb[state="selected_pressed"] { border-image: url(:/res/contact_list_press.png); }
+StateWidget#side_settings_lb[state="normal"] { border-image: url(:/res/settings.png); }
+StateWidget#side_settings_lb[state="hover"] { border-image: url(:/res/settings_hover.png); }
+StateWidget#side_settings_lb[state="pressed"] { border-image: url(:/res/settings_press.png); }
+StateWidget#side_settings_lb[state="selected"], StateWidget#side_settings_lb[state="selected_hover"], StateWidget#side_settings_lb[state="selected_pressed"] { border-image: url(:/res/settings_select_press.png); }
+StateWidget#side_group_notifications_lb[state="normal"] { border-image: url(:/res/group_notifications_normal.png); }
+StateWidget#side_group_notifications_lb[state="hover"] { border-image: url(:/res/group_notifications_hover.png); }
+StateWidget#side_group_notifications_lb[state="pressed"], StateWidget#side_group_notifications_lb[state="selected"], StateWidget#side_group_notifications_lb[state="selected_hover"], StateWidget#side_group_notifications_lb[state="selected_pressed"] { border-image: url(:/res/group_notifications_selected.png); }
+StateWidget QLabel#red_point { border-image: url(:/res/red_point.png); }
 
-#input_tip_wid {
-    background: #d3eaf8;
-}
+/* Contact profiles and friend dialogs. */
+FriendInfoPage, ApplyFriendPage, QDialog#ApplyFriend, QDialog#AuthenFriend, QDialog#FindSuccessDlg, QDialog#SettingDialog { background: #ffffff; }
+FriendInfoPage QLabel#name_lb { font-size: 24px; font-weight: 600; }
+FriendInfoPage QLabel#nick_tip, FriendInfoPage QLabel#bak_tip { color: #7b8b84; }
+QLabel#apply_lb, QLabel#title_lb, #AuthenFriend QLabel#name_lb, #FindSuccessDlg QLabel#name_lb { font-size: 18px; font-weight: 600; }
+#AuthenFriend QLabel#msg_tip, #AuthenFriend QLabel#bak_tip, #AuthenFriend QLabel#msg_lb { color: #7b8b84; }
+FriendInfoPage QPushButton#msg_chat, FriendInfoPage QPushButton#voice_chat, FriendInfoPage QPushButton#video_chat { padding: 0; border: none; background: transparent; }
+QPushButton#msg_chat { border-image: url(:/res/msg_chat_normal.png); }
+QPushButton#msg_chat:hover { border-image: url(:/res/msg_chat_hover.png); }
+QPushButton#msg_chat:pressed { border-image: url(:/res/msg_chat_press.png); }
+QPushButton#voice_chat { border-image: url(:/res/voice_chat_normal.png); }
+QPushButton#voice_chat:hover { border-image: url(:/res/voice_chat_hover.png); }
+QPushButton#voice_chat:pressed { border-image: url(:/res/voice_chat_press.png); }
+QPushButton#video_chat { border-image: url(:/res/video_chat_normal.png); }
+QPushButton#video_chat:hover { border-image: url(:/res/video_chat_hover.png); }
+QPushButton#video_chat:pressed { border-image: url(:/res/video_chat_press.png); }
+#apply_wid #tipslb { padding: 3px 8px; border-radius: 5px; background: #f4f7f5; color: #7b8b84; }
+#apply_wid #tipslb[state="hover"] { background: #e5f4ed; color: #128866; }
+#apply_wid #tipslb[state="pressed"], #apply_wid #tipslb[state="selected_normal"], #apply_wid #tipslb[state="selected_hover"], #apply_wid #tipslb[state="selected_pressed"] { background: #e5f4ed; color: #128866; }
+#apply_wid #more_lb { border-image: url(:/res/arowdown.png); }
+QFrame#FriendLabel { background: #e5f4ed; border-radius: 5px; }
+#FriendLabel QLabel#tip_lb { color: #128866; font-size: 13px; }
+#input_tip_wid { background: #e5f4ed; border-radius: 5px; }
+#apply_wid #tip_lb { padding-left: 3px; color: #7b8b84; }
+#gridWidget { background: #ffffff; }
+QLabel#page_title { font-size: 22px; font-weight: 600; }
+QLabel#avatar_hint { color: #7b8b84; font-size: 12px; }
+QWidget#header_wid { border-bottom: 1px solid #e3ebe7; }
+QWidget#avatar_card { background: #f4f7f5; border: 1px solid #e3ebe7; border-radius: 8px; }
+QLabel#avatar_lb { background: #ffffff; border: 3px solid #ffffff; border-radius: 54px; }
+QLabel#avatar_tip { font-size: 15px; font-weight: 600; }
+QProgressBar#upload_progress { min-height: 14px; max-height: 14px; font-size: 10px; }
 
-#apply_wid #tip_lb {
-    padding-left: 2px;
-    color: rgb(153,153,153);
-}
-
-#gridWidget {
-    background: #fdfdfd;
-}
-
-
-
-
-
-
-
+/* Search and group management use the same controls as regular dialogs. */
+AddUserItem QLabel#search_entry_icon { background: transparent; }
+AddUserItem QLabel#search_entry_arrow { color: #7b8b84; font-size: 20px; }
+QWidget#group_search_card { background: #ffffff; border: 1px solid #e3ebe7; border-radius: 8px; }
+QWidget#group_search_card QLabel { background: transparent; border: none; }
+QLabel#group_search_heading, QLabel#group_search_name { font-weight: 600; }
+QLabel#group_search_number, QLabel#group_search_status { color: #7b8b84; font-size: 12px; }
+QLabel#group_search_status[error="true"] { color: #c44e4e; }
+QWidget#group_requests_page, QWidget#group_approvals_page, QDialog#group_info_dialog { background: #ffffff; }
+QLabel#group_notifications_title { font-size: 20px; font-weight: 600; padding-bottom: 8px; }
+QLabel#group_info_summary { background: #f4f7f5; border: 1px solid #e3ebe7; border-radius: 6px; padding: 12px; }
+#group_requests_page QListWidget::item, #group_approvals_page QListWidget::item, #group_members_list::item { padding: 12px 10px; border-bottom: 1px solid #e3ebe7; }
+#group_requests_page QLabel, #group_approvals_page QLabel { color: #7b8b84; }
+#group_requests_page QLabel#group_notifications_title { color: #24362f; }
+QPushButton#group_kick_button { color: #b94f4f; }
+QPushButton#group_kick_button:disabled { color: #9aa8a1; }
+#group_info_dialog QPushButton { padding-left: 8px; padding-right: 8px; }

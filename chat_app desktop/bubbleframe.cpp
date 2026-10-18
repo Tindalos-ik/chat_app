@@ -33,6 +33,7 @@ void BubbleFrame::setWidget(QWidget *w)
 void BubbleFrame::paintEvent(QPaintEvent *e)
 {
     QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
     painter.setPen(Qt::NoPen);
 
     if(m_role == ChatRole::Other){
@@ -50,7 +51,7 @@ void BubbleFrame::paintEvent(QPaintEvent *e)
         painter.drawPolygon(points, 3);
     }else{
         // 画气泡
-        QColor bk_color(158,234,106);
+        QColor bk_color(213, 239, 225);
         painter.setBrush(QBrush(bk_color));
         QRect bk_rect = QRect(0, 0, this->width()-WIDTH_SANJIAO, this->height());
         painter.drawRoundedRect(bk_rect, 8, 8);

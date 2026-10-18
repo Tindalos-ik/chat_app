@@ -6,21 +6,22 @@
 #include <QApplication>
 #include <QDebug>
 #include <QFile>
-
+#include <QFont>
 int main(int argc, char *argv[])
 {
     // Chromium在QApplication初始化时读取scheme属性，提前注册才能让媒体页使用稳定安全origin。
     VideoTestController::RegisterScheme();
     QApplication a(argc, argv);
+    a.setStyle(QStringLiteral("Fusion"));
+    a.setFont(QFont(QStringLiteral("Microsoft YaHei UI"), 10));
 
-    //使用qss文件美化一下
-    //在这之前要把这个文件添加进去资源文件，也就是qrc文件里面
+    // 所有页面共用一套配色与控件状态；UTF-8 保留样式中的中文字体名。
     QFile qss(":/style/stylesheet.qss");
 
     if( qss.open(QFile::ReadOnly))
     {
         qDebug("open success");
-        QString style = QLatin1String(qss.readAll());
+        QString style = QString::fromUtf8(qss.readAll());
         a.setStyleSheet(style);
         qss.close();
     }else{

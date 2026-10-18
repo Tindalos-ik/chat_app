@@ -25,11 +25,6 @@
   <property name="windowTitle">
    <string>申请添加好友</string>
   </property>
-  <property name="styleSheet">
-   <string notr="true">QDialog { background-color: #ffffff; }
-QLineEdit { background-color: #f5f6f7; border: 1px solid #dcdcdc; border-radius: 4px; padding: 0 8px; font-size: 13px; color: #333333; }
-QLineEdit:focus { border-color: #07c160; background-color: #ffffff; }</string>
-  </property>
   <layout class="QVBoxLayout" name="verticalLayout">
    <property name="spacing">
     <number>0</number>
@@ -96,9 +91,6 @@ QLineEdit:focus { border-color: #07c160; background-color: #ffffff; }</string>
            <height>25</height>
           </size>
          </property>
-         <property name="styleSheet">
-          <string notr="true">font-size: 14px; font-weight: bold; color: #333333;</string>
-         </property>
          <property name="text">
           <string>申请添加好友</string>
          </property>
@@ -146,9 +138,6 @@ QLineEdit:focus { border-color: #07c160; background-color: #ffffff; }</string>
               <height>25</height>
              </size>
             </property>
-            <property name="styleSheet">
-             <string notr="true">font-size: 13px; color: #666666;</string>
-            </property>
             <property name="text">
              <string>发送添加朋友申请</string>
             </property>
@@ -187,9 +176,6 @@ QLineEdit:focus { border-color: #07c160; background-color: #ffffff; }</string>
               <height>25</height>
              </size>
             </property>
-            <property name="styleSheet">
-             <string notr="true">font-size: 13px; color: #666666;</string>
-            </property>
             <property name="text">
              <string>备注名</string>
             </property>
@@ -227,9 +213,6 @@ QLineEdit:focus { border-color: #07c160; background-color: #ffffff; }</string>
               <width>16777215</width>
               <height>25</height>
              </size>
-            </property>
-            <property name="styleSheet">
-             <string notr="true">font-size: 13px; color: #666666;</string>
             </property>
             <property name="text">
              <string>标签</string>
@@ -533,11 +516,6 @@ QLineEdit:focus { border-color: #07c160; background-color: #ffffff; }</string>
         <property name="cursor">
          <cursorShape>PointingHandCursor</cursorShape>
         </property>
-        <property name="styleSheet">
-         <string notr="true">QPushButton { background-color: #07c160; color: #ffffff; border: none; border-radius: 4px; font-size: 14px; }
-QPushButton:hover { background-color: #06ad56; }
-QPushButton:pressed { background-color: #059a4c; }</string>
-        </property>
         <property name="text">
          <string>确认</string>
         </property>
@@ -572,11 +550,6 @@ QPushButton:pressed { background-color: #059a4c; }</string>
         </property>
         <property name="cursor">
          <cursorShape>PointingHandCursor</cursorShape>
-        </property>
-        <property name="styleSheet">
-         <string notr="true">QPushButton { background-color: #ffffff; color: #333333; border: 1px solid #dcdcdc; border-radius: 4px; font-size: 14px; }
-QPushButton:hover { background-color: #f5f6f7; }
-QPushButton:pressed { background-color: #ebedf0; }</string>
         </property>
         <property name="text">
          <string>取消</string>
