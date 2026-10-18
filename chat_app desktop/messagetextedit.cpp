@@ -11,8 +11,8 @@ MessageTextEdit::MessageTextEdit(QWidget *parent)
     : QTextEdit(parent)
 {
     //this->setStyleSheet("border: none;");
-    // 输入框最高 60px：内容多了内部自己滚，不把窗口撑爆
-    this->setMaximumHeight(60);
+    // 为两行文件预览和文档边距留出高度；多余内容在输入框内滚动。
+    this->setMaximumHeight(80);
 
     // textEditChanged 的连接被注释掉：目前不需要随输入实时处理，
     // 将来要做"输入变化 → 更新发送按钮状态"时再打开
@@ -293,36 +293,40 @@ QStringList MessageTextEdit::getUrl(QString text)
 // 生成文件卡片预览图：左边系统文件图标，右边文件名 + 大小
 QPixmap MessageTextEdit::getFileIconPixmap(const QString &url)
 {
-    QFileIconProvider provder;
-    QFileInfo fileinfo(url);
-    QIcon icon = provder.icon(fileinfo);
+    const QFileInfo fileInfo(url);
+    QFileIconProvider provider;
+    const QIcon icon = provider.icon(fileInfo);
+    const QString sizeText = getFileSize(fileInfo.size());
+    ensurePolished();
+    const QFont previewFont = font();
+    const QFontMetrics metrics(previewFont);
+    constexpr int padding = 4;
+    constexpr int iconSize = 32;
+    constexpr int spacing = 8;
+    constexpr int lineSpacing = 4;
+    const int textWidth = qMin(220, qMax(metrics.horizontalAdvance(fileInfo.fileName()),
+                                       metrics.horizontalAdvance(sizeText)));
+    const int textHeight = metrics.height() * 2 + lineSpacing;
+    const QSize cardSize(padding * 2 + iconSize + spacing + textWidth,
+                         padding * 2 + qMax(iconSize, textHeight));
+    // 度量和绘制使用同一字体，并按设备像素比生成预览，避免高 DPI 下文字被裁切或模糊。
+    const qreal ratio = devicePixelRatioF();
+    QPixmap pix(cardSize * ratio);
+    pix.setDevicePixelRatio(ratio);
+    pix.fill(Qt::transparent);
 
-    QString strFileSize = getFileSize(fileinfo.size());
-    //qDebug() << "FileSize=" << fileinfo.size();
-
-    QFont font(QString("宋体"),10,QFont::Normal,false);
-    QFontMetrics fontMetrics(font);
-    QSize textSize = fontMetrics.size(Qt::TextSingleLine, fileinfo.fileName()); // 文件名占宽
-
-    QSize FileSize = fontMetrics.size(Qt::TextSingleLine, strFileSize);         // 大小文字占宽
-    int maxWidth = textSize.width() > FileSize.width() ? textSize.width() :FileSize.width();
-    QPixmap pix(50 + maxWidth + 10, 50); // 宽 = 图标50 + 文字最大宽 + 间距；高固定 50
-    pix.fill();
-
-    QPainter painter;
-    // painter.setRenderHint(QPainter::Antialiasing, true);
-    //painter.setFont(font);
-    painter.begin(&pix);
-    // 左 50x50 画系统文件图标
-    QRect rect(0, 0, 50, 50);
-    painter.drawPixmap(rect, icon.pixmap(40,40));
-    painter.setPen(Qt::black);
-    // 右上画文件名
-    QRect rectText(50+10, 3, textSize.width(), textSize.height());
-    painter.drawText(rectText, fileinfo.fileName());
-    // 右下画文件大小
-    QRect rectFile(50+10, textSize.height()+5, FileSize.width(), FileSize.height());
-    painter.drawText(rectFile, strFileSize);
+    QPainter painter(&pix);
+    painter.setFont(previewFont);
+    painter.setPen(palette().color(QPalette::Text));
+    icon.paint(&painter, QRect(padding, (cardSize.height() - iconSize) / 2, iconSize, iconSize));
+    const int textLeft = padding + iconSize + spacing;
+    const int textTop = (cardSize.height() - textHeight) / 2;
+    painter.drawText(QRect(textLeft, textTop, textWidth, metrics.height()),
+                     Qt::AlignLeft | Qt::AlignVCenter | Qt::TextSingleLine,
+                     metrics.elidedText(fileInfo.fileName(), Qt::ElideMiddle, textWidth));
+    painter.drawText(QRect(textLeft, textTop + metrics.height() + lineSpacing,
+                           textWidth, metrics.height()),
+                     Qt::AlignLeft | Qt::AlignVCenter | Qt::TextSingleLine, sizeText);
     painter.end();
     return pix;
 }

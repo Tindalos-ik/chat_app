@@ -40,10 +40,89 @@
  
 #include <QFileInfo>
 #include <QHBoxLayout>
+#include <QVBoxLayout>
 #include <QLabel>
+#include <QPainter>
 
 namespace {
 constexpr int kLocalHistoryPageSize = 50;
+
+// 文件名允许在任意字符间换行，连续英文和下划线也不会被 QLabel 的按词换行裁掉。
+class FileNameLabel final : public QLabel
+{
+public:
+    using QLabel::QLabel;
+
+    int heightForWidth(int width) const override
+    {
+        return fontMetrics().boundingRect(QRect(0, 0, width, QWIDGETSIZE_MAX),
+                                          textFlags, text()).height();
+    }
+
+    QSize sizeHint() const override
+    {
+        return QSize(254, heightForWidth(254));
+    }
+
+    QSize minimumSizeHint() const override
+    {
+        return sizeHint();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter painter(this);
+        painter.setPen(palette().color(QPalette::WindowText));
+        painter.drawText(contentsRect(), textFlags, text());
+    }
+
+private:
+    static constexpr int textFlags = Qt::AlignLeft | Qt::AlignTop | Qt::TextWrapAnywhere;
+};
+
+// 文件卡片用独立标签排版，尺寸由内容布局决定，避免按钮重设样式或历史重绘时压扁文字。
+class FileCardButton final : public QPushButton
+{
+public:
+    FileCardButton(const QString &name, qint64 fileSize)
+    {
+        setObjectName(QStringLiteral("chat_file_card"));
+        setToolTip(name);
+        setFixedWidth(280);
+        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        setCursor(Qt::PointingHandCursor);
+        setAccessibleName(tr("文件：%1，%2 字节，点击选择保存位置").arg(name).arg(fileSize));
+
+        auto *content = new QVBoxLayout(this);
+        content->setContentsMargins(12, 10, 12, 10);
+        content->setSpacing(4);
+        content->setSizeConstraint(QLayout::SetMinimumSize);
+        const auto addLabel = [this, content](QLabel *label) {
+            label->setTextFormat(Qt::PlainText);
+            label->setFixedWidth(254);
+            // 整张卡片保留原有的点击保存/重试行为，文字不截获鼠标事件。
+            label->setAttribute(Qt::WA_TransparentForMouseEvents);
+            content->addWidget(label);
+        };
+        auto *fileName = new FileNameLabel(tr("文件：%1").arg(name), this);
+        fileName->setObjectName(QStringLiteral("chat_file_name"));
+        fileName->setWordWrap(true);
+        addLabel(fileName);
+        addLabel(new QLabel(tr("%1 字节").arg(fileSize), this));
+        addLabel(new QLabel(tr("点击选择保存位置"), this));
+    }
+
+    QSize sizeHint() const override
+    {
+        return QSize(280, layout()->totalSizeHint().height());
+    }
+
+    QSize minimumSizeHint() const override
+    {
+        return sizeHint();
+    }
+};
 
 void ClearListItems(QListWidget *list, int firstIndex)
 {
@@ -913,14 +992,7 @@ void ChatDialog::slot_send_message()
             _pending_file_items.insert(fileToUpload.msgId, pChatItem);
             _pending_file_metadata.insert(fileToUpload.msgId, fileToUpload);
             _pending_file_source_paths.insert(fileToUpload.msgId, msgList[i].content);
-            auto *fileCard = new QPushButton(
-                tr("文件：%1\n%2 字节 · 点击选择保存位置")
-                    .arg(fileToUpload.name).arg(fileToUpload.fileSize));
-            fileCard->setMinimumSize(230, 72);
-            fileCard->setStyleSheet(QStringLiteral(
-                "QPushButton { text-align:left; padding:10px; border:1px solid #c8d3df; "
-                "border-radius:6px; background:#f5f8fb; color:#263746; } "
-                "QPushButton:hover { background:#e9f1f8; }"));
+            auto *fileCard = new FileCardButton(fileToUpload.name, fileToUpload.fileSize);
             const QString fileMsgId = fileToUpload.msgId;
             connect(fileCard, &QPushButton::clicked, this, [this, fileMsgId] {
                 const auto it = _pending_file_metadata.constFind(fileMsgId);
@@ -1448,13 +1520,7 @@ ChatItemBase *ChatDialog::CreateFileChatItem(const FileChatData &file)
     auto *row = new ChatItemBase(sentBySelf ? ChatRole::Self : ChatRole::Other);
     row->setUserName(display->_name);
     row->setUserAvatar(display->_uid, display->_icon);
-    auto *card = new QPushButton(tr("文件：%1\n%2 字节 · 点击选择保存位置")
-                                     .arg(file.name).arg(file.fileSize));
-    card->setMinimumSize(230, 72);
-    card->setStyleSheet(QStringLiteral(
-        "QPushButton { text-align:left; padding:10px; border:1px solid #c8d3df; "
-        "border-radius:6px; background:#f5f8fb; color:#263746; } "
-        "QPushButton:hover { background:#e9f1f8; }"));
+    auto *card = new FileCardButton(file.name, file.fileSize);
     connect(card, &QPushButton::clicked, this, [this, file] {
         // 只有用户点击卡片并确认保存路径后，才向 ResourceServer 请求任何文件分片。
         const QString path = QFileDialog::getSaveFileName(this, tr("保存文件"), file.name);

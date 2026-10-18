@@ -109,6 +109,7 @@ ChatView, QWidget#chat_bg, QScrollArea#chat_area { background: #f4f7f5; }
 QWidget#input_wid { background: #ffffff; border-top: 1px solid #e3ebe7; }
 QTextEdit#input_edit { background: #ffffff; border: none; padding: 4px; }
 QPushButton#send_btn { padding: 5px 22px; }
+QPushButton#chat_file_card { padding: 0; }
 QPushButton#group_info_button { padding: 4px 12px; }
 StateWidget { background: transparent; }
 StateWidget#side_chat_lb[state="normal"] { border-image: url(:/res/chat_icon.png); }

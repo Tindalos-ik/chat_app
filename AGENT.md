@@ -71,6 +71,6 @@
 | [json.md](note/json.md) | JSON 在客户端、C++ 服务端和 Node.js 配置中的使用 |
 | [资源服务.md](note/资源服务.md) | ResourceServer 上传任务、资源 ID 与分片下载协议 |
 | [总结图片传输.md](note/总结图片传输.md) | 图片上传、核验、路由、下载、持久化与联调边界总结 |
-| [文件传输.md](note/文件传输.md) | 私聊文件上传、可信元数据、手动下载鉴权与历史同步 |
+| [文件传输.md](note/文件传输.md) | 私聊文件上传、可信元数据、手动下载鉴权、历史同步及定宽文件卡片与附件预览 |
 | [视频通话技术.md](note/视频通话技术.md) | 音视频生产接入设计与学习路径：Qt WebEngine/MSVC、独立WSS方案、coturn、鉴权、状态机与验收；当前好友音视频实现见 WebRTC视频通信 |
 | [WebRTC视频通信.md](note/WebRTC视频通信.md) | Qt WebEngine + ZLMediaKit 架构设计、好友音视频通话、原单向固定文件 test、信令与媒体生命周期及可信回环部署边界；短时媒体鉴权和公网 ICE 属生产设计 |

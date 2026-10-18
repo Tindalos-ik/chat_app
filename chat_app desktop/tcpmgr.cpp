@@ -699,6 +699,7 @@ void TcpMgr::initHandlers()
         ++_loginGeneration;
         _logged_in = true;
         _disconnect_notified = false;
+        StartHeartbeat();
         _pendingGroupRequests.clear();
         _pendingGroupThreads.clear();
         _pendingGroupAccounts.clear();
