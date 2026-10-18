@@ -321,11 +321,11 @@ message VideoTestNotifyRsp {
     string status = 2;
 }
 
-// 好友双向语音信令信封；内网RPC只向元数据绑定的当前登录投递，不存储聊天正文。
+// 好友音视频通话信令信封；内网RPC只向元数据绑定的当前登录投递，不存储聊天正文。
 message VoiceCallNotifyReq { // 请求目标与JSON保持独立，接收端再次核对Redis状态。
     int32 target_uid = 1; // 实际接收用户，必须为通话参与者。
     string target_session = 2; // 通话建立时绑定的精确连接代号。
-    string payload_json = 3; // 公开语音通知，不含媒体管理密钥。
+    string payload_json = 3; // 公开通知含服务端权威call_type，不含内部session或媒体管理密钥。
 }
 message VoiceCallNotifyRsp { // 响应仅确认本机TCP队列接纳，不能代表用户已听见声音。
     int32 error = 1; // 复用项目统一错误码。

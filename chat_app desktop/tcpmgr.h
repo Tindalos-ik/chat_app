@@ -42,7 +42,7 @@ public:
                           const QString &testId = {}, const QString &reason = {});
     VoiceCallController *VoiceCall() const { return _voiceCall; } // 返回TcpMgr拥有的唯一语音界面协调器。
     // op为invite/accept/reject/ready/end；toUid仅供邀请，callId关联后续操作，reason为结束原因；响应异步经sig_voice_call返回。
-    QString SendVoiceCall(const QString &op, int toUid = 0, const QString &callId = {}, const QString &reason = {}); // 返回请求UUID；空串表示未连接，不发送客户端身份。
+    QString SendVoiceCall(const QString &op, int toUid = 0, const QString &callId = {}, const QString &reason = {}, const QString &callType = {}); // callType仅invite传audio/video；后续模式由服务端会话确定；返回UUID或离线空串。
     // 群API返回本次request_id；空串表示参数/连接无效。服务端只信任登录session UID。
     QString CreateGroup(const QString &name);
     QString SearchGroup(qint64 threadId);

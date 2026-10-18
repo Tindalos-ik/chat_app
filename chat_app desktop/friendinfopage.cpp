@@ -18,7 +18,10 @@ FriendInfoPage::FriendInfoPage(QWidget *parent)
 {
     ui->setupUi(this);
     connect(ui->voice_chat, &QPushButton::clicked, this, [this] { // 复用已有语音按钮，不创建重复入口。
-        TcpMgr::GetInstance()->VoiceCall()->Start(_uid); // 当前好友UID交给统一通话控制器。
+        TcpMgr::GetInstance()->VoiceCall()->Start(_uid, "audio"); // 语音入口明确请求仅麦克风，历史控制器名称由两类通话共用。
+    });
+    connect(ui->video_chat, &QPushButton::clicked, this, [this] { // 使用好友页既有摄像头按钮，不另建一套邀请窗口。
+        TcpMgr::GetInstance()->VoiceCall()->Start(_uid, "video"); // 视频必须由双方确认后同时采集麦克风和摄像头。
     });
     // 保留原有通话按钮，额外提供明确标记test的可点击图标入口。
     auto *testButton = new QPushButton(tr("test"), this);

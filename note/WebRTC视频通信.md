@@ -446,7 +446,7 @@ wsl.exe --exec /home/tindalos/ZLMediaKit/release/linux/Release/MediaServer -c /m
 
 ## 好友语音通话
 
-好友资料页的语音入口发起一对一实时麦克风通话，原有 **test** 固定文件入口保留。主叫等待时可以取消；被叫明确接听或拒绝，关闭来电窗口按拒绝处理，关闭已接听的通话窗口按挂断处理。双方均收到服务端 `accepted` 后，才建立媒体页面和申请麦克风；邀请阶段不采集设备。
+好友资料页的语音入口以 `call_type=audio` 发起实时麦克风通话，视频入口以 `call_type=video` 发起麦克风和摄像头通话，原有 **test** 固定文件入口保留。两种通话共用历史命名的 `VoiceCallController`、`voiceCall` 桥接、`voice_call` 页面/媒体 app 以及同一服务端邀请生命周期。主叫等待时可以取消；被叫明确接听或拒绝，关闭来电窗口按拒绝处理，关闭已接听窗口按挂断处理。双方均收到服务端 `accepted` 后，才创建媒体页面并申请该类型需要的设备；邀请阶段不采集设备。
 
 ### 协议和端到端流程
 
@@ -454,13 +454,13 @@ wsl.exe --exec /home/tindalos/ZLMediaKit/release/linux/Release/MediaServer -c /m
 
 | 操作 | 请求字段 | 服务端语义 |
 | --- | --- | --- |
-| `invite` | `request_id`、`touid` | 从登录 session 取得主叫身份，检查双向好友关系、目标在线 session 和忙线状态，分配 `call_id`；目标 TCP 通知入队成功才返回 `invited`。 |
+| `invite` | `request_id`、`touid`、必填 `call_type=audio/video` | 从登录 session 取得主叫身份，校验类型、双向好友关系、在线 session 与忙线，分配 `call_id`；类型写入 Redis 元数据，目标通知入队成功才返回 `invited`。 |
 | `accept` | `request_id`、`call_id` | 仅被叫可接听；原子核验参与者、session 和邀请状态，返回并通知 `accepted`。 |
 | `reject` | `request_id`、`call_id` | 仅被叫可拒绝有效邀请，终结双方占用并通知 `rejected`。 |
-| `ready` | `request_id`、`call_id` | 每端在自身发布连接成功且实际发送音频字节后报告；通知携带 `actoruid`，对端据此发起一次订阅。 |
+| `ready` | `request_id`、`call_id` | 每端在自身发布已连接、该通话全部必要媒体实际发送后报告；通知携带 `actoruid`，对端据此执行一次订阅。audio 要求音频；video 同时要求音频与视频。 |
 | `end` | `request_id`、`call_id`、`reason` | 取消、挂断或媒体失败时终结状态，释放占用并通知 `ended`。 |
 
-`request_id` 为 UUID，关联单次请求；`call_id` 标识整场通话。所有公开状态都携带 `invite_request_id`，固定对应最初 `invite` 的 UUID，后续操作不会改写。邀请通知包含 `fromuid`、`touid` 和 `call_id`；接听结果额外包含 `app=voice_call`、`media_url`、`caller_stream`、`callee_stream`。两端各自发布属于自己的随机流，并订阅对方流，客户端不生成或猜测服务端流标识。
+`request_id` 为 UUID，关联单次请求；`call_id` 标识整场通话。公开成功状态和活动通知携带元数据中的权威 `call_type`，以及固定关联最初邀请的 `invite_request_id`。邀请通知包含 `fromuid`、`touid`、`call_id`；接听结果额外包含 `app=voice_call`、`media_url`、`caller_stream`、`callee_stream`。只有 invite 提交类型，accept/reject/ready/end 不重复携带，服务端拒绝后续操作试图覆盖类型。客户端核对邀请成功响应、来电、提前通知、accepted 和缓存类型的一致性；错误 response 先经 UUID/call_id 关联消费真实失败，不能因失败包省略类型而覆写为“类型不一致”。两端各自发布服务端分配的随机流，并订阅对方流。
 
 失败状态为 `offline`、`unreachable`、`rpc_failed`、`forbidden`、`invalid`、`busy`、`media_unavailable`。`rpc_failed` 表达业务依赖或跨服通知失败；`invited` 只证明通知已排入目标 TCP 队列，不证明对方已经看见、接听或建立媒体连接。
 
@@ -471,9 +471,9 @@ Redis 邀请元数据和双方 UID 占位存活 120 秒；Qt 邀请界面等待 
 ```text
 主叫 invite → ChatServer 登录/好友/在线校验 → 被叫来电
 被叫 accept → Redis 原子状态迁移 → 双方 accepted
-双方申请麦克风 → 各自 push 到 ZLMediaKit
-本端 connected + 实际音频 bytes → ready → 服务端通知对端
-收到对端 ready → 单次 play 对端流 → 实际收包、解码和播放进展
+双方按权威类型申请设备 → 各自 push 到既有 ZLMediaKit
+本端 connected + 全部必要媒体实际发送 bytes → ready → 服务端通知对端
+收到对端 ready → 单次 play 对端流 → 各媒体收包、解码及实际播放/显示
 取消/拒绝/挂断/失败 → 终结信令 + 两端媒体资源清理
 ```
 
@@ -483,21 +483,23 @@ Redis 邀请元数据和双方 UID 占位存活 120 秒；Qt 邀请界面等待 
 
 Qt 同时核对当前账号、登录代次、`call_id` 和页面 `generation`；尚未收到邀请响应的主叫，必须先用 `invite_request_id` 精确匹配本次邀请才能绑定提前 `accepted/ended/rejected` 或锁存 `ready`，不能只凭同一好友 UID 推断会话。已取消邀请的活动通知只补偿结束其原 `call_id`，终态不再发送结束，均不影响立即重拨的新通话。对端 `ready` 可以早于页面握手，控制器锁存播放意图，握手后仍只订阅一次；已终结通话不能重新打开采集页面。
 
-每页拥有本地麦克风流、推流 PeerConnection、拉流 PeerConnection、远端 audio 元素、协商请求和计时器。仅受信任的内置语音页允许音频采集，摄像头权限拒绝。远端音频保持非静音，通过 `ontrack` 绑定 `srcObject` 后调用 `audio.play()`；`playing` 还要求实际接收和解码、播放进展，不能只凭 SDP 成功或 `ontrack` 宣告接通。
+每页拥有本地设备流、推流 PeerConnection、拉流 PeerConnection、一个远端 video 元素、静音本地预览、协商请求和计时器。语音只采集和订阅音频，本地预览隐藏；视频使用同一个远端元素播放音画，不再叠加 audio 元素，避免声音重复。Qt 仅给当前 accepted、固定内置页面与代次授权：audio 只允许音频采集，video 允许音频、视频或组合请求。
 
-接收可以早于本端麦克风授权：此时界面仅显示已播放对端音频、等待本端发布，并保留建连期限。只有本端真实发布 `ready` 与对端实际播放 `playing` 两项证据都齐全，才显示双向通话并停止建连等待；任一方向失败仍结束整场通话。
+`bindRemote` 优先保留 `event.streams[0]`；无关联流时建立一个 `MediaStream`，后到/无 stream 轨道继续合并到同一对象，不覆盖 `srcObject` 或重复调用 `play()`。远端始终 `muted=false`、`volume=1`，实际等待 `play()`；拒绝播放时显示真实错误并结束，不靠静音绕过策略。本地预览 `muted=true`，不修改采集轨道 `enabled`。
 
-结束时先作废会话代次，再停止本地与远端轨道、关闭双 PeerConnection、清空 `srcObject`、取消计时器和 fetch、断开桥接并释放页面。`getUserMedia()` 可能在窗口关闭后才返回，这类迟到流立即停止全部轨道。媒体错误和阶段超时结束当前通话，不进行无限重试。
+接收可以早于本端授权；界面仅记录单向播放事实并保留建连期限。只有本端完整发布 `ready` 与对端完整播放 `playing` 都成立，才显示双向通话并停止建连等待。音频播放要求真实 RTP 接收、非隐藏解码样本增长、play 兑现和播放时钟推进；视频还要求视频 RTP、实际解码帧增长、非零画面尺寸与 `requestVideoFrameCallback` 呈现帧。两种媒体在每个方向分别监测字节/解码进展，音频持续活动不能掩盖视频断流。
+
+结束时 Qt 先作废会话代次，页面设置 `dead` 并取消生命周期信号，停止全部本地和远端轨道、关闭双 PC、清空两个播放器、取消计时器/呈现帧回调/ICE/fetch、断开桥接，再释放页面。`getUserMedia()` 在关窗后晚到时立即停止全部轨道；播放与统计的迟到结果不能恢复状态。设备、权限、播放或任一媒体失败都结束整场通话，不自动转语音，不自动重试。
 
 ### 源码职责
 
 | 文件 | 类/函数 | 职责 |
 | --- | --- | --- |
-| `chat_app desktop/friendinfopage.cpp` | `FriendInfoPage` 构造函数 | 既有语音按钮调用全局控制器，保留独立 test 按钮。 |
-| `chat_app desktop/tcpmgr.cpp` | `TcpMgr::SendVoiceCall`、`TcpMgr::initHandlers` | 发送 UUID 关联请求，分发语音响应/通知，连接重置触发媒体清理。 |
-| `chat_app desktop/voicecallcontroller.h`、`chat_app desktop/voicecallcontroller.cpp` | `VoiceCallController::Start`、`Handle`、`ConfigurePage`、`pageReady`、`mediaEvent`、`Finish` | 邀请与接听窗口、状态乱序隔离、受限麦克风授权、桥接命令和页面生命周期；去重记录在登录重置时清除。 |
-| `chat_app desktop/videotestcontroller.cpp` | `VideoTestController::CreateMediaPage`、`TestFiles::requestStarted`、`TestRequests::interceptRequest` | 视频与语音共用的固定页面工厂、嵌入资源映射和媒体源白名单。 |
-| `chat_app desktop/voice_call/index.html`、`chat_app desktop/voice_call/media.js` | `publish`、`subscribe`、`bindRemote`、`sample`、`cleanup` | 音频页、真实麦克风轨道、双 PC、远端播放、媒体证据与完整清理。 |
+| `chat_app desktop/friendinfopage.cpp` | `FriendInfoPage` 构造函数 | 既有语音/视频按钮显式调用 `Start(uid,"audio"/"video")`，独立 test 保留。 |
+| `chat_app desktop/tcpmgr.cpp` | `TcpMgr::SendVoiceCall`、`TcpMgr::initHandlers` | 只在 invite 序列化 call_type，分发原消息 ID 的响应/通知，连接重置统一清理媒体。 |
+| `chat_app desktop/voicecallcontroller.h/.cpp` | `Start`、`Handle`、`ConfigurePage`、`pageReady`、`mediaEvent`、`Finish` | 共享类型/身份/乱序隔离、邀请窗口、按类型授权、桥接以及设备与页面生命周期。 |
+| `chat_app desktop/videotestcontroller.cpp` | `CreateMediaPage`、`TestFiles::requestStarted`、`TestRequests::interceptRequest` | 原固定测试与两种好友通话共用稳定 origin、资源映射和精确 SDP 白名单。 |
+| `chat_app desktop/voice_call/index.html`、`chat_app desktop/voice_call/media.js` | `publish`、`subscribe`、`bindRemote`、`inspect`、`sample`、`cleanup` | 真实麦克风/摄像头、同流 addTrack、双 PC、单远端音画播放器、独立媒体证据与统一取消。 |
 | `chat_app desktop/video_test/webrtc.js` | `ChatWebRTC.codecs`、`ChatWebRTC.negotiate` | 无会话状态的共享编解码选择与一次 SDP 交换。 |
 | `ChatServer1/src/VoiceCall.cpp` | `LogicSystem::HandleVoiceCall`、`DisconnectVoiceCall`、`State`、`Deliver`、`Forward`、`Abort`、`ChatGrpcClient::NotifyVoiceCall`、`ChatServiceImpl::NotifyVoiceCall` | 登录与好友授权、Redis 原子角色/状态判断、精确投递、跨服通知和终结清理；ChatServer2 保持共享实现同步。 |
 | `ChatServer1/include/MediaSignal.h` | `MediaSignal::Pack`、`Parse`、`IsUuid`、`Lookup`、`DeliverCurrent` | 视频与语音共用的紧凑 JSON、UUID 校验、Redis 路由和 session 精确投递，不引入另一套业务状态机。 |
@@ -506,54 +508,26 @@ Qt 同时核对当前账号、登录代次、`call_id` 和页面 `generation`；
 
 ### 媒体核心源码
 
-`chat_app desktop/voice_call/media.js::publish` 在 `configure` 后申请真实设备，并把音轨交给只发送的 PC；结束期间晚到的设备结果先停止，不进入发布：
+`chat_app desktop/voice_call/media.js::publish` 仅在 accepted 配置后请求设备。音频约束保留回声消除、降噪和自动增益；视频为可接受的 ideal 约束，语音分支明确 `video:false`。详细共享源码和视频判据见下节“视频通话”。
 
-```js
-const stream = await navigator.mediaDevices.getUserMedia({
-    audio:{echoCancellation:true, noiseSuppression:true, autoGainControl:true},
-    video:false
-});
-if (dead) { stream.getTracks().forEach(track => track.stop()); return; }
-microphone = stream;
-push = makePeer(true);
-for (const track of stream.getAudioTracks()) {
-    push.addTransceiver(track, {direction:'sendonly', streams:[stream]})
-        .setCodecPreferences(ChatWebRTC.codecs('audio', true));
-}
-```
+`subscribe` 使用独立接收 PC；audio 只添加 audio recvonly，video 同时添加 audio/video recvonly。`self_uid === fromuid` 时发布 caller_stream、订阅 callee_stream，另一端相反。共享 `ChatWebRTC.negotiate` 执行完整 ICE、一次 POST 与所需 Opus/VP8 Answer 核验，不重试。原固定文件 test 继续使用自己的 `video_test` app、文件轨道、单 PC 和原播放判定，未改成摄像头测试。
 
-`subscribe` 独立创建 `play` PC，添加 `recvonly` 音频收发器，通过 `ChatWebRTC.negotiate` 订阅对方流。`self_uid === fromuid` 时发布 `caller_stream`、订阅 `callee_stream`，另一端反向选择。两路协商都使用 `app=voice_call`，并按完整 ICE、单次 POST SDP、Opus Answer 校验的相同时序工作；SDP 对端均为 ZLM。
-
-`bindRemote` 只把远端音轨接到 audio 元素，设备流没有本地回放路径：
-
-```js
-remote.srcObject = stream;
-remote.muted = false; remote.volume = 1;
-await remote.play();
-if (dead) return;
-playbackStart = remote.currentTime;
-playSucceeded = true;
-```
-
-`sample` 每半秒串行检查双 PC。发布 `ready` 要求 `connectionState === 'connected'` 且 `outbound-rtp.bytesSent` 增长；播放 `playing` 要求 `inbound-rtp.bytesReceived` 增长、非隐藏音频样本增长、`play()` 已兑现、播放器非暂停且播放时钟前进。非隐藏样本从 `totalSamplesReceived`（浏览器未提供时取 `jitterBufferEmittedCount`）扣除 `concealedSamples`；如果运行时不能提供真实解码证据，不会降级为只看 connected 的成功。
-
-`cleanup` 首先设置 `dead`、取消生命周期信号并断开 `voiceCall.command`，随后关闭双 PC 和全部轨道、释放播放器、计时器及桥接引用。`video_test/webrtc.js::ChatWebRTC.negotiate` 只管理单次协商等待，不共享通话资源，因此旧文件测试仍拥有原来的单 PC、文件音视频轨道和播放判定。
 
 
 ### 运行步骤与安全边界
 
-1. 使用现有 Windows Qt 6.8 MSVC kit、WebEngine 和 WebChannel 构建客户端与同版两个 ChatServer；保留原 TCP/gRPC 端口和数据库配置。
-2. 按上节 ZLMediaKit 本机部署启动媒体服务；在实际运行的 ChatServer 配置中启用既有 `[VideoTest] enabled`，将 `media_url` 设为两端可达的同一媒体地址。语音复用这两项配置，固定文件的 `file` 仅供原 **test** 使用。
-3. 启动 Redis、MySQL、登录相关服务与 ChatServer，登录两个互为好友的账号。Windows 隐私设置须允许桌面应用访问麦克风，并为两端选择可用的音频输入输出设备；同机双实例建议使用耳机避免回声。
-4. 在好友资料页发起语音，确认主叫等待和被叫来电，再接听。分别讲话，观察双端发布与播放状态；同服与跨服分别检查实际 TCP 所连实例。
-5. 检查取消、拒绝、来电关窗、接听后关窗、设备拒绝和聊天连接断开：通话应结束，采集指示与媒体连接停止。原 **test** 仍按前节固定文件流程使用。
+1. 使用现有 Windows Qt 6.8 MSVC kit、同版本 WebEngine/WebChannel 构建客户端与两个 ChatServer；保留原 TCP/gRPC 与数据库拓扑。
+2. 按上节启动既有 ZLM，在实际运行的 ChatServer 配置中启用 `[VideoTest] enabled`、设置两端可达的 `media_url`。语音、视频复用此配置，`file` 仍只供 test 使用。
+3. 启动 Redis、MySQL、登录相关服务与 ChatServer，登录两个互为好友的账号。Windows 隐私设置允许桌面应用访问麦克风；视频另需摄像头权限。完整双端摄像头验收应使用各自可独立采集的真实设备，单机单摄像头可能被驱动独占。使用耳机避免同机回声。
+4. 从既有语音或视频按钮邀请，对方确认类型后接听；同服与跨服分别检查真实 TCP 实例、设备、远端音画、播放与清理。人工互相听清人声需要真人听辨，不能用 RTP、底噪或设备枚举代替。
+5. 检查取消、拒绝、来电关窗、接听后关窗、权限/设备失败和聊天断开；真实错误应显示，采集与 view 释放，原 test 按固定文件流程回归。
 
-本次隔离验证复用既有数据目录和 `chat_app_test_video_20261017` schema（只读确认 11 张表），专用 MySQL 使用经典协议 `33316`、X Protocol `33360`，专用 Redis 使用 `36379`；用户原有 `33060` MySQL 实例不作改动。既有 WSL 回环 ZLM 保留使用。真实 Qt driver 放在仓库外，通过 `TcpMgr` 登录、点击 `FriendInfoPage` 语音按钮并操作 `VoiceCallController` 窗口；媒体仍由实际 WebEngine 麦克风与远端 audio 元素处理。环境启动和设备枚举只证明前置条件，语音结果须由双向媒体与清理证据判定。
+此前语音专场验证复用既有数据目录和 `chat_app_test_video_20261017` schema（只读确认 11 张表），专用 MySQL 使用经典协议 `33316`、X Protocol `33360`，专用 Redis 使用 `36379`；用户原有 `33060` MySQL 实例不作改动。既有 WSL 回环 ZLM 保留使用。仓库外真实 Qt driver 通过 `TcpMgr` 登录、点击 `FriendInfoPage` 语音按钮并操作 `VoiceCallController`；该历史版本使用远端 audio 元素，原测试结果按下节范围保留。当前共享实现的单个远端 video 元素同时承载语音或视频音画，新一轮证据见“视频通话”节。环境启动和设备枚举不能替代实际媒体判据。
 
-当前语音继承视频测试的可信回环媒体部署边界：ZLM 管理 secret 仅保存在服务端配置，客户端不携带管理密钥；聊天登录和好友校验不替代 ZLM 发布/订阅鉴权。当前实现没有签发短时媒体凭证，也没有接入 GateServer 媒体鉴权回调。回环候选地址只能用于相应本机/WSL 网络，异机或公网需要正确媒体候选、防火墙和受保护的媒体鉴权部署，现有回环结果不能外推为公网可用。
+当前两种好友通话继承视频测试的可信回环媒体部署边界：ZLM 管理 secret 仅保存在服务端配置，客户端不携带管理密钥；聊天登录和好友校验不替代 ZLM 发布/订阅鉴权。当前实现没有签发短时媒体凭证，也没有接入 GateServer 媒体鉴权回调。回环候选地址只能用于相应本机/WSL 网络，异机或公网需要正确媒体候选、防火墙和受保护的媒体鉴权部署，现有回环结果不能外推为公网可用。
 
 
-### 实际验证结果与证据范围
+### 历史语音验证结果与证据范围
 
 2026-10-18 本机验证使用 Windows Qt 6.8.3 MSVC 2022 64-bit、WSL mirrored 回环 ZLM 和上述隔离数据环境。ChatServer 测试实例为 TCP `38090/38091`、gRPC `35055/35056`，产品默认监听配置不变。证据根目录为 `D:/temp/chat-voice-probe/evidence`，首轮汇总为 `voice-run-summary.json`，补充运行日志与截图位于 `audio-observation/`；客户端时间字段采用 UTC，ZLM 日志采用本机时区。
 
@@ -577,5 +551,193 @@ playSucceeded = true;
  
 本轮没有实际覆盖尚未获得 `call_id` 时取消后立即重拨的乱序场景、原生 X 关窗、被叫主动挂断、单独同服离线、权限拒绝、设备故障、SDP 失败、聊天断线或跨服 RPC 失败；上述协议隔离和失败处理的实现说明不等于这些分支已实测。现有证据均来自本机可信回环部署，不代表异机、公网或 TURN 路径验收。
 
-本次启动的专用 MySQL、Redis 和 ChatServer 已停止，测试 PID 与监听端口无残留；仓库外临时 driver、脚本、构建目录与二进制已清理，`D:/temp/chat-voice-probe/evidence` 保留运行证据。用户原有 MySQL 与既有 WSL ZLM 保持运行，清理记录见 `owned-services-cleanup.json` 和最终 `voice-run-summary.json`。
+历史语音专场启动的专用 MySQL、Redis 和 ChatServer 在该专场结束时已停止，当时的测试 PID 与监听端口无残留；该专场仓库外临时 driver、脚本、构建目录与二进制已清理，`D:/temp/chat-voice-probe/evidence` 保留历史运行证据。用户原有 MySQL 与既有 WSL ZLM 保持运行，历史清理记录见 `owned-services-cleanup.json` 和 `voice-run-summary.json`。这段声明不描述下节新一轮视频 probe 的活动服务。
 
+## 视频通话
+
+### 入口、确认与共享协议
+
+好友资料页原摄像头按钮 `video_chat` 调用 `VoiceCall()->Start(_uid,"video")`；原 `voice_chat` 显式传 `"audio"`，test 保持固定文件入口。仓库中实际通话按钮位于 `FriendInfoPage`，没有另建聊天窗口或第二个视频控制器。`VoiceCall`、`voiceCall`、`voice_call` 是共用系统的历史名称。
+
+完整流程为：主叫选择类型并发送 invite → 服务端校验并通知被叫 → 被叫看到“视频通话”后明确接听 → 双方收到带权威类型的 accepted → 创建页面、申请真实设备 → 各自发布 → 所需媒体均实际发送后 ready → 对方一次性订阅 → 音频实际解码播放且视频实际解码显示 → 本端发布和远端播放均成立后显示双向视频状态。取消、拒绝、原生关窗、设备/媒体失败沿原 end/reject 与登录代次清理路径执行。
+
+| 层次 | 视频所需字段与约束 |
+| --- | --- |
+| invite TCP JSON | 原 `request_id`、`touid` 加必填 `call_type:"video"`；audio 同理，不增加消息 ID。 |
+| Redis / 活动通知 | call_type 绑定原呼叫元数据；服务端成功响应/活动通知回传权威值，后续操作不允许改类型。 |
+| accepted 媒体 | 原 `call_id`、`invite_request_id`、双方 UID、`app:"voice_call"`、`media_url`、`caller_stream`、`callee_stream`，另含权威 call_type。 |
+| 页面 configure | accepted 原字段加 action、generation、self_uid、peer_ready；桥接对象及 ready/playing/error 事件名称保持共用。 |
+| 媒体 SDP | 同一个 push 包含音画，同一个 play 接收对方音画；仍请求原 `/index/api/webrtc`，不增端口或媒体授权设施。 |
+
+### 真实设备与单流音画
+
+`chat_app desktop/voice_call/media.js::publish` 的采集入口：
+
+```js
+const stream = await navigator.mediaDevices.getUserMedia({
+    audio:{echoCancellation:true, noiseSuppression:true, autoGainControl:true}, // 麦克风保留回声消除、降噪与自动增益。
+    video:config.call_type === 'video'
+        ? {width:{ideal:640}, height:{ideal:480}, frameRate:{ideal:24}}
+        : false // ideal给真实摄像头协商空间，audio明确不申请摄像头。
+});
+if (dead) { stream.getTracks().forEach(track => track.stop()); return; } // 挂断后晚到授权立即停掉全部设备。
+captured = stream; // 后续异常由统一cleanup释放真实轨道。
+```
+
+采集结果先校验所需类型的 live/enabled 轨道；缺摄像头、拒绝或独占失败直接结束。视频本地预览设置 `local.muted=true`，从不将音轨 `enabled=false`；静音预览只避免反馈，不改变向对方发送的声音。音画轨道使用同一个 stream 与 push PC：
+
+```js
+const sender = push.addTrack(track, stream); // 同一设备流标记使对端能关联音画。
+const transceiver = push.getTransceivers().find(item => item.sender === sender); // 使用addTrack对应的真实收发器。
+transceiver.direction = 'sendonly'; // 发布连接只发送，不承担对端接收。
+transceiver.setCodecPreferences(ChatWebRTC.codecs(track.kind, true)); // 分别要求真实Opus/VP8发送能力。
+```
+
+`chat_app desktop/voice_call/media.js::subscribe` 对 `kinds()` 的每个类型添加 recvonly 收发器，同一个 play PC 接收对方音画。对端 ready 可以早于本端设备授权，`playStarted` 在异步前锁定，因此不会重复订阅：
+
+```js
+if (dead || !config || !peerReady || playStarted) return; // 尚无配置、已结束或重复ready都不能再启动。
+playStarted = true; // 任何异步等待前先锁定单次订阅。
+play = makePeer(false); // 同一个真实接收PC承载该类型所需的全部媒体。
+play.ontrack = event => { bindRemote(event).catch(fail); }; // 轨道播放的异步拒绝进入统一失败。
+for (const kind of kinds())
+    play.addTransceiver(kind, {direction:'recvonly'})
+        .setCodecPreferences(ChatWebRTC.codecs(kind, false)); // audio只收音频，video同时收Opus/VP8。
+await negotiate(play, false,
+    Number(config.self_uid) === Number(config.fromuid)
+        ? config.callee_stream : config.caller_stream); // 主叫订阅被叫流，被叫订阅主叫流。
+```
+
+`chat_app desktop/voice_call/media.js::negotiate(pc,sender,stream)` 将本端身份选择的流与权威 app/type 交给共享帮助器，返回 Answer 已应用的 Promise；同文件 `publish` 对称选择 caller_stream/callee_stream 作为自己的发送流：
+
+```js
+return ChatWebRTC.negotiate({
+    pc, mediaUrl:config.media_url, app:config.app, stream, sender, // app保持voice_call，方向决定push/play。
+    kinds:kinds(), signal:lifetime.signal, // video要求audio/video全部协商，结束信号取消所有等待。
+    stage:detail => report('stage', (sender ? '发布：' : '订阅：') + detail) // 只展示协商阶段，不把SDP成功当作ready。
+});
+```
+
+`chat_app desktop/video_test/webrtc.js::ChatWebRTC.negotiate` 由原固定测试和两类好友通话共用，关键时序如下。Offer 和本地描述先按八秒期限处理；ICE 等待闭包只在 complete 时 resolve，超时/取消同时移除监听：
+
+```js
+const offer = await bounded(() => pc.createOffer(), 8000, '生成SDP', signal); // 先生成实际Offer。
+await bounded(() => pc.setLocalDescription(offer), 8000, '设置本地SDP', signal); // 候选逐步补入localDescription。
+```
+
+ICE 等待 Promise 内的关键语句：
+
+```js
+const changed = () => { if (pc.iceGatheringState === 'complete') { detach(); resolve(); } }; // 只接受完整候选集。
+pc.addEventListener('icegatheringstatechange', changed); // 观察当前PC的真实收集状态。
+signal.addEventListener('abort', abort, {once:true}); // 挂断立即拒绝并解除监听。
+timer = setTimeout(() => { detach(); reject(new Error('ICE候选收集超时')); }, 8000); // 不以不完整ICE提前发请求。
+changed(); // 注册前已经complete也能正常结束等待。
+```
+
+完成 ICE 且复查生命周期后，帮助器建立 URL、发一次 POST 并核验 Answer；HTTP 外围同时绑定二十秒期限和页面取消，`finally` 撤销临时监听：
+
+```js
+const url = new URL('/index/api/webrtc', mediaUrl); // 保持现有ZLM协议与端口。
+url.searchParams.set('app', app); // 使用当前通话服务端给出的app。
+url.searchParams.set('stream', stream); // 明确发布自己或订阅对方流。
+url.searchParams.set('type', sender ? 'push' : 'play'); // 不追加失败重试。
+const request = new AbortController(); // HTTP取消由页面生命周期与期限共同驱动。
+let answer; // 仅成功HTTP和JSON解析后才设置Answer。
+const response = await fetch(url, {method:'POST', headers:{'Content-Type':'text/plain'},
+    body:pc.localDescription.sdp, signal:request.signal,
+    credentials:'omit', redirect:'error'}); // 一次提交已含完整候选的SDP，不携带管理凭据。
+if (!response.ok) throw new Error('ZLM HTTP ' + response.status); // 保留真实HTTP失败。
+answer = await response.json(); // 获取ZLM业务code及SDP，不仅判断HTTP状态。
+if (answer.code !== 0 || typeof answer.sdp !== 'string' || !answer.sdp.startsWith('v=0'))
+    throw new Error('ZLM协商失败：' + (answer.msg || answer.code || '无有效answer')); // 无有效Answer不能继续。
+for (const kind of kinds) { // kinds由当前权威类型决定，视频必须两类都被接受。
+    const accepted = kind === 'video' ? /a=rtpmap:\d+ VP8\/90000/i : /a=rtpmap:\d+ opus\/48000/i; // 使用现有VP8与Opus约定。
+    if (!accepted.test(answer.sdp)) throw new Error('ZLM answer未接受' + (kind === 'video' ? 'VP8' : 'Opus')); // 缺任何必要媒体编码都失败。
+}
+await bounded(() => pc.setRemoteDescription({type:'answer', sdp:answer.sdp}), 8000, '设置ZLM answer', signal); // Answer真正应用后仍须等待RTP与播放证据。
+```
+
+以上为帮助器关键阶段节选；其每个 await 边界都调用 `alive()`，HTTP 超时、ICE 监听和 `bounded` 的取消清理保留在完整函数中。没有自动视频转语音，也没有订阅/HTTP 重试。
+
+### ontrack、播放与严格证据
+
+`chat_app desktop/voice_call/media.js::bindRemote` 使用浏览器提供的流关联，并兼容无 stream 和分批轨道：
+
+```js
+if (!remoteStream) remoteStream = event.streams[0] || new MediaStream(); // 优先关联流，无流时只创建一个聚合对象。
+for (const track of [...(event.streams[0]?.getTracks() || []), event.track]) { // 将后到音轨/视频轨也合并进当前对象。
+    if (!remoteStream.getTracks().some(existing => existing.id === track.id))
+        remoteStream.addTrack(track); // 按轨道ID去重，不替换已有音源或画面。
+}
+if (remote.srcObject) return; // 后到轨道不重新赋srcObject，也不重启播放。
+remote.srcObject = remoteStream; // 唯一远端video元素同时输出声音与画面。
+remote.muted = false; remote.volume = 1; // 保留远端音量，禁止静音规避自动播放失败。
+await remote.play(); // 必须消费真实播放Promise的拒绝结果。
+```
+
+Qt 为 accepted 的固定受信页面关闭 `PlaybackRequiresUserGesture`；这并不等同于播放已经成功。权限同时检查 `call_id`、页面代次、当前 page、`chatvideo://test/voice.html` 与类型：audio 只准 `MediaAudioCapture`，video 可准音频、视频和组合采集；其他 origin/导航/权限保持拒绝。页面资源与 SDP 请求继续受共享白名单限制。
+
+| 事件 | 必需观察 |
+| --- | --- |
+| ready | 发布 PC connected，audio RTP 实际发送增长；video 还须 video RTP 发送增长，单轨不够。 |
+| playing / audio | 远端 audio RTP 接收增长，真实非隐藏解码样本增长，play 兑现，非暂停、readyState≥2、播放时钟推进。 |
+| playing / video | 上述音频证据齐全，另有视频 RTP、framesDecoded 增长、非零尺寸以及 requestVideoFrameCallback 呈现帧。目标 Qt 缺少呈现 API 时明确失败，不使用弱化成功路径。 |
+| 双向窗口状态 | 当前端 ready 与 playing 均成立才停止建连超时；只播放对端时仍提示等待本端发布。 |
+| 持续故障 | push/play 各自按 audio/video 保存字节基线和最近增长时刻；接收端另监测解码进展，任何必要媒体持续停滞均失败。 |
+
+`chat_app desktop/voice_call/media.js::inspect` 每种媒体独立聚合 RTP，`sample` 每 500ms 串行读双 PC，避免并发统计回调；发布与订阅互不阻塞，所以对端可在本端设备授权仍等待时先被订阅。`chat_app desktop/voicecallcontroller.cpp::Finish` 先作废 Qt 代次，页面 `cleanup` 同步作废媒体；下列关键语句来自 `chat_app desktop/voice_call/media.js::cleanup`：
+
+```js
+dead = true; // 先作废页面，再取消异步等待，防止晚到结果复活。
+lifetime.abort(); // 中断ICE、SDP、HTTP与其期限。
+for (const timer of timers) { clearTimeout(timer); clearInterval(timer); } // 清除权限和媒体观察计时器。
+if (frameCallback !== undefined && remote.cancelVideoFrameCallback)
+    remote.cancelVideoFrameCallback(frameCallback); // 取消视频递归呈现观察。
+for (const pc of [push, play]) { // 发送与接收连接一并关闭。
+    if (!pc) continue; // 授权尚未结束时可能还没有PC。
+    pc.ontrack = null; pc.onconnectionstatechange = null; // 关闭前撤销属性回调。
+    for (const receiver of pc.getReceivers())
+        if (receiver.track) { receiver.track.onended = null; receiver.track.stop(); } // 包括尚未绑定播放器的接收轨道。
+    pc.close(); // 关闭ICE、DTLS与媒体传输。
+}
+if (captured) captured.getTracks().forEach(track => { track.onended = null; track.stop(); }); // 麦克风和摄像头全部停采。
+if (remoteStream) remoteStream.getTracks().forEach(track => { track.onended = null; track.stop(); }); // 回收聚合后的全部远端轨道。
+for (const element of [remote, local]) { // 双播放器都解绑，不能残留旧画面/声音。
+    element.onended = null; element.onerror = null; // 清理期间不再触发媒体失败重入。
+    element.pause(); element.srcObject = null; element.removeAttribute('src'); element.load(); // 停解码、断开流并重置播放器。
+}
+```
+
+完整函数还断开 QWebChannel 命令信号并清空引用；Qt 随后删除 view/page 兜底关闭资源。晚到 getUserMedia 停轨见前面的采集节选，播放和 getStats Promise 也在 await 后复查 dead。双 PC、全轨道和双播放器的回收共用同一生命周期。
+
+### 实际运行环境与验收边界
+
+2026-10-18 本机使用 Qt 6.8.3 MSVC 2022 x64、同版 WebEngine/WebChannel；MSVC 19.44 的产品客户端与仓库外 Qt driver 已链接，`node --check` 检查媒体脚本无语法错误。Windows 真实设备为 ACER HD User Facing、Intel 智音麦克风阵列、Realtek 耳机/扬声器。单端原生摄像头采集得到真实室内画面，原生麦克风录制成功；这两项只证明单端设备前置条件。
+
+媒体沿用 WSL Ubuntu 22.04 中 `/home/tindalos/ZLMediaKit/release/linux/Release/MediaServer`，配置 `/mnt/d/temp/chat-video-probe/zlm.ini`，HTTP `18080`、媒体 `18000`。实际 HTTP root 返回 404 表示服务响应，不表示存在主页。隔离后端沿用 MySQL `33316/33360`、Redis `36379`、既有 `chat_app_test_video_20261017` schema；同服 TCP `38090`，跨服另一端 TCP `38091`，gRPC `35055/35056`。这些为已有测试入口，产品默认端口未改。两个账号必须互为好友，登录 token 从现有服务签发或受控测试 Redis 取得，禁止把管理 secret 放入客户端。
+
+本节证据根目录为 `D:/temp/chat-live-video-probe/evidence`。本机只枚举到一台物理摄像头，双实例同时申请时真实收到 `NotReadableError: Device in use`；产品显示原始失败、发送 media_error 并清理两端，未转语音。完整双向实时摄像头成功验收需要第二台可独立采集的真实摄像头或第二台设备。设备枚举、单端原生截图、RTP、非零 PCM 与窗口状态均不能代替双方真人听清人声；本次没有完成该人工听辨，也没有宣称双向视频已打通。
+
+### 本轮实际观察
+
+仓库外 driver 链接产品对象，只替换程序入口，通过真实 `TcpMgr` 登录、点击既有好友按钮和真实接听/关窗操作。正常媒体场景不伪造业务结果。受限视频场景单独暂不答复 B 的真实 Qt 设备权限请求，使其原 `getUserMedia()` 保持等待；A 获得真实独占摄像头与麦克风，B 按已有“订阅不等待本端授权”逻辑接收 A 的 ready 后订阅。外部只读观察器透传真实 PC 构造，读取真实 RTP、呈现帧和远端流 PCM；Analyser 不连接 destination，不注入音源。挂断时销毁页面取消 B 待决权限，不能随后恢复设备。
+
+| 项目 | 已观察事实与范围 | 证据（根目录下） |
+| --- | --- | --- |
+| 缺类型失败 response | 仓库外小型 Qt 控制器分发验证预置当前 UUID/call_id，经真实 sig_voice_call 入口交付省略 call_type 的 invite/accept/ready rpc_failed；三项都保持“业务依赖或跨服通知失败”、结束活动状态且无 view。此项为注入错误分支验证，不是网络故障实测。最终资源构建后同样三项 PASS。 | `failure-dispatch.log`、`failure-dispatch-final.log` |
+| 同服正常视频申请 | `f676a0a8-c4e1-4dfb-a22a-b00fca595c3d` 双方 invited/accepted 均为 video；实际独占失败显示 NotReadableError: Device in use，对端收到 media_error，双方 view 最终为零，未转语音。 | `video-38090/` 两端 JSONL、`1900810001-15.png` |
+| 同服语音回归 | 真实语音按钮发送 audio，双方 accepted 后达到各自双向语音状态；远端单一播放器为非静音/音量1、live音轨与持续播放时钟。主叫关窗后对端 ended，双方 view 归零。此项没有人工人声听辨。 | `audio-38090/` 两端 JSONL、`1900810001-15.png` |
+| 跨服受限单向真实音画 | `979e54c8-c920-4b45-ac09-942ebf4e2a7d`：A 的真实 ACER/麦克风 live/enabled，静音本地预览为640×480；A实际发送音画并 ready。B 保持组合权限请求待决、没有本地采集，实际收到同一远端元素的音画，画面为真实摄像头而非固定文件。B视频接收 bytes 220498→4726129，framesDecoded 6→376，呈现帧8→377；音频 samples 60480→1116480、concealed为0，远端时钟约22.47秒；只读解码PCM出现非零RMS。B始终提示“对端音画已播放，等待本端…”，没有宣称双向成功；主叫关窗后二端view归零。 | `hold-real-38091/` 两端 JSONL、`1900810002-15.png`、`1900810002-25.png` |
+| 最终视频布局与受限路径复测 | 将状态文字限制为实际高度，剩余纵向空间交给媒体页；A完整显示静音本地预览，B完整显示单向真实摄像头画面和准确的“等待本端”状态。仍为 B 权限等待的受限单向音画场景，没有双向成功声明。关窗后两端 view 均为零。 | `hold-final-38091/` 两端 JSONL、`1900810001-15.png`、`1900810002-15.png` |
+| 跨服语音回归 | 双方分别登录38090/38091并达到双向语音状态；远端单音轨 live、非静音、音量1、播放时间增长，随后主叫原生关窗、双方 ended/view归零。未做人工人声听辨。 | `audio-38091/` 两端 JSONL、`1900810001-15.png` |
+| 原 test 同服与跨服回归 | 实际点击保留的 test，接收端显示固定色条画面，产品状态为“已收到实际视频帧和音频媒体数据”；之后主叫关窗，接收端停止通知，双方 view 归零。测试素材画面只用于保留的 test，不用于替代摄像头验收。 | `test-restored-38090/`、`test-38091/` 两端 JSONL、各目录 `1900810002-15.png` |
+| 跨服正常视频设备失败 | 双方权威 video invited/accepted 后，被叫真实 getUserMedia 返回 NotReadableError: Device in use；原始提示保留，对方收到 media_error，双方最终view为零，未转语音。 | `video-38091/` 两端 JSONL、`1900810002-15.png` |
+| 跨服视频取消与拒绝 | 取消场景主叫关闭未接听邀请，对端 ended；拒绝场景被叫点击“拒绝”，双方 rejected，主叫显示对方已拒绝。两场全程 view计数为零，证明邀请阶段没有媒体页与设备请求入口。 | `cancel-38091/`、`reject-38091/` 两端 JSONL 与终态 PNG |
+| 视频对端离线、零媒体入口 | 补测只登录 A（1900810001），B（1900810002）的 Redis 路由/session key 在登录前均不存在；实际点击原 video_chat，真实服务端 invite 回包 status=offline，主叫显示“对方不在线”。driver 全期最高媒体view数0、媒体page数0、权限请求观测0、SDP请求观测0，断言通过、退出码0。没有媒体页面，因此产品 JS 的 PC/getUserMedia/SDP 入口未执行；这里没有捏造一个不存在PC的统计结果。 | `offline-video-38090/offline.jsonl`、`result.json`、`caller-offline.png` |
+
+早一轮 `test-38090/` 和 `hold-38091/` 因外部 ChatServer1 当时拒绝连接，没有进入相应媒体流程，不计为媒体通过或媒体实现失败。外部实例恢复并使用受管驻留启动后继续验证。当前回环结果不外推到公网、TURN 或两个独立真人设备；完整双向视频与人工听清人声仍须真实双设备验收。
+
+本轮 Qt driver 的有限场景均已结束，测试账号已交还服务端探针；仓库外本轮临时 driver 源码、脚本和构建二进制已清理，仅保留 `D:/temp/chat-live-video-probe/evidence` 的 JSONL、截图、原生设备前置证据与 `summary.json`。当前产品客户端位于 `build/qt-msvc-release/chat_app.exe`；原一轮隔离后端由其启动方记录停止与服务端边界验证。离线补测单独复用同一数据目录/config 持久恢复 MySQL/Redis/ChatServer1，没有改动或重建产品，没有启动 ChatServer2 或另一个 ZLM。补测结束后仅关闭自己恢复的 MySQL（33128）、Redis（48744）、ChatServer1（59100）；实际复查相关监听和进程均无残留，用户 MySQL 5316/6840 仍在，既有 ZLM 未启停，记录见 `offline-video-38090/runtime-cleanup.json`。补测临时 driver 源码与构建也已清理，历史语音专场清理声明不替代本轮归属记录。
+
+最终于 2026-10-18 04:22:34 UTC 单次复查隔离监听 `33316/33360/36379/38090/35055/38091/35056` 及 MySQL、Redis、双 ChatServer 进程：无本任务实例或监听残留，仅原用户 MySQL 5316/6840 保留，既有 ZLM 未触碰，无需追加停止。当前结果保存在 `D:/temp/chat-live-video-probe/evidence/final-runtime-cleanup.json`，未重跑行为测试、构建或源码审计。

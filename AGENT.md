@@ -55,13 +55,13 @@
 | [数据库设计.md](note/数据库设计.md) | MySQL 用户、社交、会话与消息表，以及客户端 SQLite 缓存设计 |
 | [聊天信息存储方案.md](note/聊天信息存储方案.md) | 服务端会话/消息表、客户端 SQLite 缓存管理器与增量同步设计 |
 | [聊天可靠性与资源安全提升.md](note/聊天可靠性与资源安全提升.md) | 消息 ACK、已读与未读、历史分包、图片下载鉴权和故障恢复边界 |
-| [聊天服务器服务.md](note/聊天服务器服务.md) | proto 中定义的 ChatServer gRPC 服务、消息字段与跨服转发约定 |
+| [聊天服务器服务.md](note/聊天服务器服务.md) | proto 中定义的 ChatServer gRPC 服务、消息字段、群消息与好友音视频跨服转发约定及服务端权威通话类型 |
 | [聊天信息收发.md](note/聊天信息收发.md) | 私聊与纯文本群聊先持久化后投递、群行锁授权、独立群失效通知与帧边界 |
 | [群聊.md](note/群聊.md) | 群聊知识：数据模型与索引、入群和角色管理、事务与业务重放、消息投递、公告头像及 SQLite 同步 |
 | [服务器踢人.md](note/服务器踢人.md) | 同服/跨服重复登录互踢、1021 投递、会话清理与当前边界 |
 | [心跳检测.md](note/心跳检测.md) | 1023/1024 双端心跳、单调时钟、超时参数、幂等清理与复测步骤 |
 | [异常处理.md](note/异常处理.md) | TCP/心跳异常、Qt/Asio 异步回调对象生命周期与服务端、客户端停止顺序 |
-| [消息ID全链路.md](note/消息ID全链路.md) | 客户端消息 ID、HTTP/TCP 流程、好友申请认证与聊天通信现状 |
+| [消息ID全链路.md](note/消息ID全链路.md) | 客户端消息 ID、HTTP/TCP 流程、好友申请认证、聊天及 invite 必填 call_type 的音视频信令 |
 | [MySQL连接库.md](note/MySQL连接库.md) | X DevAPI / mysqlcppconnx |
 | [Redis.md](note/Redis.md) | Redis 在验证码、token、在线路由、负载、缓存和分布式锁中的作用 |
 | [Qt知识点.md](note/Qt知识点.md) | Qt 类设计、信号槽、事件 |
@@ -72,5 +72,5 @@
 | [资源服务.md](note/资源服务.md) | ResourceServer 上传任务、资源 ID 与分片下载协议 |
 | [总结图片传输.md](note/总结图片传输.md) | 图片上传、核验、路由、下载、持久化与联调边界总结 |
 | [文件传输.md](note/文件传输.md) | 私聊文件上传、可信元数据、手动下载鉴权与历史同步 |
-| [视频通话技术.md](note/视频通话技术.md) | 音视频生产接入设计与学习路径：Qt WebEngine/MSVC、独立WSS方案、coturn、鉴权、状态机与验收；当前好友语音实现见 WebRTC视频通信 |
-| [WebRTC视频通信.md](note/WebRTC视频通信.md) | Qt WebEngine + ZLMediaKit 架构设计、好友双向实时麦克风语音、原单向文件 test、信令与媒体生命周期及可信回环部署边界；短时媒体鉴权和公网 ICE 属生产设计 |
+| [视频通话技术.md](note/视频通话技术.md) | 音视频生产接入设计与学习路径：Qt WebEngine/MSVC、独立WSS方案、coturn、鉴权、状态机与验收；当前好友音视频实现见 WebRTC视频通信 |
+| [WebRTC视频通信.md](note/WebRTC视频通信.md) | Qt WebEngine + ZLMediaKit 架构设计、好友音视频通话、原单向固定文件 test、信令与媒体生命周期及可信回环部署边界；短时媒体鉴权和公网 ICE 属生产设计 |

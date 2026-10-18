@@ -1,4 +1,4 @@
-// 文件职责：好友双向语音控制面，复用媒体配置与现有RPC池；不承载音频、不创建聊天消息。
+// 文件职责：好友音视频通话控制面，复用媒体配置与现有RPC池；不承载媒体、不创建聊天消息。
 #include "LogicSystem.h" // TCP业务与断线入口归属LogicSystem。
 #include "MediaSignal.h" // 复用视频test的JSON、UUID、路由与精确投递。
 #include "MysqlMgr.h" // 复用只读双向好友授权。
@@ -18,7 +18,7 @@ std::mutex kDeliveryMutex; // 本服语音入队阶段的锁，避免ended之后
 // Redis原子管理元数据和双方UID占位；邀请120秒，接听后PERSIST直到挂断/断线，活跃通话不会固定到期。
 const char* kVoiceScript = R"lua(
 local op=ARGV[1] -- 第一参数选择状态操作。
-local function slot(uid) return 'voice:slot:'..uid end -- 每个用户仅占用一路语音。
+local function slot(uid) return 'voice:slot:'..uid end -- 每个用户仅占用一路好友音视频通话。
 local function remove(m) -- 删除元数据时只释放仍属于该call_id的占位。
  redis.call('DEL','voice:meta:'..m.call_id) -- 删除通话状态，迟到操作不得恢复。
  for _,uid in ipairs({m.fromuid,m.touid}) do -- 同一原子操作中处理双方占位。
@@ -84,7 +84,7 @@ if op=='accept' or op=='reject' then -- 只有被叫可以决定邀请。
  redis.call('PERSIST',slot(m.touid)) -- 被叫占位持续到通话结束。
  return cjson.encode(m) -- accepted通知使用同一组服务端流信息。
 end
-if op=='ready' then -- 双方分别确认本端已有真实出站音频。
+if op=='ready' then -- 双方分别确认本端媒体发布已就绪，类型由通话元数据决定。
  if m.state~='accepted' then return 'invalid' end -- 邀请阶段不能ready。
  if m['ready_'..uid] then return 'invalid' end -- 每位参与者只转发一次ready，不触发重复拉流。
  m['ready_'..uid]=true -- 原子锁存发布者就绪事实。
@@ -120,7 +120,7 @@ int Error(const std::string& status) {
 // meta为内部快照，op/status为公开事件；仅accepted公开双向媒体参数，绝不泄露session。
 Json::Value Notice(const Json::Value& meta, const std::string& op, const std::string& status) {
     Json::Value notice; // 本次公开通知对象。
-    for (const auto* key : {"call_id", "invite_request_id", "fromuid", "touid"}) notice[key] = meta[key]; // 每个状态保留原邀请UUID，隔离同好友连续呼叫的迟到事件。
+    for (const auto* key : {"call_id", "invite_request_id", "fromuid", "touid", "call_type"}) notice[key] = meta[key]; // 对外类型始终来自服务端元数据，拒绝客户端在后续操作中改写。
     if (status == "accepted") { // 只允许双方接听成功后开启采集。
         for (const auto* key : {"app", "media_url", "caller_stream", "callee_stream"}) notice[key] = meta[key]; // 媒体参数全部取服务端元数据。
     }
@@ -212,9 +212,11 @@ void LogicSystem::HandleVoiceCall(std::shared_ptr<CSession> session, const short
     if (status == "rpc_failed") return; // 保留Redis故障。
     if (status != "ok" || storedSid != sid) { status = "forbidden"; return; } // 拒绝旧登录重放。
     status = "invalid"; // 后续格式检查默认非法。
-    if (op == "invite") { // 主叫不能指定call_id或媒体流。
+    if (op == "invite") { // 主叫不能指定call_id或媒体流，必须声明本次通话类型。
         response["call_id"] = ""; // invite只回显服务端确认的标识。
-        if (!input["touid"].isInt()) return; // 目标必须是整数UID。
+        if (!input["touid"].isInt() || !input["call_type"].isString()) return; // 目标和通话类型均为必填。
+        const auto callType = input["call_type"].asString(); // 保存经过白名单校验的模式。
+        if (callType != "audio" && callType != "video") return; // 仅接受音频或视频通话。
         const int peer = input["touid"].asInt(); // 目标不作为请求者身份使用。
         const int auth = MysqlMgr::GetInstance()->AuthorizeVideoTest(uid, peer); // 复用双向好友只读授权，不创建聊天会话。
         if (auth != Success) { status = auth == RPCFaild ? "rpc_failed" : "forbidden"; return; } // 依赖故障与非好友分开。
@@ -227,6 +229,7 @@ void LogicSystem::HandleVoiceCall(std::shared_ptr<CSession> session, const short
         const auto url = ConfigMgr::Inst()["VideoTest"]["media_url"]; // 媒体URL沿用已有ZLM地址。
         if ((enabled != "true" && enabled != "1") || url.empty()) { status = "media_unavailable"; return; } // 媒体不可用不能发出邀请。
         Json::Value meta; // 完整内部状态只保存在Redis。
+        meta["call_type"] = callType; // 类型由主叫选择一次，Redis保存后由服务端对所有参与者权威回传。
         const auto id = boost::uuids::to_string(boost::uuids::random_generator()()); // 通话号由服务端确认。
         meta["call_id"] = id; // 对外稳定关联标识。
         meta["invite_request_id"] = request; // 固定保存最初invite的UUID，后续accept/ready/end不能替换这一跨操作关联。
@@ -236,8 +239,8 @@ void LogicSystem::HandleVoiceCall(std::shared_ptr<CSession> session, const short
         meta["to_session"] = peerSid; // 绑定被叫当前连接。
         meta["app"] = "voice_call"; // 与保留的视频test使用独立媒体应用。
         meta["media_url"] = url; // 双方使用同一现有ZLM地址。
-        meta["caller_stream"] = boost::uuids::to_string(boost::uuids::random_generator()()); // 主叫音频流随机且仅接听后公开。
-        meta["callee_stream"] = boost::uuids::to_string(boost::uuids::random_generator()()); // 被叫音频使用独立随机流。
+        meta["caller_stream"] = boost::uuids::to_string(boost::uuids::random_generator()()); // 主叫发布流随机且仅接听后公开，承载本次选择的音频或视频类型。
+        meta["callee_stream"] = boost::uuids::to_string(boost::uuids::random_generator()()); // 被叫独立发布流同样由服务端分配，承载与主叫相同的音频或视频类型。
         Json::Value created; // 接收Redis提交后的元数据。
         const auto result = State("create", id, {Pack(meta)}); // 原子占用双方slot并校验两代session。
         if (!Parse(result, created)) { status = result; return; } // busy等失败不发送邀请。
@@ -250,6 +253,7 @@ void LogicSystem::HandleVoiceCall(std::shared_ptr<CSession> session, const short
         status = "invited"; // 客户端保持等待接听。
         return; // 统一响应出口检查状态仍有效。
     }
+    if (input.isMember("call_type")) return; // 后续操作只能使用Redis中的原始类型，不能更改通话模式。
     if (!input["call_id"].isString() || !IsUuid(input["call_id"].asString())) return; // 其他操作必须引用服务端UUID。
     const auto id = input["call_id"].asString(); // 固定本次操作通话号。
     if (op != "accept" && op != "reject" && op != "ready" && op != "end") return; // 未知动作不进入状态机。

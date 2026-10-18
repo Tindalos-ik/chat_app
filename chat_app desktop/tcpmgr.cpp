@@ -211,11 +211,14 @@ QString TcpMgr::SendVideoTest(const QString &op, int toUid,
 }
 
 // 只发送操作和对端/会话ID，服务端身份始终来自已登录session。
-QString TcpMgr::SendVoiceCall(const QString &op, int toUid, const QString &callId, const QString &reason) {
+QString TcpMgr::SendVoiceCall(const QString &op, int toUid, const QString &callId, const QString &reason, const QString &callType) { // 历史语音消息ID承载两类通话，模式只在邀请中提交。
     if (!_logged_in || !IsConnected()) return {}; // 不在离线连接上生成悬空请求。
     const QString id = QUuid::createUuid().toString(QUuid::WithoutBraces); // 唯一关联本次操作响应。
     QJsonObject request{{"op", op}, {"request_id", id}}; // 所有语音请求都携带操作与UUID。
-    if (op == "invite") request.insert("touid", toUid); // 只有invite指定好友UID。
+    if (op == "invite") { // 后续操作禁止重复指定模式，避免覆盖服务端权威会话。
+        request.insert("touid", toUid); // 被叫身份仅供邀请的好友授权使用。
+        request.insert("call_type", callType); // 服务端将audio/video写入共享元数据并随全部状态回传。
+    }
     else request.insert("call_id", callId); // 其余操作由服务端会话确定参与双方。
     if (!reason.isEmpty()) request.insert("reason", reason.left(64)); // 结束原因限制业务帧大小。
     emit sig_send_data(ID_VOICE_CALL_REQ, QJsonDocument(request).toJson(QJsonDocument::Compact)); // 复用现有TCP帧写入。

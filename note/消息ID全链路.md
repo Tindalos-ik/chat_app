@@ -81,12 +81,12 @@ HTTP 负责注册、登录、验证码和重置密码等短请求。登录拿到
 | `ID_NOTIFY_GROUP_EVENT` | event_type inbox/result/metadata/members/invalidated | 非成员信箱/结果不携带有效成员证明 |
 | `ID_VIDEO_TEST_REQ/RSP` | `{op,request_id,touid?}` 或 `{op,request_id,test_id,reason?}` | 单向固定文件测试控制；`start/ready/stop`，身份取登录 session，Redis 保存短期状态 |
 | `ID_NOTIFY_VIDEO_TEST` | `{op,status,test_id,stream_id,app,media_url,fromuid,touid,...}` | 通知好友测试开始、发布就绪或停止；跨服使用专用 `NotifyVideoTest` RPC |
-| `ID_VOICE_CALL_REQ/RSP` | `{op,request_id,touid?}` 或 `{op,request_id,call_id,reason?}` | 好友双向语音 `invite/accept/reject/ready/end`；身份取登录 session，被叫接听/拒绝与状态变更原子校验 |
-| `ID_NOTIFY_VOICE_CALL` | `{op,status,call_id,invite_request_id,fromuid,touid,actoruid?,...}` | 所有状态保留最初邀请UUID，隔离同好友连续呼叫；接听后 `accepted` 携带 `app=voice_call/media_url/caller_stream/callee_stream`；跨服使用 `NotifyVoiceCall` |
+| `ID_VOICE_CALL_REQ/RSP` | invite `{op,request_id,touid,call_type}`；后续 `{op,request_id,call_id,reason?}` | 好友音视频 `invite/accept/reject/ready/end`；类型只允许 `audio/video`，由服务端保存并回传；后续动作不得携带类型 |
+| `ID_NOTIFY_VOICE_CALL` | `{op,status,call_id,invite_request_id,fromuid,touid,call_type,actoruid?,...}` | 成功通知从Redis通话元数据生成 `call_type`；`accepted` 另带 `app=voice_call/media_url/caller_stream/callee_stream`；跨服复用 `NotifyVoiceCall` |
 
 视频测试发送端在 transport connected 且 outbound 视频 bytes 增长时发送 `ready`；接收端随后单次 play，ZLM 以 `maxStreamWaitMS` 等待流注册。`rpc_failed` 统一表示 Redis/MySQL 依赖或跨服 RPC 失败，客户端提示“业务依赖或跨服通知失败”。同服与跨服文件音视频、非好友、离线、素材缺失和清理结果见 [连通测试](WebRTC视频通信.md#连通测试)。
 
-语音在服务端确认接听后才申请麦克风，两端分别 push；每端在发布连接成功且实际音频 bytes 增长后上报 `ready`，对端经服务端通知后单次 play。`request_id` 关联操作，`call_id` 关联整场通话，页面另用 `generation` 淘汰迟到结果。拒绝为 `rejected`，取消/挂断为 `ended`；失败状态与视频测试相同。控制信令的好友鉴权不代表已部署媒体短时授权，当前复用可信回环 ZLM 配置；完整生命周期与验证边界见 [好友语音通话](WebRTC视频通信.md#好友语音通话)。
+音视频控制共用同一通话状态机：`invite` 必须带 `call_type=audio|video`，服务端校验好友关系后写入Redis；后续 `accept/reject/ready/end` 使用服务端 `call_id`，携带 `call_type` 会被拒绝。基于已创建元数据的成功响应与通知带服务端保存的 `call_type`；创建前失败或操作失败的错误响应可能没有该字段，客户端按 `request_id` 关联错误，不以缺失类型推断通话模式。`invite_request_id` 保留原邀请UUID，`request_id` 关联单次操作，`call_id` 关联整场通话。`rejected/ended` 表示拒绝/结束；同服与跨服都复用 `NotifyVoiceCall` 精确投递，依赖或传输失败为 `rpc_failed`。部署需同步更新客户端及ChatServer1/2；旧客户端未发送 `call_type` 的邀请会得到 `invalid`。好友鉴权不提供媒体短时授权，当前复用可信回环ZLM，详见 [视频通话](WebRTC视频通信.md#视频通话)。
 
 
 群管理 mutation 均要求 operation_id（现有 create/join/kick/dissolve 同样适用）。准入响应 entries 使用 `{kind,id,thread_id,group_name,inviter_uid,applicant_uid,target_uid,status,explanation,created_at_ms,updated_at_ms}`，next_id 为全局准入游标。group包含最新version、审批/公告/头像独立版本与可信元数据，以及接收者专属member/role/membership_version/membership_proof/source；source为mutation/snapshot/event。成员项携带membership_version，成员回包包含完整最新group。
