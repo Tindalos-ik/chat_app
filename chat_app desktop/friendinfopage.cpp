@@ -4,6 +4,7 @@
 #include "tcpmgr.h"
 #include "usermgr.h"
 #include "videotestcontroller.h"
+#include "voicecallcontroller.h" // 真实双向语音入口与视频test独立。
 #include <QPushButton>
 #include <QStyle>
 
@@ -16,6 +17,9 @@ FriendInfoPage::FriendInfoPage(QWidget *parent)
     , ui(new Ui::FriendInfoPage)
 {
     ui->setupUi(this);
+    connect(ui->voice_chat, &QPushButton::clicked, this, [this] { // 复用已有语音按钮，不创建重复入口。
+        TcpMgr::GetInstance()->VoiceCall()->Start(_uid); // 当前好友UID交给统一通话控制器。
+    });
     // 保留原有通话按钮，额外提供明确标记test的可点击图标入口。
     auto *testButton = new QPushButton(tr("test"), this);
     testButton->setObjectName(QStringLiteral("video_test"));

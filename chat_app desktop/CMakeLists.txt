@@ -65,6 +65,9 @@ qt_add_executable(chat_app
     groupavatartransfer.h groupavatartransfer.cpp
     # qrc嵌入受信HTML/JS，运行时由chatvideo scheme与唯一配置素材统一映射。
     videotestcontroller.h videotestcontroller.cpp videotest.qrc
+    # 真实语音协调器复用视频安全页面工厂，资源仍统一由videotest.qrc嵌入。
+    voicecallcontroller.h # 声明唯一语音协调器、桥接参数和资源归属。
+    voicecallcontroller.cpp # 实现信令窗口、受限页面及完整清理。
     #ini、ui、qrc直接加入可执行文件
 )
 

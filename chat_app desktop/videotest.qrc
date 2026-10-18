@@ -3,5 +3,12 @@
  <qresource prefix="/video_test">
   <file alias="index.html">video_test/index.html</file>
   <file alias="media.js">video_test/media.js</file>
+  <!-- 视频和语音共用的WebRTC协商脚本。 -->
+  <file alias="webrtc.js">video_test/webrtc.js</file>
+ </qresource>
+ <!-- 双向语音资源独立命名，避免覆盖保留的视频test页面。 -->
+ <qresource prefix="/voice_call"> <!-- 独立语音资源前缀，原/video_test路径保持不变。 -->
+  <file alias="index.html">voice_call/index.html</file> <!-- 固定语音入口由处理器映射到/voice.html。 -->
+  <file alias="media.js">voice_call/media.js</file> <!-- 双PC麦克风发布与远端播放脚本，仅服务内置语音页。 -->
  </qresource>
 </RCC>

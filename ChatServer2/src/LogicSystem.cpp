@@ -199,6 +199,8 @@ void LogicSystem::DealMsg() {
         if (!msg_node->_recvnode) {
             try { DisconnectVideoTest(msg_node->_session); }
             catch (const std::exception& e) { std::cerr << "video disconnect: " << e.what() << std::endl; }
+            try { DisconnectVoiceCall(msg_node->_session); } // 语音单独清理，视频异常不能跳过语音回收。
+            catch (const std::exception& e) { std::cerr << "voice disconnect: " << e.what() << std::endl; } // 保持队列消费存活。
             continue;
         }
         auto call_back_iter = _fun_callbacks.find(msg_node->_recvnode->_msg_id);
@@ -227,6 +229,8 @@ void LogicSystem::DealMsg() {
 void LogicSystem::RegisterCallBacks() {
     _fun_callbacks[ID_VIDEO_TEST_REQ] = [this](std::shared_ptr<CSession> session,
             const short& id, const std::string& data) { HandleVideoTest(session, id, data); };
+    _fun_callbacks[ID_VOICE_CALL_REQ] = [this](std::shared_ptr<CSession> session, // 在业务队列中串行处理本服语音请求。
+            const short& id, const std::string& data) { HandleVoiceCall(session, id, data); }; // 身份由原始连接提供。
     _fun_callbacks[MSG_CHAT_LOGIN] = [this](std::shared_ptr<CSession> session,
                                             const short &msg_id,
                                             const std::string &msg_data) {

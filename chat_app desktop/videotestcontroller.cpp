@@ -25,13 +25,16 @@ namespace {
 // profile提供本次测试的网络环境，parent负责page生命周期；导航入口固定为内置主页。
 class TestPage final : public QWebEnginePage {
 public:
-    TestPage(QWebEngineProfile *profile, QObject *parent) : QWebEnginePage(profile, parent) {}
+    TestPage(QWebEngineProfile *profile, QObject *parent, const QString &entry) // entry由Qt控制器选择，不能由页面导航修改。
+        : QWebEnginePage(profile, parent), _entry(entry) {} // 每个页面固定自己的导航入口。
 protected:
     // Chromium发起导航时返回是否放行；查询参数携带会话标识，路径仍固定为主页。
     bool acceptNavigationRequest(const QUrl &url, NavigationType, bool) override
-    { return url.scheme() == "chatvideo" && url.host() == "test" && url.path() == "/index.html"; }
+    { return url.scheme() == "chatvideo" && url.host() == "test" && url.path() == _entry; } // 查询参数不改变受信入口。
     // 弹窗请求返回空page，保持所有媒体操作处于当前窗口的生命周期内。
     QWebEnginePage *createWindow(WebWindowType) override { return nullptr; }
+private:
+    QString _entry; // 页面生命周期内固定的视频或语音入口。
 };
 
 // 将固定URL映射为qrc内容或配置素材；浏览器始终以chatvideo://test作为页面与文件的同源地址。
@@ -50,6 +53,9 @@ public:
         }
         if (url.path() == "/index.html") { path = ":/video_test/index.html"; mime = "text/html"; }
         else if (url.path() == "/media.js") { path = ":/video_test/media.js"; mime = "application/javascript"; }
+        else if (url.path() == "/voice.html") { path = ":/voice_call/index.html"; mime = "text/html"; } // 语音仅保留控制器实际使用的唯一入口，qrc路径不作为备用URL。
+        else if (url.path() == "/voice_call/media.js") { path = ":/voice_call/media.js"; mime = "application/javascript"; } // 仅放行内置语音脚本。
+        else if (url.path() == "/webrtc.js" || url.path() == "/voice_call/webrtc.js") { path = ":/video_test/webrtc.js"; mime = "application/javascript"; } // 两种媒体复用协商实现。
         else if (url.path() == "/qwebchannel.js") { path = ":/qtwebchannel/qwebchannel.js"; mime = "application/javascript"; }
         else if (url.path() == "/fixed.webm") { path = _file; mime = "video/webm"; }
         else { job->fail(QWebEngineUrlRequestJob::UrlNotFound); return; }
@@ -74,7 +80,10 @@ public:
         const QUrl url = info.requestUrl();
         const bool local = url.scheme() == "chatvideo" && url.host() == "test"
             && (url.path() == "/index.html" || url.path() == "/media.js"
-                || url.path() == "/qwebchannel.js" || url.path() == "/fixed.webm");
+                || url.path() == "/qwebchannel.js" || url.path() == "/fixed.webm" // 视频原有本地资源。
+                || url.path() == "/voice.html" // 语音唯一固定入口。
+                || url.path() == "/voice_call/media.js" || url.path() == "/voice_call/webrtc.js" // 语音内置脚本。
+                || url.path() == "/webrtc.js"); // 视频共用协商脚本。
         const bool api = url.scheme() == _origin.scheme() && url.host() == _origin.host()
             && url.port() == _origin.port() && url.path() == "/index/api/webrtc";
         info.block(!(local || api));
@@ -93,6 +102,15 @@ void VideoTestController::RegisterScheme()
     // SecureScheme使内置页成为安全上下文，CorsEnabled让Chromium按CORS规则处理跨域访问。
     scheme.setFlags(QWebEngineUrlScheme::SecureScheme | QWebEngineUrlScheme::CorsEnabled);
     QWebEngineUrlScheme::registerScheme(scheme);
+}
+
+// 所有媒体窗口复用同一导航与请求白名单；profile负责资源设备和拦截器的销毁。
+QWebEnginePage *VideoTestController::CreateMediaPage(QWebEngineProfile *profile, QObject *parent,
+                                                    const QString &entry, const QString &file, const QUrl &origin) // 参数均由已校验的Qt会话提供。
+{
+    profile->installUrlSchemeHandler("chatvideo", new TestFiles(file, profile)); // 共用固定资源映射，不能浏览任意本地文件。
+    profile->setUrlRequestInterceptor(new TestRequests(origin, profile)); // 只允许内置资源及当前媒体服务SDP接口。
+    return new TestPage(profile, parent, entry); // 页面所有权交给调用方的view。
 }
 
 // tcp拥有控制器；构造时订阅全局测试通知和登录结束事件，好友窗口尚未打开也可接收start。
@@ -260,10 +278,8 @@ void VideoTestController::ConfigurePage()
     // 每次测试独立使用无存储名称的off-the-record profile，隔离缓存与网络策略；窗口拥有view/profile。
     _view = new QWebEngineView(_window);
     auto *profile = new QWebEngineProfile(_window);
-    profile->installUrlSchemeHandler("chatvideo", new TestFiles(file, profile));
-    profile->setUrlRequestInterceptor(new TestRequests(QUrl(_session.value("media_url").toString()), profile));
-    // view拥有page，page使用外部profile；先销毁page，再通过deleteLater回收其profile。
-    auto *page = new TestPage(profile, _view);
+    // 视频与语音走同一个页面工厂，保留原视频素材与独立profile生命周期。
+    auto *page = CreateMediaPage(profile, _view, "/index.html", file, QUrl(_session.value("media_url").toString()));
     // 页面显式删除时也安排profile回收；窗口作为父对象兜底管理profile生命周期。
     connect(page, &QObject::destroyed, profile, &QObject::deleteLater);
     _view->setPage(page);

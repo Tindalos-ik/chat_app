@@ -1,0 +1,16 @@
+<!doctype html><!-- 页面只承载远端音频，不设置任何本地麦克风预览或回放。 -->
+<html lang="zh-CN"><!-- 使用中文页面语言，与Qt阶段信息保持一致。 -->
+<head><!-- 页面元数据与严格资源策略。 -->
+<meta charset="utf-8"><!-- 中文错误消息以UTF-8呈现。 -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src chatvideo:; style-src 'unsafe-inline'; media-src blob:; connect-src http: https:;"><!-- 只允许内置脚本、远端MediaStream及现有ZLM的HTTP(S)协商。 -->
+<title>好友语音</title><!-- Qt窗口内嵌页面的辅助标题。 -->
+<style>body{background:#15181d;color:#eee;font-family:sans-serif;margin:24px}audio{width:100%}</style><!-- 不展示本地音频元素，防止麦克风回授。 -->
+</head><!-- 元数据结束，后续仅有远端播放器和内置脚本。 -->
+<body><!-- Qt负责呼叫按钮和会话状态，此页只负责音频媒体。 -->
+<p>音频设备与连接状态请查看上方通话提示。</p><!-- 中性提示以Qt上方的真实阶段为准，避免静态文字与已接通状态冲突。 -->
+<audio id="remote" autoplay playsinline></audio><!-- 唯一播放器仅绑定远端订阅轨道。 -->
+<script src="/qwebchannel.js"></script><!-- 先加载Qt桥接库以建立voiceCall握手。 -->
+<script src="/voice_call/webrtc.js"></script><!-- 视频与语音共享同一SDP/ICE实现，避免协议时序分叉。 -->
+<script src="/voice_call/media.js"></script><!-- 页面会话拥有麦克风、双PC、统计及清理。 -->
+</body><!-- 页面资源由Qt销毁或stop命令同步作废。 -->
+</html><!-- 好友语音媒体页面结束。 -->

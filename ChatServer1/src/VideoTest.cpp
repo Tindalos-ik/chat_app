@@ -9,8 +9,13 @@
 #include <boost/uuid/random_generator.hpp>
 #include <boost/uuid/uuid_io.hpp>
 #include <sstream>
+#include "MediaSignal.h" // 视频test与语音复用精确session投递和JSON基础工具。
 
 namespace {
+using MediaSignal::Pack; // 统一紧凑JSON输出。
+using MediaSignal::Parse; // 统一对象解析约束。
+using MediaSignal::IsUuid; // 统一请求UUID形状校验。
+using MediaSignal::Lookup; // 统一区分离线与Redis故障。
 // 元数据与双方session级占位固定120秒到期；不续租，旧ready/stop不会释放新测试占位。
 const char* kStateScript = R"lua(
 local op=ARGV[1]
@@ -53,28 +58,6 @@ end
 return 'invalid'
 )lua";
 
-// 使用统一紧凑JSON限制TCP包体；所有媒体参数只取服务端配置及随机元数据。
-std::string Pack(const Json::Value& value) {
-    Json::StreamWriterBuilder builder; builder["indentation"] = "";
-    return Json::writeString(builder, value);
-}
-
-// JSON解析同时用于TCP与可信RPC信封；异常/语法错误由业务入口返回invalid。
-bool Parse(const std::string& text, Json::Value& value) {
-    Json::CharReaderBuilder builder; std::string errors; std::istringstream input(text);
-    return Json::parseFromStream(builder, input, &value, &errors) && value.isObject();
-}
-
-// UUID固定36字符，限制Redis键与回包；test_id由服务端生成且不接受客户端指定。
-bool IsUuid(const std::string& text) {
-    if (text.size() != 36) return false;
-    for (size_t i = 0; i < text.size(); ++i) {
-        if (i == 8 || i == 13 || i == 18 || i == 23) { if (text[i] != '-') return false; }
-        else if (!((text[i] >= '0' && text[i] <= '9') || (text[i] >= 'a' && text[i] <= 'f') ||
-                   (text[i] >= 'A' && text[i] <= 'F'))) return false;
-    }
-    return true;
-}
 
 // 状态操作统一区分Redis故障与业务拒绝；result可为状态或完整元数据。
 std::string State(const std::string& op, const std::string& id,
@@ -86,13 +69,6 @@ std::string State(const std::string& op, const std::string& id,
     return result;
 }
 
-// 查询在线路由时区分Redis故障与无key；Get的bool接口无法区分这两种情况。
-std::string Lookup(const std::string& key, std::string& value) {
-    if (!RedisMgr::GetInstance()->VideoTestScript(
-            "local v=redis.call('GET',KEYS[1]); if not v then return '' end; return v", {key}, {}, value))
-        return "rpc_failed";
-    return value.empty() ? "offline" : "ok";
-}
 
 // TCP与RPC使用统一状态码；rpc_failed涵盖Redis/MySQL依赖故障及gRPC传输失败。
 int Error(const std::string& status) {
@@ -115,13 +91,7 @@ Json::Value Notice(const Json::Value& meta, const std::string& op, const std::st
 
 // 同服和RPC共用当前登录校验，TrySend成功才算通知入队，绝不把陈旧路由算成成功。
 std::string DeliverLocal(int uid, const std::string& sid, const std::string& payload) {
-    const auto target = UserMgr::GetInstance()->GetSession(uid);
-    if (!target || target->GetSessionId() != sid) return "unreachable";
-    std::string current;
-    const auto lookup = Lookup(USER_SESSION_PREFIX + std::to_string(uid), current);
-    if (lookup == "rpc_failed") return lookup;
-    if (lookup != "ok" || current != sid) return "unreachable";
-    return target->TrySend(payload, ID_NOTIFY_VIDEO_TEST) ? "notified" : "unreachable";
+    return MediaSignal::DeliverCurrent(uid, sid, payload, ID_NOTIFY_VIDEO_TEST); // 复用媒体信令精确投递。
 }
 
 // 转发到元数据绑定的那一代连接；新登录不能接到旧测试stop/ready。

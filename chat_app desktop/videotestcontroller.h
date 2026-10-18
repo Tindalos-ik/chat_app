@@ -15,6 +15,9 @@ class TcpMgr;
 class QDialog;
 class QLabel;
 class QWebEngineView;
+class QWebEnginePage; // 共享安全页面工厂的返回类型。
+class QWebEngineProfile; // 每次媒体会话独立的浏览器网络环境。
+class QUrl; // 共享工厂只接收已校验的媒体源地址。
 
 // 每个TcpMgr一个实例；登录代次隔离业务回包，页面代次隔离浏览器异步回调。
 class VideoTestController final : public QObject
@@ -23,6 +26,9 @@ class VideoTestController final : public QObject
 public:
     // QApplication构造前调用，让Chromium启动时取得chatvideo的安全上下文与跨域规则。
     static void RegisterScheme();
+    // profile拥有资源处理器；file为视频唯一素材（语音传空），origin限定SDP服务，入口仅允许内置页面。
+    static QWebEnginePage *CreateMediaPage(QWebEngineProfile *profile, QObject *parent,
+                                          const QString &entry, const QString &file, const QUrl &origin); // 返回由parent拥有的受限页面。
     // tcp为QObject父对象并提供信令；窗口持有view/page，profile在page之后回收。
     explicit VideoTestController(TcpMgr *tcp);
     // friendUid为接收方UID；异步结果由Handle/mediaEvent更新，活动期间点击只激活窗口。

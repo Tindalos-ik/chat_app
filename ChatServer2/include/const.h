@@ -147,6 +147,9 @@ enum MSG_IDS {
     ID_VIDEO_TEST_REQ = 1082, // 单向文件测试 start/ready/stop
     ID_VIDEO_TEST_RSP = 1083,
     ID_NOTIFY_VIDEO_TEST = 1084,
+    ID_VOICE_CALL_REQ = 1085, // 好友语音 invite/accept/reject/ready/end 请求。
+    ID_VOICE_CALL_RSP = 1086, // 语音操作结果，回显请求关联字段。
+    ID_NOTIFY_VOICE_CALL = 1087, // 精确登录会话的语音状态通知。
 };
 
 #define LOGIN_COUNT "login_count"

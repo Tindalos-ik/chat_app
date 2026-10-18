@@ -17,6 +17,7 @@ set(JSONCPP_SOURCES
 set(SOURCE_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/LogicSystem.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/VideoTest.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/VoiceCall.cpp # 注册好友双向语音业务与专用跨服RPC。
     ${CMAKE_CURRENT_SOURCE_DIR}/src/CServer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ConfigMgr.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/AsioIOServicePool.cpp

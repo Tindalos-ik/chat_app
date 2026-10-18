@@ -146,6 +146,9 @@ public:
     // 专用视频信令RPC；server为Redis路由名，池获取与RPC共用三秒deadline。
     message::VideoTestNotifyRsp NotifyVideoTest(const std::string& server,
                                                const message::VideoTestNotifyReq& request);
+    // 语音专用跨服投递：server为路由名，request绑定目标session；返回TrySend结果或rpc_failed。
+    message::VoiceCallNotifyRsp NotifyVoiceCall(const std::string& server,
+                                               const message::VoiceCallNotifyReq& request);
 
 private:
     ChatGrpcClient();

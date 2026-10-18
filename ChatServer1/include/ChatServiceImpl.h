@@ -71,6 +71,9 @@ public:
     // 校验目标当前session后将视频信令入队；成功仅代表TrySend成功，不代表已播放。
     Status NotifyVideoTest(ServerContext* context, const message::VideoTestNotifyReq* request,
                            message::VideoTestNotifyRsp* response) override;
+    // 语音RPC接收：context控制截止，request携带精确session及JSON，response返回入队状态；不写聊天记录。
+    Status NotifyVoiceCall(ServerContext* context, const message::VoiceCallNotifyReq* request,
+                           message::VoiceCallNotifyRsp* response) override;
 
     void RegisterServer(std::shared_ptr<CServer> p_server);
 private:

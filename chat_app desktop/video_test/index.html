@@ -6,5 +6,8 @@
 <style>html,body{margin:0;background:#15181d;color:white;height:100%;font-family:sans-serif}video{width:100%;height:100%;object-fit:contain}#source{display:none}</style>
 </head><body><video id="source" playsinline preload="auto"></video><video id="remote" playsinline autoplay></video>
 <!-- source解码固定文件供发布，remote播放接收流；自动播放依赖Qt放开手势要求，播放拒绝由JS上报。 -->
-<script src="/qwebchannel.js"></script><script src="/media.js"></script>
+<!-- 共用帮助器先加载，视频入口随后复用同一套完整ICE与ZLM协商时序。 -->
+<script src="/qwebchannel.js"></script><!-- 先建立原有Qt桥接库，视频握手逻辑保持不变。 -->
+<script src="/webrtc.js"></script><!-- 共用帮助器统一完整ICE与ZLM请求期限。 -->
+<script src="/media.js"></script><!-- 原视频入口继续负责文件捕获、媒体统计与播放。 -->
 </body></html>

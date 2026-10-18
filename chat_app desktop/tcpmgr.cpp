@@ -12,6 +12,7 @@
 #include "userdata.h"
 #include "localchatstoragemgr.h"
 #include "videotestcontroller.h"
+#include "voicecallcontroller.h" // 注册真实双向语音协调器。
 
 namespace {
 constexpr int kHeartbeatIntervalMs = 20 * 1000;
@@ -207,6 +208,18 @@ QString TcpMgr::SendVideoTest(const QString &op, int toUid,
     if (!reason.isEmpty()) request.insert("reason", reason.left(64));
     emit sig_send_data(ID_VIDEO_TEST_REQ, QJsonDocument(request).toJson(QJsonDocument::Compact));
     return id;
+}
+
+// 只发送操作和对端/会话ID，服务端身份始终来自已登录session。
+QString TcpMgr::SendVoiceCall(const QString &op, int toUid, const QString &callId, const QString &reason) {
+    if (!_logged_in || !IsConnected()) return {}; // 不在离线连接上生成悬空请求。
+    const QString id = QUuid::createUuid().toString(QUuid::WithoutBraces); // 唯一关联本次操作响应。
+    QJsonObject request{{"op", op}, {"request_id", id}}; // 所有语音请求都携带操作与UUID。
+    if (op == "invite") request.insert("touid", toUid); // 只有invite指定好友UID。
+    else request.insert("call_id", callId); // 其余操作由服务端会话确定参与双方。
+    if (!reason.isEmpty()) request.insert("reason", reason.left(64)); // 结束原因限制业务帧大小。
+    emit sig_send_data(ID_VOICE_CALL_REQ, QJsonDocument(request).toJson(QJsonDocument::Compact)); // 复用现有TCP帧写入。
+    return id; // 调用方记录UUID以过滤过期响应。
 }
 QString TcpMgr::SendGroupMutation(ReqId requestType, QJsonObject request, qint64 threadId)
 {
@@ -566,6 +579,7 @@ TcpMgr::TcpMgr() : _host(""), _port(0), _b_recy_pending(false), _logged_in(false
     // 其他地方把数据传过来，这里发给服务器
     connect(this, &TcpMgr::sig_send_data, this, &TcpMgr::slot_send_data);
     _videoTest = new VideoTestController(this);
+    _voiceCall = new VoiceCallController(this); // 来电入口独立于好友资料页生命周期。
 
     // 心跳仅在 TCP 登录成功后启动；定时器同时承担“发送下一次 ping”和“检查上次 pong”的职责。
     _heartbeat_timer->setInterval(kHeartbeatIntervalMs);
@@ -587,6 +601,15 @@ void TcpMgr::initHandlers()
             const auto document = QJsonDocument::fromJson(data, &error);
             if (error.error == QJsonParseError::NoError && document.isObject())
                 emit sig_video_test(document.object(), type == ID_NOTIFY_VIDEO_TEST);
+        };
+    }
+    // 语音与视频保持独立协议ID，复用相同的已登录对象帧边界。
+    for (const ReqId type : {ID_VOICE_CALL_RSP, ID_NOTIFY_VOICE_CALL}) { // 注册响应和双向通知。
+        _handler[type] = [this, type](ReqId, int, QByteArray data) { // 完整帧由既有TCP解帧器交付。
+            if (!_logged_in) return; // 未登录不得唤起来电界面。
+            QJsonParseError error; // 验证业务帧JSON语法。
+            const auto document = QJsonDocument::fromJson(data, &error); // 不从非对象帧推导会话。
+            if (error.error == QJsonParseError::NoError && document.isObject()) emit sig_voice_call(document.object(), type == ID_NOTIFY_VOICE_CALL); // 控制器继续核对UUID和会话。
         };
     }
     //连接聊天服务器和发送消息过去是分开的

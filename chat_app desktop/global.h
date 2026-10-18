@@ -108,7 +108,10 @@ enum ReqId{
     ID_NOTIFY_GROUP_EVENT = 1081,
     ID_VIDEO_TEST_REQ = 1082, // 固定文件单向视频测试控制
     ID_VIDEO_TEST_RSP = 1083,
-    ID_NOTIFY_VIDEO_TEST = 1084
+    ID_NOTIFY_VIDEO_TEST = 1084, // 保留固定文件视频测试协议。
+    ID_VOICE_CALL_REQ = 1085, // 双向语音邀请、接听、拒绝、就绪与挂断请求。
+    ID_VOICE_CALL_RSP = 1086, // 语音请求响应，回显op/request_id/call_id。
+    ID_NOTIFY_VOICE_CALL = 1087 // 语音对端状态通知。
 };
 
 // ResourceServer 使用独立 TCP 连接和 2+4 字节包头；这里的 ID 属于另一套协议，

@@ -16,18 +16,19 @@
     let statsBusy = false, frameSeen = false, frameCallback;
     // lastVideoBytes保存累计视频字节；progressAt记录最近增长时间，检测持续断流。
     let progressAt = performance.now(), lastVideoBytes = 0;
-    // 登记本页计时任务和在途fetch的AbortController，结束时集中取消。
-    const timers = new Set(), controllers = new Set();
+    // 登记本页文件准备、统计采样和媒体阶段期限；SDP请求由共用帮助器生命周期取消。
+    const timers = new Set(); // 仅保存视频页面自身拥有的计时任务。
+    // 共用协商帮助器用单一生命周期信号取消ICE、SDP等待和HTTP；其余视频逻辑保持原样。
+    const negotiationLifetime = new AbortController();
 
     // 关窗/pagehide、stop或失败时调用；同步作废会话并发起资源释放，返回值为空，AudioContext关闭异步完成。
     function cleanup() {
         if (dead) return;
         dead = true;
+        negotiationLifetime.abort(); // 页面终结时解除共用帮助器的候选监听并中止在途SDP请求。
         // 停止采样和阶段期限并中止fetch；已取消期限的待完成Promise随页面上下文退出。
         for (const timer of timers) { clearTimeout(timer); clearInterval(timer); }
         timers.clear();
-        for (const controller of controllers) controller.abort();
-        controllers.clear();
         // 取消呈现帧观察并解除PC回调，close结束连接；stop分别结束捕获轨道和接收轨道。
         if (frameCallback !== undefined && remote.cancelVideoFrameCallback)
             remote.cancelVideoFrameCallback(frameCallback);
@@ -78,59 +79,11 @@
             source.load();
         });
     }
-    // kind取video/audio，sender选择发送/接收能力；返回VP8/Opus能力列表，缺失时抛错。
-    function codecs(kind, sender) {
-        const capabilities = (sender ? RTCRtpSender : RTCRtpReceiver).getCapabilities(kind);
-        const mime = kind === 'video' ? 'video/vp8' : 'audio/opus';
-        const selected = capabilities?.codecs.filter(codec => codec.mimeType.toLowerCase() === mime) || [];
-        if (!selected.length) throw new Error('当前Qt WebEngine缺少WebRTC ' + mime + '能力');
-        return selected;
-    }
-    // 返回候选收集完成的Promise，期限8秒；收齐候选后将完整SDP一次提交，连通性由后续ICE检查决定。
-    async function gather() {
-        if (pc.iceGatheringState === 'complete') return;
-        await bounded(new Promise(resolve => {
-            const changed = () => {
-                if (!dead && pc.iceGatheringState === 'complete') {
-                    pc.removeEventListener('icegatheringstatechange', changed); resolve();
-                }
-            };
-            pc.addEventListener('icegatheringstatechange', changed); changed();
-        }), 8000, 'ICE候选收集');
-    }
-    // sender选择push发布或play订阅；返回覆盖SDP交换的Promise，失败向调用方抛出。
-    async function negotiate(sender) {
-        // 创建Offer后设置本地描述以触发ICE收集；候选持续补入pc.localDescription，收齐后再取SDP。
-        report('stage', sender ? '正在收集ICE并向ZLM发布(push)…' : '正在收集ICE并向ZLM请求播放(play)…');
-        const offer = await bounded(pc.createOffer(), 8000, '生成SDP');
-        if (dead) return;
-        await bounded(pc.setLocalDescription(offer), 8000, '设置本地SDP');
-        await gather();
-        // 此处与Offer、fetch完成处检查dead，阻止结束后的协商结果继续应用到会话。
-        if (dead) return;
-        const url = new URL('/index/api/webrtc', config.media_url);
-        url.searchParams.set('app', 'video_test');
-        url.searchParams.set('stream', config.stream_id);
-        url.searchParams.set('type', sender ? 'push' : 'play');
-        const controller = new AbortController(); controllers.add(controller);
-        // 业务ready后单次请求play；ZLM按maxStreamWaitMS=15000等待流注册，客户端HTTP期限20秒。
-        const timeout = later(() => controller.abort(), 20000);
-        let response, answer;
-        try {
-            response = await fetch(url, {method:'POST', headers:{'Content-Type':'text/plain'},
-                body:pc.localDescription.sdp, signal:controller.signal, credentials:'omit', redirect:'error'});
-            if (!response.ok) throw new Error('ZLM HTTP ' + response.status);
-            answer = await response.json();
-        } finally { clearTimeout(timeout); timers.delete(timeout); controllers.delete(controller); }
-        if (dead) return;
-        // 先检查HTTP，再检查ZLM业务结果和Answer编码能力，最后将Answer应用于PC。
-        if (answer.code !== 0 || typeof answer.sdp !== 'string' || !answer.sdp.startsWith('v=0'))
-            throw new Error('ZLM协商失败：' + (answer.msg || answer.code || '无有效answer'));
-        if (!/a=rtpmap:\d+ VP8\/90000/i.test(answer.sdp) || !/a=rtpmap:\d+ opus\/48000/i.test(answer.sdp))
-            throw new Error('ZLM answer未接受VP8/Opus');
-        // Answer应用完成后进入ICE选路、DTLS建连和媒体传输阶段，由连接状态与sample确认实际进展。
-        await bounded(pc.setRemoteDescription({type:'answer', sdp:answer.sdp}), 8000, '设置ZLM answer');
-        report('stage', 'SDP已接受，等待WebRTC连接和实际媒体数据…');
+    // kind与sender保持原调用约定；共用帮助器统一视频和语音的VP8/Opus能力选择。
+    const codecs = ChatWebRTC.codecs;
+    // sender选择push/play；沿用video_test流与阶段报告，完整SDP交换由共用帮助器执行。
+    function negotiate(sender) {
+        return ChatWebRTC.negotiate({pc, mediaUrl:config.media_url, app:'video_test', stream:config.stream_id, sender, kinds:['video', 'audio'], signal:negotiationLifetime.signal, stage:detail => report('stage', detail)}); // 不改原视频发布/播放的实际媒体判定。
     }
     // event为PC的track事件；同步合并接收轨道，首次play的异步拒绝交给fail处理，返回值为空。
     function bindRemote(event) {

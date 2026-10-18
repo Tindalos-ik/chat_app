@@ -65,6 +65,10 @@ private:
     void HandleVideoTest(std::shared_ptr<CSession> session, const short& msg_id, const std::string& data);
     // 仅内部断线队列调用，按旧session精确结束测试，不触及该UID新连接的测试。
     void DisconnectVideoTest(std::shared_ptr<CSession> session);
+    // 好友双向语音TCP入口：session提供身份，msg_id为请求号，data为操作JSON；结果异步回包。
+    void HandleVoiceCall(std::shared_ptr<CSession> session, const short& msg_id, const std::string& data);
+    // 内部断线阶段按session代号清理语音占位，通知仍在线的对方；不影响新登录。
+    void DisconnectVoiceCall(std::shared_ptr<CSession> session);
     // 已提交群通知扇出；文本目标投递前再次事务授权，状态通知绝不注销连接。
     // targetUid为实际接收成员，senderUid为已认证发送者，threadId为群号；
     // eventType区分文本/信箱/结果/元数据/成员/失效；元数据和文本当前成员锁内入队。

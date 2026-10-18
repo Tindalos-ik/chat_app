@@ -23,6 +23,7 @@
 #include "localchatstoragemgr.h"
 
 class VideoTestController;
+class VoiceCallController; // 每个登录连接共用一个双向语音协调器。
 class TcpMgr : public QObject, public Singleton<TcpMgr>, //继承QObject是为了能够信号和槽机制，并且要第一个继承
                public std::enable_shared_from_this<TcpMgr>
 {
@@ -39,6 +40,9 @@ public:
     // 只发送业务控制，不传客户端身份；UUID用于丢弃过期响应。
     QString SendVideoTest(const QString &op, int toUid = 0,
                           const QString &testId = {}, const QString &reason = {});
+    VoiceCallController *VoiceCall() const { return _voiceCall; } // 返回TcpMgr拥有的唯一语音界面协调器。
+    // op为invite/accept/reject/ready/end；toUid仅供邀请，callId关联后续操作，reason为结束原因；响应异步经sig_voice_call返回。
+    QString SendVoiceCall(const QString &op, int toUid = 0, const QString &callId = {}, const QString &reason = {}); // 返回请求UUID；空串表示未连接，不发送客户端身份。
     // 群API返回本次request_id；空串表示参数/连接无效。服务端只信任登录session UID。
     QString CreateGroup(const QString &name);
     QString SearchGroup(qint64 threadId);
@@ -100,6 +104,7 @@ private:
     quint64 _groupListLoginGeneration = 0;
     QHash<qint64, quint64> _groupSnapshotProofEpochs;
     VideoTestController *_videoTest = nullptr;
+    VoiceCallController *_voiceCall = nullptr; // QObject子对象，统一接收来电和清理麦克风。
     QMap<ReqId, std::function<void(ReqId id, int len, QByteArray data)>> _handler; //消息id对应的回调函数
 
     QTcpSocket* _socket; //客户端这边只需要一个socket就可以了，很简单
@@ -121,6 +126,7 @@ public slots:
 
 signals:
     void sig_video_test(const QJsonObject &message, bool notification);
+    void sig_voice_call(const QJsonObject &message, bool notification); // 转发语音业务帧，响应以UUID、通知以call_id关联。
     // 在账号切换/连接关闭之前触发，媒体可先尝试向对端发送stop。
     void sig_video_test_reset();
     void sig_con_success(bool bsuccess); // 获取聊天服务器
