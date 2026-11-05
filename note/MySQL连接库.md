@@ -1,291 +1,108 @@
-# MySQL连接库知识点（X DevAPI / mysqlcppconnx）
+# MySQL Connector/C++ 与 X DevAPI
 
-[官方文档](https://dev.mysql.com/doc/dev/connector-cpp/latest/)
+## 协议、依赖与配置
 
-> 本项目实际使用的库：vcpkg 安装的 **mysql-connector-cpp（版本 9.7.0）**，CMake 链接目标 `mysqlcppconnx`，头文件 `<mysqlx/xdevapi.h>`。
->
-> 对应代码：GateServer / StatusServer / ChatServer 三份完全相同的 `MysqlMgr.h/cpp`。
-> 连接池的完整设计见 [连接池.md](连接池.md)，建表逻辑见 [数据库设计.md](数据库设计.md)。
+项目的 MySQL 访问头文件是 `<mysqlx/xdevapi.h>`，CMake 链接 `mysqlcppconnx`。这是 Connector/C++ 的 X DevAPI，通过 MySQL X Protocol 通信，默认端口为 `33060`。MySQL 命令行导入 SQL 通常连接经典协议端口 `3306`；端口可配置，必须与服务器启用的协议匹配。
 
-这是 MySQL 官方的 C++ 连接器，和项目里另两个"第三方库"（Boost、gRPC）不一样——它不依赖任何其他库，装完 vcpkg 就能用。
+Connector/C++ 还提供经典 JDBC 风格接口，常见头文件为 `<mysql/jdbc.h>`，使用 `sql::Connection`、`PreparedStatement` 等类型。`<mysqlx/xapi.h>` 属于 X Protocol 的 C API。项目生产访问使用 `mysqlx::Session`，没有使用 Collection 文档数据库接口。
 
+[GateServer CMake](../GateServer/CMakeLists.txt)、[StatusServer CMake](../StatusServer/CMakeLists.txt) 和两台 ChatServer 的 CMake 均链接 `mysqlcppconnx`；[ResourceServer CMake](../ResourceServer/CMakeLists.txt) 也链接该库，其数据库访问用于资源鉴权。依赖安装可使用 vcpkg 的 `mysql-connector-cpp` 端口，具体安装版本由构建环境决定。
 
+[GateServer 配置](../GateServer/config.ini) 的 `[Mysql]` 包含以下字段；示例不含凭据：
 
-### 项目里有两种 MySQL C++ API
-
-连接器装一个包，但提供**两套完全不同的 API**：
-
-| | 经典 API（mysqlcppconn） | X DevAPI（mysqlcppconnx，本项目用的） |
-| --- | --- | --- |
-| 底层协议 | 经典协议（MySQL Protocol） | **X Protocol** |
-| 默认端口 | 3306 | **33060** |
-| 头文件 | `<mysqlx/xapi.h>` | `<mysqlx/xdevapi.h>` |
-| 连接类 | `sql::Connection` | `mysqlx::Session` |
-| 执行语句 | `prepareStatement` + `setString` | `session->sql(...).bind(...).execute()` |
-| 风格 | 类似 JDBC，啰嗦 | 链式调用，面向对象 |
-
-你的 `config.ini` 里：
-
-```
+```ini
 [Mysql]
 host = 127.0.0.1
-port = 33060      ← X Protocol 端口，不是 3306
-```
-
-**为什么用 X DevAPI 而不是经典 API**：
-
-1. 链式写法简洁：`sql().bind().execute()` 一行串起来，不用一堆 `setString`；
-2. 参数绑定是 API 自带的，天然防 SQL 注入；
-3. 除了 SQL，还支持 NoSQL 风格的 Collection 操作（本项目没用，但库支持）；
-4. 官方推荐的新接口，llfc 老项目用的经典 API，新版也逐步迁移到 X DevAPI。
-
-> 连 3306 用经典 API，连 33060 用 X DevAPI
-
-
-
-### 核心对象模型
-
-X DevAPI 的对象层级，从上到下：
-
-```text
-mysqlx::Session（一次连接，相当于数据库会话）
-  └─ Schema（数据库，相当于 create database 出来的库）
-       ├─ Table（关系表）      → 增删改查
-       └─ Collection（JSON集合）→ NoSQL 风格（本项目没用）
-```
-
-执行一条 SQL 时涉及的对象：
-
-```text
-session->sql("...")     → SqlStatement（一条预解析的 SQL）
-        .bind(...)      → 绑定参数（返回值还是 SqlStatement，所以能链式）
-        .execute()      → SqlResult（执行结果）
-        .fetchOne()     → Row（一行数据）
-        row[0]          → Value（一个单元格的值）
-        value.get<T>()  → T（取成 C++ 类型）
-```
-
-| 类 | 职责 | 项目里出现的位置 |
-| --- | --- | --- |
-| `mysqlx::Session` | 一个数据库连接（X Protocol） | MySqlPool 池里的元素 |
-| `SqlStatement` | 一条 SQL + 参数 | `con->sql(sql).bind(...)` |
-| `SqlResult` | 执行结果（行集合/影响行数） | `execute()` 的返回值 |
-| `Row` | 结果集里的一行 | `fetchOne()` 的返回值 |
-| `Value` | 一个单元格，可以 `get<T>()` 转换 | `rows[0]` |
-
-
-
-### 项目用法逐段拆解
-
-#### 1. 创建连接：mysqlx::Session 构造
-
-```cpp
-std::unique_ptr<mysqlx::Session> MySqlPool::CreateSession() {
-    // 构造函数参数：host, port, user, password, schema
-    return std::make_unique<mysqlx::Session>(host_, std::stoi(port_), user_, pass_, schema_);
-}
-```
-
-构造函数直接建立连接，五个参数就把"连哪台机器、用哪个账号、进哪个库"全说清楚了：
-
-* `port_` 是 33060（X Protocol），所以 `std::stoi(port_)` 转成数字；
-* 最后一个参数 `schema_` 是默认库，之后执行 SQL 不用写库名前缀；
-* 注意这里用的是 `unique_ptr` 而不是裸指针——连接是独占资源，交给智能指针管理，不用手动 delete。
-
-#### 2. 执行 SQL + 参数绑定
-
-```cpp
-bool MysqlMgr::RegUser(const std::string &name, const std::string &email, const std::string &password)
-{
-    auto con = pool_->GetConnection();   // 从池里拿连接
-    Defer defer([&con, this]() { pool_->ReturnConnection(std::move(con)); }); // 离开作用域自动归还
-    try {
-        if (con == nullptr) return false; // 池关闭时拿不到连接，要判空
-
-        std::string sql = "INSERT INTO user (name, email, pwd) VALUES (?, ?, ?)";
-        auto result = con->sql(sql).bind(name).bind(email).bind(password).execute();
-        return true;
-    } catch (const std::exception &e) {
-        std::cout << "Exception: " << e.what() << std::endl;
-        return false;
-    }
-}
-```
-
-知识点：
-
-**`?` 占位符 + `bind()` 绑定**：SQL 里用 `?` 留坑，然后按顺序 `bind(name).bind(email).bind(password)` 填值。这是**参数化查询**，值是作为数据传给服务器，而不是拼进 SQL 字符串——所以天然免疫 `' OR '1'='1` 这种注入。
-
-> 顺带一提：X DevAPI 的 `bind()` 同时支持 `?` 位置参数和 `:name` 命名参数，本项目用的是 `?`。
-
-**`con->sql(...)` 返回 SqlStatement，`execute()` 返回 SqlResult**：链式调用的秘密就是每一步都返回对象本身或下一个对象。
-
-#### 3. 读取结果：fetchOne / Row / Value
-
-```cpp
-bool MysqlMgr::CheckPwd(const std::string &name, const std::string &pwd, UserInfo &userInfo)
-{
-    auto con = pool_->GetConnection();
-    Defer defer([&con, this]() { pool_->ReturnConnection(std::move(con)); });
-    try {
-        std::string sql = "SELECT uid, name, email, pwd FROM user WHERE name = ?";
-        auto result = con->sql(sql).bind(name).execute();
-        auto rows = result.fetchOne();          // 取第一行
-
-        if (!rows) return false;                // 没查到（Row 支持 bool 判断）
-
-        std::string storedPassword = rows[3].get<std::string>();  // 第4列 pwd
-        if (storedPassword != pwd) return false;
-
-        userInfo.uid = rows[0].get<int>();      // 第1列 uid
-        userInfo.user = rows[1].get<std::string>();
-        userInfo.email = rows[2].get<std::string>();
-        userInfo.passwd = storedPassword;
-        return true;
-    } catch (const std::exception &e) {
-        ...
-    }
-}
-```
-
-知识点：
-
-* **`fetchOne()` 取一行，`fetchAll()` 取全部**（返回行列表）。本项目查询都是"查一条用户"，所以只用 `fetchOne`；
-* **`Row` 可以直接当 bool 用**：`Row` 内部实现了 `operator bool()`（等价于 `!isNull()`），所以 `if (!rows)` 就是"没查到"；
-* **`row[i]` 按下标取列，`Value::get<T>()` 转类型**：`rows[0].get<int>()`、`rows[3].get<std::string>()`；
-* **列下标从 0 开始，必须和 SELECT 的列顺序一一对应**：`SELECT uid, name, email, pwd` → 0=uid、1=name、2=email、3=pwd。改 SQL 时忘了同步下标，是这类代码最常见的 bug；
-* `get<T>()` 类型不匹配会抛异常（比如拿字符串列调 `get<int>`），正好被 catch 兜住返回 false。
-
-#### 4. 错误处理：异常机制
-
-X DevAPI **不用返回码，出错就抛 C++ 异常**（`mysqlx::Error`，继承自 `std::exception`）。
-
-项目里的统一套路：
-
-```cpp
-try {
-    // 执行 SQL
-} catch (const std::exception &e) {
-    std::cout << "Exception: " << e.what() << std::endl;
-    return false;
-}
-```
-
-好处：不用每个调用都检查返回值；坏处：**忘了 catch，异常一路抛出去程序直接崩**。所以每个数据库方法外面都包一层 try/catch 是必须的。
-
-#### 5. 连接池 + Defer RAII + 按需可用性校验
-
-这是本项目 X DevAPI 用得最重的地方，完整设计见 [连接池.md](连接池.md)，这里只讲和库相关的三个点：
-
-**为什么需要连接池**：`mysqlx::Session` 构造 = TCP 连接 + X Protocol 握手，一次几百微秒到几毫秒。每次请求都新建连接，高并发下开销巨大；而且 MySQL 服务端有 `wait_timeout`（默认 8 小时），**空闲连接会被服务端主动断开**（项目注释里写的"mysql 的连接长时间不用会自动断开，redis 不会"就是这个），所以池子必须能检测失效连接并重建。
-
-**`SELECT 1` 按需可用性校验（不是定时心跳）**：
-
-```cpp
-bool IsConnectionValid(mysqlx::Session* session) {
-    if (!session) return false;
-    try {
-        session->sql("SELECT 1").execute();   // 能执行成功 = 连接还活着
-        return true;
-    } catch (const std::exception& e) {
-        return false;
-    }
-}
-```
-
-`SELECT 1` 是最轻的探活语句。项目在**取出连接时**和**归还连接时**各检测一次，失效就 `CreateSession()`
-重建。它的作用是“下一次业务真正要用连接时，尽量不给业务一个已经确认失效的 Session”，而不是让空闲
-连接按固定间隔持续发包。
-
-对当前项目来说，不需要再额外实现一个周期性 MySQL 心跳线程。数据库连接池通常更适合按需校验：没有
-业务流量时不产生无意义 SQL；发生过 MySQL 重启、网络切换或 `wait_timeout` 回收后，下一次借连接能发现
-并替换。业务 SQL 本身仍必须 `try/catch`，因为连接可能在 `SELECT 1` 成功后的任意时刻断开；校验只能
-降低拿到坏连接的概率，不能保证一次业务操作绝对不会失败。
-
-当前实现还有两个可靠性边界：
-
-1. `GetConnection()` 与 `ReturnConnection()` 在持有池互斥锁时执行 `SELECT 1`，失败时还会在锁内
-   `CreateSession()`。MySQL 网络变慢时，其他线程会等待这把锁；后续优化应把“从队列取出/放回”的短
-   临界区与网络校验、重建拆开。
-2. `CreateSession()` 可能因数据库不可达抛异常，而不少业务方法在调用 `GetConnection()` 后才进入
-   `try`。因此当前并非严格“保证可用”；应在连接池内部捕获建连失败并返回空指针，或把取连接也放进
-   调用方的 `try/catch`。写入类 SQL 不能因为异常就无条件自动重试，以免服务端已执行但响应丢失时重复写入。
-
-如果以后遇到跨机网络黑洞、连接校验长时间阻塞或大规模连接被中间设备回收，再补连接/读写超时、连接
-最大空闲年龄和监控指标，通常比先增加固定频率心跳更有价值。
-
-**Defer 自动归还**：
-
-```cpp
-Defer defer([&con, this]() { pool_->ReturnConnection(std::move(con)); });
-```
-
-`Defer` 是项目在 const.h 里手写的 RAII 类（仿 Go 的 defer），出作用域自动执行归还逻辑。好处：**任何 return 分支都不会忘还连接**，而忘还连接会导致池被借空、其他线程永久阻塞在 `GetConnection()` 上。
-
-
-
-### CMake / vcpkg 集成
-
-安装（README 里写的是 `mysqlcppconnx`，**这是笔误**，vcpkg 官方端口名是 `mysql-connector-cpp`）：
-
-```
-vcpkg install mysql-connector-cpp --triplet x64-windows
-```
-
-这个包同时产出两个库：
-
-```
-lib/mysqlcppconnx.lib   ← X DevAPI（本项目链接这个）
-lib/mysqlcppconn.lib    ← 经典 API
-```
-
-三个服务的 CMakeLists.txt 里都是：
-
-```
-target_link_libraries(your_target
-    PRIVATE
-        mysqlcppconnx    # 链接 mysql-c++ 库（X DevAPI）
-)
-```
-
-头文件路径不用自己配：vcpkg 工具链（`D:/cppsoft/vcpkg/scripts/buildsystems/vcpkg.cmake`）会自动把 `include/mysqlx/xdevapi.h` 所在的目录加进编译搜索路径。
-
-
-
-### 配置驱动
-
-连接参数不写死在代码里，从 `config.ini` 读取（ConfigMgr 解析）：
-
-```
-[Mysql]
-host = 127.0.0.1
-user = root
 port = 33060
-passwd = 123456
+user = chat_service
+passwd = <数据库密码>
 schema = chat_app_db
-poolsize = 10
+poolsize = 5
 ```
+
+`MySqlPool` 通过 ConfigMgr 读取字符串，再用 `std::stoi` 转换端口和池大小。配置在进程初始化时读取，修改后需重启服务。数据库需启用 X Plugin，账号需有对应 schema 权限。新环境表结构见 [create_tables.sql](../sql/create_tables.sql)；`CREATE TABLE IF NOT EXISTS` 不负责升级已有表。
+
+## 对象与所有权
+
+| 对象 | 作用 | 生命周期要求 |
+| --- | --- | --- |
+| `mysqlx::Session` | 一条数据库会话，承载 SQL 和事务 | 池内空闲或被一个调用独占借用 |
+| `SqlStatement` | SQL 文本与绑定参数 | 在有效 Session 上构造并执行 |
+| `SqlResult` | 查询结果或写入结果 | 读取所需结果后再复用会话 |
+| `Row` | 单行结果 | `fetchOne()` 返回空行时不能取列 |
+| `Value` | 单列数据 | 按 SQL 列类型和空值约定读取 |
+
+Session 构造包含网络连接和认证，可能抛异常。项目用 `std::unique_ptr<mysqlx::Session>` 管理所有权，避免手工 `delete`。`unique_ptr` 析构会销毁会话，只有显式调用 `ReturnConnection` 才会把会话归还池中。
+
+```mermaid
+flowchart LR
+    Pool[MySqlPool 空闲队列] -->|GetConnection 移出所有权| Business[数据库操作]
+    Business --> Statement[sql 与 bind]
+    Statement --> Result[execute 与结果读取]
+    Result -->|Defer 调用 ReturnConnection| Pool
+```
+
+## SQL、绑定和结果读取
+
+下面是 X DevAPI 的查询片段，前提是 `con` 为已借用的有效会话：
 
 ```cpp
-this->host_    = config["Mysql"]["host"];
-this->port_    = config["Mysql"]["port"];
-this->user_    = config["Mysql"]["user"];
-this->pass_    = config["Mysql"]["passwd"];
-this->schema_  = config["Mysql"]["schema"];
-this->poolSize_ = std::stoi(config["Mysql"]["poolsize"]);
+// 按登录名查询；问号按出现顺序绑定数据值。
+auto result = con->sql("SELECT uid, name, email FROM user WHERE name = ?")
+                 .bind(name).execute();
+auto row = result.fetchOne();
+if (row) {
+    const int uid = row[0].get<int>();
+    const std::string email = row[2].get<std::string>();
+}
 ```
 
-好处：换数据库、调并发（poolsize）都不用重新编译。注意 `poolsize` 是字符串，要 `std::stoi` 转数字。
+SQL 接口使用位置占位符 `?`。X DevAPI 的 CRUD 表达式存在命名绑定能力，但不能把命名表达式占位符直接当成这里的 SQL 语法。绑定保护的是数据值；动态表名、列名、排序方向仍需由程序限定，不能把用户输入直接拼成 SQL 结构。
 
+`execute()` 返回 `SqlResult`。`fetchOne()` 消费下一行，空结果可用 `if (!row)` 判断；多行查询可以循环取行或使用 `fetchAll()`。聊天服务查询历史、会话及成员均涉及多行，不能假定所有查询只有一个用户。
 
+列下标从 `0` 开始，与 `SELECT` 列顺序一致。修改查询列时要同步读取位置。可空列应先检查 `isNull()`；`get<T>()` 的目标类型要符合列值范围，消息和会话的 64 位 ID 不应窄化到 `int`。
 
-### 面试/复习自测
+## 事务与业务数据
 
-* X DevAPI 和经典 Connector/C++ 有什么区别？端口各是多少？
-* `session->sql().bind().execute()` 每步返回什么类型？
-* `Row` 为什么能写 `if (rows)`？
-* 为什么参数化查询能防 SQL 注入？
-* MySQL 连接为什么会断？连接池怎么检测和重建？
-* 为什么连接要自动归还？忘了归还会发生什么？
-* `fetchOne()` 和 `fetchAll()` 什么区别？取空结果集怎么判断？
-* X DevAPI 的列下标从几开始？经典 API 呢？
+[GateServer MysqlMgr](../GateServer/src/MysqlMgr.cpp) 的 `RegUser` 在同一 Session 上执行：
+
+1. `startTransaction()` 开启事务。
+2. `UPDATE user_id SET id = id + 1` 更新分配器。
+3. `SELECT id FROM user_id` 读取本次 uid。
+4. 参数绑定插入 `user(uid, name, email, pwd)`。
+5. `commit()`；异常路径尝试 `rollback()`。
+
+`user_id` 依赖单行数据约定，初始化值应不小于已有用户最大 uid。InnoDB 的行锁使并发更新串行执行。事务不能跨两个借用的 Session 拆开，否则更新与插入不再属于同一次提交。
+
+[建表 SQL](../sql/create_tables.sql) 中 `user.uid` 和 `user.email` 为唯一索引，`name` 是普通索引。注册入口的“先查询用户名”存在并发窗口，普通索引不提供用户名唯一性约束。数据库实际约束需以 SQL 为准。
+
+两台 ChatServer 的 `MysqlMgr` 还负责好友申请、双向好友关系、私聊、群聊、消息及回执事务；详细模型见 [数据库设计](数据库设计.md)。资源服务的数据库读取用于核查资源请求者与会话关系，不由 Redis 缓存代替授权。
+
+## 会话池与异常边界
+
+[MySqlPool 实现](../GateServer/src/MysqlMgr.cpp) 在借出和归还时执行 `SELECT 1`，发现无效会话后通过 `CreateSession()` 重建。校验按借还发生，没有周期探活线程。数据库重启、空闲回收、网络断开都可能使会话失效；X Protocol 的空闲超时还受服务器 X Plugin 配置影响。
+
+业务中常见的归还片段为：
+
+```cpp
+// con 的生命周期必须覆盖 Defer；pool_ 必须在归还结束前保持有效。
+auto con = pool_->GetConnection();
+Defer release([&con, this]() { pool_->ReturnConnection(std::move(con)); });
+```
+
+`Defer` 是项目的作用域清理类。借用后应立即建立清理责任，任何提前返回都应归还。事务失败还需要显式回滚，归还动作本身不等于回滚。
+
+当前实现的边界：
+
+- `SELECT 1`、失效重建均在池互斥锁内执行，网络等待会阻塞其他借还线程。
+- `CreateSession()` 可抛异常；部分业务在 `GetConnection()` 后才进入 `try`，取连接异常不在该业务捕获范围内。
+- 归还也可能因重建失败抛异常。作用域清理期间抛出异常具有终止进程的风险，不能把 Defer 描述成绝对安全的异常屏障。
+- 探活成功后业务仍可能断线。写操作响应丢失时，客户端无法仅凭网络异常判断是否已提交，不能无条件重放。
+- `Close()` 唤醒等待者并清空空闲队列；关闭协调仍需等待借用者结束，详见 [连接池](连接池.md)。
+
+## 账号与传输注意事项
+
+当前账号代码比较和保存客户端提供的密码串，客户端异或处理可逆；它不能提供密码哈希保护。生产部署需要独立考虑 TLS、密码哈希、最小权限数据库账号及日志脱敏。库支持的安全能力与当前业务是否配置安全能力应分别核查。
+
+接口细节可查 [Connector/C++ X DevAPI 官方文档](https://dev.mysql.com/doc/dev/connector-cpp/latest/)。

@@ -1,38 +1,33 @@
-# jsoncpp
+# ChatServer1 的 JsonCpp 业务协议
 
-在cpp网关服务中，网络通信底层boost.beast处理的是HTTP请求的原始字节流，而业务逻辑层需要的是结构化的数据
+## TCP 帧到业务对象
 
-所以需要jsoncpp
+[CSession.cpp](../src/CSession.cpp) 处理帧边界，将完整消息交给业务；心跳请求在会话层解析。[LogicSystem.cpp](../src/LogicSystem.cpp) 用 `Json::Value` 处理登录、好友、文本、图片、文件、历史和回执等 JSON。群业务与信令也使用 JSON 对象，但服务间通知外层是 [Protobuf](../../proto/message.proto)。
 
+JSON 不提供 TCP 消息边界。长度必须按实际序列化字节计算，中文 UTF-8 字节数不能用字符数代替。解析成功后还需根类型、成员、身份及业务权限校验，尤其不能将请求中的发送者 uid 当成已认证身份。
 
+## ID 与历史分页
 
-**解析请求 (反序列化)**：前端、小程序或其他服务发来的请求，其 Body 部分通常是 JSON 格式的字符串。C++ 网关服务使用 `jsoncpp` 可以将这段原始的字符串，解析成方便 C++ 代码直接访问和操作的对象（如 `Json::Value`），从而高效地读取其中的参数。
+`ParseUint64StringField()` 要求字段为十进制字符串，通过 `from_chars` 校验完整消费和范围。Qt 的历史请求将 `thread_id`、`after_message_id` 写为字符串，避免浮点中转：
 
-**构造响应 (序列化)**：当网关处理完业务逻辑，需要返回数据给客户端时，`jsoncpp` 能把 C++ 的数据结构（如 `map`、`vector` 或自定义对象）重新打包成标准的 JSON 字符串，并通过 HTTP 响应发送回去。
-
-
-
-如何配置？
-
-首先下载jsoncpp源码 [地址](https://github.com/open-source-parsers/jsoncpp)
-
-然后运行`amalgamate.py` ，生成dist文件夹，json目录下就是文件，还有一个cpp，把源码放进去项目即可，然后在CMakeLists.txt中修改一下
-
-```
-# 收集 JsonCpp 的源文件
-set(JSONCPP_SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/jsoncpp/jsoncpp.cpp
-)
-
-# 添加可执行文件，把 JsonCpp 源文件也加进去
-add_executable(${PROJECT_NAME} 
-    main.cpp
-    ${JSONCPP_SOURCES}  
-)
-
-# 指定头文件搜索路径
-target_include_directories(${PROJECT_NAME} PRIVATE 
-    ${CMAKE_CURRENT_SOURCE_DIR}/jsoncpp/json  # JsonCpp 的路径
-)
+```json
+{"thread_id":"10001","after_message_id":"9007199254740993","page_size":100}
 ```
 
+服务端历史输出中的 `message_id/thread_id/created_at_ms` 等部分字段仍用 `Json::UInt64` 编码为数字。JsonCpp 能保存 64 位无符号整数，客户端使用 qint64 和 SQLite 有符号整数，完整 uint64 范围并非端到端保证。
+
+`SerializeCompactJson()` 用 `StreamWriterBuilder` 将 indentation 设为空。历史分页按同一序列化方法计算字节，将响应控制在 4 KiB；不能按消息条数估算大小。`next_message_id/load_more` 决定客户端下一次请求，消息正文和元数据长度会影响实际一页数量。
+
+## 可信资源字段
+
+`BuildVerifiedImageJson()`、`BuildVerifiedFileJson()` 从已保存的消息模型构造确认和通知，字段含资源 ID、名字、MIME、大小和服务端消息 ID。图片还带宽高。客户端候选属性不直接成为权威元数据，ChatServer 通过 ResourceService 核验后再写库和构造响应。
+
+`asUInt64()` 是数值转换，无法替代整数判型与上限判断；本目录 JsonCpp 对负数执行范围检查，错误类型可能抛异常。`isMember()`、`isString()` 等应先于转换，非 const `operator[]` 缺成员会插入 null。
+
+## 构建与资源管理
+
+[CMakeLists.txt](../CMakeLists.txt) 编译本目录 `jsoncpp.cpp`，将 `json` 加入头文件目录，业务包含 `json.h`。[json.h](json/json.h) 标记 `1.9.8`。`Json::Value` 自己管理成员与字符串，不能保留指向已销毁 Value 内部数据的引用。
+
+部分响应使用 `toStyledString()`，历史使用紧凑输出，格式不应被描述为全服务统一。两台 ChatServer 的协议字段与校验规则需保持兼容，对端发送的 JSON 信封同样需要授权检查。
+
+完整 API 和精度边界见 [JSON主文](../../note/json.md)，持久化模型见 [聊天信息存储方案](../../note/聊天信息存储方案.md)。

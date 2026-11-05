@@ -1,38 +1,32 @@
-# jsoncpp
+# GateServer 的 JsonCpp 请求与响应
 
-在cpp网关服务中，网络通信底层boost.beast处理的是HTTP请求的原始字节流，而业务逻辑层需要的是结构化的数据
+## HTTP 数据流
 
-所以需要jsoncpp
+[LogicSystem.cpp](../src/LogicSystem.cpp) 从 Beast request body 取字节字符串，用 `CharReaderBuilder` 和 `parseFromStream()` 解析到 `Json::Value`，按 HTTP 路由读取字段，再构造响应对象并 `toStyledString()` 写入 Beast response body。
 
+HTTP body 的语法解析与业务校验相互独立：语法正确的数组、null、错误类型或缺字段均不能直接当成合法账号请求。当前网关校验不完整，`/get_varifycode` 检查 email 是否存在，其他多处直接调用 `asString()`；新增处理应明确检查根对象、成员类型和业务范围。
 
+## 解析与编码 API
 
-**解析请求 (反序列化)**：前端、小程序或其他服务发来的请求，其 Body 部分通常是 JSON 格式的字符串。C++ 网关服务使用 `jsoncpp` 可以将这段原始的字符串，解析成方便 C++ 代码直接访问和操作的对象（如 `Json::Value`），从而高效地读取其中的参数。
-
-**构造响应 (序列化)**：当网关处理完业务逻辑，需要返回数据给客户端时，`jsoncpp` 能把 C++ 的数据结构（如 `map`、`vector` 或自定义对象）重新打包成标准的 JSON 字符串，并通过 HTTP 响应发送回去。
-
-
-
-如何配置？
-
-首先下载jsoncpp源码 [地址](https://github.com/open-source-parsers/jsoncpp)
-
-然后运行`amalgamate.py` ，生成dist文件夹，json目录下就是文件，还有一个cpp，把源码放进去项目即可，然后在CMakeLists.txt中修改一下
-
-```
-# 收集 JsonCpp 的源文件
-set(JSONCPP_SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/jsoncpp/jsoncpp.cpp
-)
-
-# 添加可执行文件，把 JsonCpp 源文件也加进去
-add_executable(${PROJECT_NAME} 
-    main.cpp
-    ${JSONCPP_SOURCES}  
-)
-
-# 指定头文件搜索路径
-target_include_directories(${PROJECT_NAME} PRIVATE 
-    ${CMAKE_CURRENT_SOURCE_DIR}/jsoncpp/json  # JsonCpp 的路径
-)
+```cpp
+// body 来自 HTTP 请求；parsed 只说明 JSON 语法解析结果。
+Json::Value request;
+Json::CharReaderBuilder reader;
+std::string errors;
+std::istringstream input(body);
+const bool parsed = Json::parseFromStream(reader, input, &request, &errors);
 ```
 
+非 const `request["email"]` 在缺成员时插入 null；const 读取不会插入。`isMember()` 与 `isString()` 用于显式检查，`asString()` 不负责判断邮箱格式。`Json::Value` 自行管理字符串和成员内存，业务无需手动释放其子节点。
+
+响应中的 `error` 为业务状态，HTTP 成功收到正文仍需检查该字段。登录成功输出 `uid/email/token/host/port`。当前注册响应还回显密码和验证码，运维与客户端日志应避免记录这些实际值。
+
+## 编译接入
+
+[CMakeLists.txt](../CMakeLists.txt) 把本目录 `jsoncpp.cpp` 加入可执行目标，将 `json` 目录加入 include 搜索路径，业务使用 `#include "json.h"`。头文件 [json.h](json/json.h) 标记版本 `1.9.8`。随仓库的 amalgamated 源码已经可用于构建，无需在日常配置时重新运行生成脚本，也不要同时链接另一份重复实现。
+
+## 当前使用边界
+
+JSON 转换不提供认证或保密。客户端密码异或可逆，序列化不能代替 TLS。网关部分日志打印整个请求 body，排查时需保护密码、验证码和 token。
+
+注册与重置响应没有可靠传递所有数据库失败：注册未检查 `RegUser()` 返回值，重置未检查 `UpdatePwd()` 返回值，`error=0` 不能作为事务成功证据。完整字段、类型转换和客户端默认值规则见 [JSON主文](../../note/json.md)，账号事务见 [网关MySQL](../docx/mysql.md)。

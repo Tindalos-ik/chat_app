@@ -1,243 +1,121 @@
-# JSON 使用笔记（客户端 + 后端）
+# JSON 类型、编码与协议校验
 
-> 覆盖范围：
-> * **Qt 客户端**（`chat_app desktop/`）：`QJsonObject` / `QJsonDocument`，负责 HTTP 请求与 TCP 消息的序列化/反序列化
-> * **C++ 服务端**（GateServer / ChatServer）：**jsoncpp**（`Json::Value`），负责解析客户端请求、构造回包
-> * **Node.js**（VarifyServer）：只把 JSON 用于读 `config.json`，协议层走 gRPC（protobuf），不涉及 JSON 通信
->
-> 登录完整链路见 [login.md](login.md)。
+## 格式与使用位置
 
----
+JSON 的值包括对象、数组、字符串、数字、布尔和 null。对象成员名为字符串，字符串中的引号、反斜杠和控制字符需要转义。网络文本使用 UTF-8；字符数与 UTF-8 字节数不同，TCP 长度字段和消息大小限制必须按最终序列化字节数计算。
 
-### 为什么用 JSON 做通信格式
-
-这个项目的通信格式有三种，各司其职：
-
-| 场景 | 格式 | 原因 |
+| 位置 | 使用方式 | 代码入口 |
 | --- | --- | --- |
-| 客户端 ↔ GateServer（HTTP） | JSON | 跨语言（C++/Node.js）、人可读、调试方便 |
-| 客户端 ↔ ChatServer（TCP 消息体） | JSON | 同上，消息头仍是二进制（id + len） |
-| 服务间（StatusServer 等） | protobuf（gRPC） | 性能好、有 schema 强约束 |
-| 密码等敏感字段 | JSON 值 + 异或混淆 | 简单防明文，见 [数据库设计.md](数据库设计.md) 的说明 |
+| Qt 与 GateServer | HTTP body 中的 JSON | [GateServer LogicSystem](../GateServer/src/LogicSystem.cpp) |
+| Qt 与 ChatServer | 自定义 TCP 帧的 JSON body | [TcpMgr](../chat_app%20desktop/tcpmgr.cpp)、[ChatServer LogicSystem](../ChatServer1/src/LogicSystem.cpp) |
+| Qt 与 ResourceServer | 上传下载任务、Base64 分片与元数据 JSON | [LogicWorker](../ResourceServer/src/LogicWorker.cpp) |
+| ResourceServer 磁盘 | `meta.json` 保存任务状态 | [ResourceVerifier](../ResourceServer/src/ResourceVerifier.cpp) |
+| Node.js | `JSON.parse()` 读取运行配置 | [config.js](../VarifyServer/config.js) |
+| 服务间 | Protobuf；部分信封含 `payload_json` | [message.proto](../proto/message.proto) |
 
-JSON 的取舍：
+JSON 没有内置业务 schema。增加字段能否兼容取决于接收端是否接受未知字段；字段存在、类型、取值范围、授权和业务状态均需要程序判断。JSON 编码也不提供加密或消息边界，TCP 拆包由帧协议处理，详见 [TCP服务器](TCP服务器.md)。
 
-* **优点**：跨语言、可读、**加字段不破坏旧端**（宽松协议，收到不认识的多余字段直接忽略）；
-* **缺点**：体积大（键名重复）、解析慢、**无 schema**（拼错键名双方都不知道）。
+## Qt 的对象与字节流
 
----
-
-### 客户端（Qt）用法
-
-Qt 的 JSON 核心就两个类：
-
-* `QJsonObject`：一个 JSON 对象（键值对），对应 `{...}`；
-* `QJsonDocument`：负责对象和字节流之间的转换（序列化/反序列化）。
-
-#### 序列化：QJsonObject → 字节流（发请求）
+`QJsonObject` 保存对象，`QJsonArray` 保存数组，`QJsonDocument` 负责文档编码和解析。
 
 ```cpp
-// 1. 组装对象
-QJsonObject json_obj;
-json_obj["user"] = ui->user_edit->text();
-json_obj["passwd"] = xorString(ui->pwd_edit->text());   // 密码先异或再传输
-
-// 2. 转成字节流（默认 Compact 紧凑格式）
-QByteArray data = QJsonDocument(json_obj).toJson();
-
-// 3. 设置请求头，发 HTTP POST
-QNetworkRequest request(url);
-request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-request.setHeader(QNetworkRequest::ContentLengthHeader, QByteArray::number(data.length()));
-QNetworkReply* reply = _manager.post(request, data);
+// 将业务对象编码为 UTF-8 紧凑 JSON；HTTP/TCP 层另行设置长度和路由。
+QJsonObject request;
+request.insert("uid", 1001);
+request.insert("token", token);
+const QByteArray bytes = QJsonDocument(request).toJson(QJsonDocument::Compact);
 ```
 
-要点：
-
-* `QJsonDocument(json_obj).toJson()` 默认是**紧凑格式**（`{"user":"a","passwd":"b"}`），适合网络传输；
-* `Content-Type` 告诉服务器"请求体是 JSON"，`Content-Length` 告诉服务器读多少字节；
-* 赋值直接 `json_obj["键"] = 值`，字符串、int、bool 都支持，自动转成 `QJsonValue`。
-
-#### 反序列化：字节流 → QJsonObject（收回包）
+`toJson()` 默认参数是 `QJsonDocument::Indented`，紧凑格式要显式传 `Compact`。项目中格式化与紧凑写法共存；协议体积限制应与实际发送的格式一致。JSON 空白不影响解析后的含义，但会影响帧长度。
 
 ```cpp
-void RegisterDialog::slot_reg_mod_finish(ReqId id, QString res, ErrorCodes err)
-{
-    // 1. 字符串 → UTF-8 字节 → JSON 文档
-    QJsonDocument jsonDoc = QJsonDocument::fromJson(res.toUtf8());
-
-    // 2. 双重检查：解析失败 或 不是对象
-    if(jsonDoc.isNull() || !jsonDoc.isObject()){
-        showtip(tr("json解析失败"),"err");
-        return;
+// error 捕获语法错误；对象检查拒绝语法正确的数组或标量。
+QJsonParseError error;
+const QJsonDocument document = QJsonDocument::fromJson(bytes, &error);
+if (error.error == QJsonParseError::NoError && document.isObject()) {
+    const QJsonObject object = document.object();
+    if (object.contains("error") && object.value("error").isDouble()) {
+        const int businessError = object.value("error").toInt();
     }
-
-    // 3. 文档 → 对象，交给 handler 按 ReqId 分发
-    _handlers[id](jsonDoc.object());
 }
 ```
 
-取值：
+缺失成员产生 Undefined，`toInt()` 等转换可能给默认值。不能把“没有 error 字段”当成 `error=0`。字符串、数组、布尔等也应先判型；转换成功不等于符合业务范围。
+
+## JsonCpp API 与所有权
+
+五个 C++ 服务各自编译仓库内 `jsoncpp/jsoncpp.cpp`，由 CMake 将 `jsoncpp/json` 加入 include 路径。业务包括 `json.h`，使用 `Json::Value`、`CharReaderBuilder`、`parseFromStream()`、`StreamWriterBuilder`、`writeString()`；无需再次手工生成或下载源码。随仓库头文件的版本标记可在 [GateServer json.h](../GateServer/jsoncpp/json/json.h) 查看。
 
 ```cpp
-int err = jsonObj["error"].toInt();            // 数字
-QString email = jsonObj["email"].toString();   // 字符串
-if(jsonObj.contains("error")) { ... }          // 判断键是否存在
-```
-
-> **大坑（客户端）**：`QJsonValue` 在键不存在时返回**安全默认值**——`toInt()` 返回 0、`toString()` 返回空串。这不会崩，但会**悄悄掩盖错误**：比如服务器回包漏了 `"error"` 字段，你拿到 0 还以为成功。严格场景建议先 `contains()` 再取值（TcpMgr 就是这么做的）。
-
-#### TCP 消息里的 JSON（tcpmgr.cpp）
-
-发送时它用了**缩进格式**：
-
-```cpp
-QJsonDocument doc(json_obj);
-QString jsonString = doc.toJson(QJsonDocument::Indented);  // 带缩进、换行
-```
-
-接收时先 `QJsonDocument::fromJson(data)`，然后检查 `isNull()` 和 `contains("error")`：
-
-```cpp
-if(jsonDoc.isNull()){
-    emit sig_login_failed(ErrorCodes::ERR_JSON);
-    return;
-}
-QJsonObject json_obj = jsonDoc.object();
-if(!json_obj.contains("error")){ ... }
-```
-
-> 小知识点：`Indented` 格式每个键一行、带缩进，人眼好读，但**体积和带宽都更浪费**。HTTP 请求用 Compact 是对的，TCP 消息体其实也应该用 Compact（`toJson()` 默认），教学项目无所谓，知道差别即可。
-
----
-
-### C++ 服务端（jsoncpp）用法
-
-jsoncpp 的核心是 `Json::Value`——一个万能 JSON 容器，数组、对象、字符串、数字都是它。
-
-#### 解析请求
-
-```cpp
-Json::Value src_root;                 // 解析结果放这里
-Json::CharReaderBuilder reader;       // 解析器
-std::istringstream ss(body_str);      // 请求体转成流
-std::string errs;
-
-bool parse_success = Json::parseFromStream(reader, ss, &src_root, &errs);
-if(!parse_success){
-    root["error"] = ErrorCode::Error_Json;   // 解析失败返回错误码
-    ...
+// 将输入流解析为对象；解析错误与字段错误由调用方返回对应业务码。
+Json::CharReaderBuilder reader;
+Json::Value request;
+std::string errors;
+std::istringstream input(body);
+const bool parsed = Json::parseFromStream(reader, input, &request, &errors);
+if (parsed && request.isObject() && request.isMember("email") && request["email"].isString()) {
+    const std::string email = request["email"].asString();
 }
 ```
 
-#### 取键
+`parseFromStream()` 返回语法解析结果，成功后仍要检查根类型和字段。默认解析设置不等同于业务严格 schema，不能依据解析成功就信任请求。
+
+`Json::Value` 按值管理对象、数组和字符串，无需逐成员释放。非 const 对象的 `operator[]` 会为缺失 key 创建 null 成员；const 重载返回 null 值且不插入。`isMember()`、`isString()`、`isBool()`、`isUInt64()` 等用于显式校验。
+
+`asString()` 不会把任意对象安全地变成 JSON 文本；类型不合适可能触发库的异常或断言路径。null、布尔和数字转换规则也不代表满足业务类型。当前随仓库 JsonCpp 的 `asUInt64()` 对负数执行范围检查，不能依赖负数转换为大数的行为，更不能把转换方法当作非负整数验证器。
+
+构造输出片段：
 
 ```cpp
-std::string user  = src_root["user"].asString();
-std::string email = src_root["email"].asString();
-std::string varifycode = src_root["varifycode"].asString();
+// 生成紧凑文本，适合按实际字节数做帧大小判断。
+Json::Value response(Json::objectValue);
+response["error"] = 0;
+response["messages"] = Json::Value(Json::arrayValue);
+Json::StreamWriterBuilder writer;
+writer["indentation"] = "";
+const std::string body = Json::writeString(writer, response);
 ```
 
-> **大坑（服务端）**：jsoncpp 的 `[]` 运算符有个危险特性——**键不存在时会自动创建一个空成员**。也就是说拼错键名不会报错，而是悄悄往 `src_root` 里塞了一个新键，取出来是空字符串。排查"为什么字段一直是空的"时，先检查键名有没有拼错，或改用 `isMember("user")` 判断。
+`toStyledString()` 生成格式化文本，当前网关和部分 TCP 响应使用它；历史分页等路径使用紧凑写入。任意 `map/vector/自定义结构` 都需要先明确转换为 `Json::Value`，JsonCpp 不会自动理解所有 C++ 业务类型。
 
-#### 构造回包
+## 64 位 ID 与精度
 
-```cpp
-Json::Value root;
-root["error"] = ErrorCode::Success;      // 数字
-root["uid"] = user_info.uid;
-root["email"] = user_info.email;
-root["token"] = reply.token();
-root["host"] = reply.host();
-root["port"] = reply.port();
+JSON 文本可写十进制整数，但不同语言的数字容器能力不同。JavaScript Number 和经过 double 的转换仅能连续精确表示到 `2^53-1`。JsonCpp 支持 `Json::Int64/UInt64`，可精确保存对应范围内整数；一旦先转 double，之后再转回整数无法恢复丢失位。
 
-std::string jsonstr = root.toStyledString();  // 转成字符串（带缩进）
-beast::ostream(connection->_response.body()) << jsonstr;
+Qt 6 支持保存有符号 64 位整数，应用仍需避免 `toDouble()` 中转；它不能保证完整 `uint64_t` 范围可映射到 `qint64`。本项目客户端、SQLite 数据模型广泛使用有符号 `qint64`，服务端部分表与 proto 使用 uint64，完整无符号上限并非当前端到端可用范围。
+
+当前协议具有两种实际形式：
+
+- Qt 的历史请求、群会话 ID、版本等通过十进制字符串发送。ChatServer 的 `ParseUint64StringField()` 使用 `from_chars` 校验非空、完整消费和溢出，拒绝负数、非数字及超范围值。
+- 部分服务端响应仍以 `Json::UInt64` 输出 JSON 数字，例如 `message_id`、`thread_id`、`created_at_ms`、`file_size`；客户端存在 `toInteger()` 或 `toVariant().toLongLong()` 读取路径，不能笼统写成“所有 64 位字段均为字符串”。
+
+请求示例：
+
+```json
+{
+  "thread_id": "10001",
+  "after_message_id": "9007199254740993"
+}
 ```
 
-`toStyledString()` 相当于 Qt 的 `Indented`，也是给人看的格式，项目里服务端回包都这么发。
+字段名和方向由具体消息决定。新增或迁移跨语言 ID 时，应明确范围和字符串约定，并同时更新两端解析；不能在只有一端改成字符串后假定旧端也能读取。Node proto-loader 的 `longs: String` 只影响 Protobuf 到 JavaScript 的映射，不会改变 HTTP/TCP JSON 字段。
 
-ChatServer 里配合 `Defer` 自动发送回包（登录成功才填用户信息，失败直接 return 也会发 error）：
+## 当前 HTTP 字段与真实边界
 
-```cpp
-Json::Value rtvalue;
-Defer defer([this, &rtvalue, session]{
-    std::string return_str = rtvalue.toStyledString();
-    session->Send(return_str, MSG_CHAT_LOGIN_RSP);
-});
-
-rtvalue["error"] = rsp.error();
-if(rsp.error() != ErrorCode::Success) return;   // 直接走 Defer 发错误回包
-// 填用户信息...
-```
-
----
-
-### Node.js（VarifyServer）
-
-VarifyServer **不参与 JSON 通信**——它对外是 gRPC 服务，协议是 protobuf。JSON 只出现在配置文件：
-
-```js
-let config = JSON.parse(fs.readFileSync('config.json', 'utf8')); // 读配置
-```
-
-所以 JSON 的跨语言互操作主要体现在"Qt 客户端 ↔ C++ 网关/聊天服务器"这一段，Node.js 那段由 protobuf 负责。
-
----
-
-### 协议字段约定（JSON 版）
-
-#### HTTP 请求（客户端 → GateServer）
-
-| 路由 | 字段 |
-| --- | --- |
-| `/get_varifycode` | `email` |
-| `/user_register` | `user`, `email`, `passwd`(异或), `confirm`(异或), `varifycode` |
-| `/user_login` | `user`, `passwd`(异或) |
-| `/user_resetpassword` | `user`, `email`, `passwd`(异或), `varifycode` |
-
-#### HTTP 回包（GateServer → 客户端）
-
-| 场景 | 字段 |
-| --- | --- |
-| 注册成功 | `error=0`, `email`, `user`, `passwd`, `confirm`, `varifycode` |
-| 登录成功 | `error=0`, `uid`, `email`, `token`, `host`, `port` |
-| 重置成功 | `error=0` |
-| 各种失败 | `error=<错误码>` |
-
-错误码见 `global.h` / `const.h`：`0` 成功，`1001` JSON 解析失败，`1007` 用户名存在，`1008` 密码错误，`1009` 用户不存在……
-
-#### TCP 消息（客户端 ↔ ChatServer）
-
-| 消息 | 字段 |
-| --- | --- |
-| `MSG_CHAT_LOGIN`（请求） | `uid`, `token` |
-| `MSG_CHAT_LOGIN_RSP`（回包） | `error`, `uid`, `user`, `email`, `pwd`, `nick`, `sex`, `icon`, `desc` |
-
----
-
-### 常见坑汇总
-
-| 坑 | 后果 | 正确做法 |
+| 路由 | 请求主要字段 | 成功响应主要字段 |
 | --- | --- | --- |
-| 客户端缺键直接取值 | `toInt()` 返回 0、`toString()` 返回空串，错误被掩盖 | 先 `contains()` 再取值 |
-| jsoncpp `[]` 拼错键名 | 悄悄创建空成员，字段永远为空 | 检查键名 / `isMember()` 判断 |
-| 服务端把 `pwd` 放进回包 | 密码（虽然是异或串）发给客户端，泄露面变大 | 回包不包含 `pwd`/`passwd` 这类字段 |
-| 注册回包原样回显 `passwd`/`confirm`/`varifycode` | 多余回显，验证码和密码都暴露在响应里 | 只回 `error` + 必要字段 |
-| TCP 消息体用 `Indented` | 带宽浪费 | 消息体用 Compact，调试时再看格式化 |
-| 中文乱码 | 服务端收不到正确内容 | 客户端 `toUtf8()`，数据库 utf8mb4，HTTP 头 charset 一致 |
-| uid 类型不一致 | `asInt` 和 `asString` 混用取错值 | 客户端发数字，服务端 `asInt()`，两端对齐 |
-| 解析失败不处理 | 后续 `root["x"]` 全空，行为诡异 | 先判 `parse_success` / `isNull()`，失败回 `ERR_JSON` |
-| 忘了 `isObject()` 检查 | 服务器返回数组/字符串时 `.object()` 行为异常 | `isNull() || !isObject()` 双重检查 |
+| `/get_varifycode` | `email` | `error`、`email` |
+| `/user_register` | `user`、`email`、`passwd`、`confirm`、`varifycode` | 当前回显以上字段与 `error` |
+| `/user_login` | `user`、`passwd` | `error`、`uid`、`email`、`token`、`host`、`port` |
+| `/user_resetpassword` | `user`、`email`、`passwd`、`varifycode` | `error` |
 
----
+网关当前多处只检查语法，字段类型校验不完整。注册在调用 `RegUser()` 前构造成功响应，且没有检查其返回值；重置也未将 `UpdatePwd()` 失败映射到响应。因此响应的 `error=0` 不能在这些路径上作为数据库提交证据。
 
-### 面试/复习自测
+当前注册回显密码和验证码，部分日志也打印请求；这些是敏感数据暴露边界，使用和排查时不要复制实际值到文档。客户端异或密码可逆，JSON、Base64、异或都不提供传输加密；当前实现不能据此认定账号安全。
 
-* `QJsonDocument::fromJson` 解析失败会怎样？怎么判断？
-* `QJsonValue` 缺键时 `toInt()` / `toString()` 返回什么？为什么说它"安全但不安全"？
-* jsoncpp 的 `Value::operator[]` 和 Qt 的 `QJsonObject::operator[]` 在"键不存在"时的行为有什么区别？
-* 为什么客户端和 C++ 服务端都用 JSON，而服务间用 protobuf？
-* `toJson()` 和 `toJson(QJsonDocument::Indented)` 有什么区别？TCP 消息该用哪个？
-* 注册流程里，客户端发的 `passwd` 和数据库存的 `pwd` 是什么关系？
-* JSON 协议没有 schema，两端靠什么保证字段一致？
+## 帧大小与不可信数据
+
+ChatServer 历史响应按最终紧凑 JSON 字节数限制在 4 KiB 范围，并分页；只限制消息条数无法约束长文本和资源元数据的体积。ResourceServer 下载分片使用 Base64，原始字节编码后约增大为四分之三的倒数，还需预留 JSON 字段开销；资源侧设置较小分片是为满足帧限制。
+
+文件大小、偏移、尺寸需先确认整数类型和非负，再校验上限与加法溢出。客户端提交的路径、文件名、MIME、资源 ID 均需按资源协议验证，JSON 解析不提供路径安全或访问权限。当前资源可信元数据来自 ResourceServer 的任务与实际文件核验，进一步见 [资源服务](资源服务.md)。

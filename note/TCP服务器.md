@@ -1,486 +1,90 @@
-# TCP 服务器搭建总结（ChatServer）
+# TCP 服务器
 
-基于 Boost.Asio 实现 TCP 长连接服务器。
-涉及文件：`ChatServer.cpp`、`CServer`、`AsioIOServicePool`、`CSession`、`MsgNode`、`LogicSystem`。
+## 线程与组件
 
----
-
-## 1. 整体架构
-
-一个 TCP 服务器至少要处理三件事：**接连接、收数据、发数据**。本项目把它拆成了几个各司其职的组件：
-
-| 组件 | 职责 |
+| 组件 | 数据与职责 |
 | --- | --- |
-| `ChatServer.cpp`（main） | 启动入口：创建主 `io_context`、线程池、CServer，并捕获退出信号优雅关闭 |
-| `CServer` | 监听端口、接受新连接、用 `map` 管理所有存活会话 |
-| `AsioIOServicePool` | IO 线程池：N 个 `io_context`，每个跑一个线程，用 round-robin 分配连接 |
-| `CSession` | 单个连接上的全部收发逻辑：读包头→读包体→投递逻辑层，以及发送队列 |
-| `MsgNode` / `RecvNode` / `SendNode` | 消息内存节点：存放包头和包体，负责组装/解析消息 |
-| `LogicSystem` | 逻辑层（单例）：一个工作线程消费消息队列，按 `msg_id` 分发处理 |
+| `ChatServer.cpp` | 主 `io_context` 驱动监听器、心跳扫描及退出信号；另启动 gRPC 服务 |
+| `CServer` | 以 `session_id` 为键保存 `shared_ptr<CSession>`，登记连接、移除连接、扫描超时 |
+| `AsioIOServicePool` | 多个 `io_context` 各有一个线程与 work guard，新连接轮询分配执行器 |
+| `CSession` | 单连接字节流解析、发送队列、UID 绑定、活跃时间与断线清理 |
+| `LogicSystem` | 一个工作线程消费完整业务帧，按消息 ID 查回调；执行数据库和跨服调用 |
+| `ChatServiceImpl` | gRPC 工作线程接收跨服通知，与 TCP 业务共享本机 `UserMgr` 和真实 `CServer` |
 
-**线程模型**（三层分工）：
-
-```text
-主线程:     io_context.run() ──→ acceptor 监听新连接
-IO线程池:   20 个 io_context，每个线程一个 ──→ 连接的读写回调
-逻辑线程:   LogicSystem 工作线程 ──→ 处理业务（登录校验、消息转发）
+```mermaid
+flowchart LR
+    A[主线程 accept] --> B[登记 CSession]
+    B --> C[连接所属 I/O 线程]
+    C --> D[TcpFrameParser]
+    D --> E[完整业务帧队列]
+    E --> F[单个 LogicSystem 工作线程]
+    D --> G[1023 直接生成 1024]
+    F --> H[Session 发送队列]
+    G --> H
 ```
 
-网络层（IO 线程）只负责收发，不碰业务；业务层通过队列解耦，避免耗时操作卡住 IO 线程。
+work guard 让没有任务的 `run()` 保持等待。它不执行业务；`GetIOService()` 用原子索引轮询分配连接。队列锁只保护入队、出队，`DealMsg()` 取出节点后释放锁，再执行数据库/RPC，避免耗时业务阻塞 I/O 入队。单业务线程仍可能使其他业务请求排队；心跳绕过此队列。
 
----
+## 帧的数据模型
 
-## 2. 启动流程（main）
+| 偏移 | 长度 | 内容 |
+| ---: | ---: | --- |
+| 0 | 2 字节 | 无符号消息类型，大端序 |
+| 2 | 2 字节 | UTF-8 JSON 包体字节数，大端序 |
+| 4 | 包体长度 | JSON 原始字节，不附加线上字符串终止符 |
 
-```cpp
-int main() {
-    try {
-        auto& config = ConfigMgr::Inst();
-        auto pool = AsioIOServicePool::GetInstance();      // 启动 IO 线程池
-        boost::asio::io_context io_context;                // 主线程专用，负责 accept
+服务端 `TcpFrameParser` 实际校验消息 ID 和包体长度均为 `1..2048`。输入包体最大为 **2048 字节**，整帧最大为 **2052 字节**；读取数组大小不决定一帧大小，因为解析器会保存跨读取状态。ID 在范围内仅表示头部合法，是否注册处理器、JSON 是否有效和业务权限由后续逻辑决定。
 
-        // 捕获 Ctrl+C / 终止信号，做优雅退出
-        boost::asio::signal_set signals(io_context, SIGINT, SIGTERM);
-        signals.async_wait([&io_context, pool](auto, auto) {
-            io_context.stop();   // 停主线程
-            pool->Stop();        // 停 IO 线程池（join 所有线程）
-        });
+例如 1023 携带 `{}`，线上十六进制字节为 `03 FF 00 02 7B 7D`。长度按 UTF-8 字节计算，中文字符不能按 `QString::length()` 计数。发送端 `SendNode` 预先组装头和包体，异步写期间节点必须持续存活。
 
-        auto server = std::make_shared<CServer>(
-            io_context, std::stoi(config["SelfServer"]["port"]));
-        server->Start(); // 必须在 shared_ptr 接管后注册异步回调
-        io_context.run();        // 主线程阻塞在这里，等待连接或退出信号
-    } catch (std::exception& e) {
-        std::cout << "Exception : " << e.what() << std::endl;
-    }
-}
+### 半包与多帧
+
+`Feed(data, length, frames)` 依次填满四字节头部、校验头部、调整包体缓冲区、填满包体并输出帧。剩余字节继续解析下一帧。只到达部分头或部分包体时保留状态，等待下次读取。
+
+```mermaid
+stateDiagram-v2
+    [*] --> 等待包头
+    等待包头 --> 等待包头: 不足4字节
+    等待包头 --> 等待包体: 完整合法头
+    等待包体 --> 等待包体: 数据不足
+    等待包体 --> 等待包头: 输出完整帧
+    等待包头 --> 失败: 非法ID或长度
 ```
 
-要点：主 `io_context` 只跑 acceptor，保证"接受连接"是串行的；真正处理数据的读写分散到线程池里的各个 `io_context`，充分利用多核。
+解析失败后解析器持续返回失败，`CSession` 关闭连接。同一批输入中若前面已有完整帧、后面才出现非法头，前面的帧先处理，随后断线。半包本身不会更新活跃时间。
 
----
+Qt 的 `TcpMgr::readyRead` 将 `readAll()` 追加到 `_buffer`，循环消费所有完整帧。`_b_recy_pending=true` 表示已经消费头部，接下来只等待该包体；不足包体时直接返回，下一次不能重新解析头部。消费完整包体后复位，再继续读下一个头。断线清空缓冲区和状态。Qt 接收路径没有服务端相同的 2048 字节头校验，通用发送函数仅检查两字节长度可表示范围；群请求另有 2048 字节限制。
 
-## 3. CServer：监听与接受连接
+### 输入和输出上限
 
-```cpp
-void CServer::StartAccept() {
-    // 从线程池轮询取一个 io_context 创建会话（该连接的读写都绑定到这个线程）
-    auto& io_context = AsioIOServicePool::GetInstance()->GetIOService();
-    auto new_session = std::make_shared<CSession>(io_context, weak_from_this());
-    std::weak_ptr<CServer> weak_server = weak_from_this();
-    // 在主 io_context 上异步接受，把 socket 交给会话保管
-    _acceptor.async_accept(new_session->GetSocket(),
-        [weak_server, new_session](const boost::system::error_code& error) {
-            if (auto server = weak_server.lock()) {
-                server->HandleAccept(new_session, error);
-            }
-        });
-}
+历史 `1030` 的服务端紧凑 JSON 预算为 4096 字节；Qt 可以接收这类响应。输入 2048、历史输出 4096 和两字节字段可表示范围属于不同限制。普通 `TrySend` 仅拒绝正文超过 32767 字节，未统一执行历史/群业务预算；不能据此推断所有业务发送都满足接收端上限。
 
-void CServer::HandleAccept(std::shared_ptr<CSession> new_session,
-                           const boost::system::error_code& error) {
-    if (!error) {
-        new_session->Start();                          // 成功：开始收包
-        std::lock_guard<std::mutex> lock(_mutex);
-        _sessions.insert({new_session->GetSessionId(), new_session}); // 登记，维持生命周期
-    } else {
-        std::cout << "session accept failed, error is " << error.message() << std::endl;
-    }
-    StartAccept(); // 无论成败都要继续接受下一个连接（长连接服务器）
-}
-```
+## 串行发送与背压
 
-- `_sessions`：`map<session_id, shared_ptr<CSession>>`，用互斥锁保护（accept 回调在主线程，清理在 IO 线程）。
-- 会话断开时调用 `ClearSession(session_id)` 从 map 移除；仍在执行的读写回调可以继续持有 Session，回调结束后才析构。
-- `_io_context` 引用由 `CServer` 持有，并用于驱动 `steady_timer`：每 10 秒扫描一次心跳超时会话。
-- `CServer::Start()` 和 `Stop()` 分别注册、取消 accept/timer；回调捕获 `weak_ptr<CServer>`，不使用裸 `this`。
+每个 Session 有互斥锁保护的 `queue<shared_ptr<SendNode>>`。入队前队列为空时启动一次 `async_write`；写成功弹出队首，非空则启动下一次。异步写组合操作会处理底层部分写，同一 socket 的多个组合写需要这样串行化。
 
----
+`TrySend` 在连接已进入断线清理、等待发完关闭、正文超过 32767 字节或当前队列长度大于 `MAX_SENDQUE=1000` 时返回 false。判断使用 `>`，因此当前长度为1000时仍可追加一个节点。`Send(std::string, id)` 丢弃这个布尔结果；私聊的实时成功标志无法精确证明队列已接纳。群授权和音视频信令采用 `TrySend` 检查接纳结果。`MAX_RECVQUE=10000` 有常量定义，`PostMsgToQue` 没有据此限制队列长度。
 
-## 4. AsioIOServicePool：IO 线程池
+`NotifyOffline()` 将1021追加到现有队列并设置 `_close_after_send`，普通发送随后被拒绝。已有消息与1021写完后，`HandleWrite()` 才调用 `HandleDisconnect()`。该流程没有发送排空期限或客户端确认，慢对端可延迟关闭。
 
-```cpp
-class AsioIOServicePool : public Singleton<AsioIOServicePool> {
-    ...
-    std::vector<boost::asio::io_context> _ioServices;              // N 个 io_context
-    std::vector<executor_work_guard<...>> _workGuards;             // 工作保持器
-    std::vector<std::thread> _threads;                             // N 个线程
-    std::atomic<std::size_t> _nextIOService;                       // 轮询索引
-};
-```
+## 会话所有权与停止
 
-三个关键点：
+accept 成功后先在 `_sessions` 登记，再调用 `Start()`，避免首次读错误清理后又把失效会话登记回去。Session 读写回调持有自身强引用；逻辑队列也持有 Session。移出容器只取消登记，实际析构要等最后一个强引用释放。
 
-1. **work_guard（工作保持器）**：`io_context::run()` 在没有任务时会立刻返回。用 `make_work_guard(ioc)` 造一个"假任务"，让 `run()` 一直阻塞等待，即使当前没有连接也不退出。
-2. **round-robin 分发**：`GetIOService()` 每次返回下一个 `io_context`（原子自增取模），把新连接平均分到不同线程。
-3. **Stop()**：先 `reset()` 所有 work_guard，再 `stop()` 所有 `io_context`，最后 `join()` 线程。`reset` 和 `stop` 缺一不可：只 reset，已绑定的读写事件还会让 `run()` 阻塞；只 stop，后续无法正常收尾。
+CServer 回调捕获弱引用，Session 也弱引用所属服务器。`make_shared<CServer>` 后调用 `Start()`，使 `weak_from_this()` 有效。`Stop()` 设置停止标记并取消 timer、acceptor，禁止取消回调重新注册监听。
 
-> 注意：老版本的 `io_context::work` 在新版 Boost 中已弃用，用 `executor_work_guard` 代替。
+进程退出按监听停止、主循环停止、I/O 池停止、gRPC关闭与等待、逻辑队列排空、解除服务器强引用的顺序执行。`io_context::stop()` 不承诺执行全部待完成回调，也不承诺把所有发送队列写完。具体顺序和 Qt 退出规则见[异常处理](异常处理.md)。
 
----
+## 配置与操作
 
-## 5. 自定义协议与粘包/半包处理
+1. 在实例 `config.ini` 的 `[SelfChatServer]` 配置唯一 `name`、对外返回地址 `host`、客户端TCP `port` 和服务间 `rpcport`。监听器使用 `tcp::v4()`，绑定所有 IPv4 接口，`host` 不限制 TCP 监听网卡。
+2. 保持 StatusServer 的 ChatServer 名称/地址、Redis `uip_<uid>` 值与 `[PeerServer]` 连接池名称一致。客户端连接8090/8091，跨服调用使用50055/50056，部署可自行修改。
+3. 服务依赖 MySQL、Redis；图片/文件发送还依赖 ResourceServer核验。配置被 CMake 复制到二进制 `Debug` 目录，运行目录中的配置必须与部署一致。
+4. 诊断拆分为TCP建立、1005/1006认证、完整帧解析、业务队列与数据库、实时转发五段。socket 已连接不代表登录成功，写成功不代表界面已展示。
 
-### 5.1 消息格式
+## 代码与交叉阅读
 
-TCP 是**字节流**，没有消息边界。所以双方约定一个固定格式：
-
-```text
-包头（4字节）         			包体（n字节）
-┌─────────────┬────────────────────────┐
-│ msg_id(2字节) │ msg_len(2字节) │ body  │
-└─────────────┴────────────────────────┘
- 消息id，网络字节序   包体长度，网络字节序
-```
-
-### 5.2 粘包 / 半包
-
-- **粘包**：发送方连续发两条消息，接收方一次 `read` 可能读到两条粘在一起的数据。
-- **半包**：一条消息太长，一次 `read` 只读到一部分。
-
-服务端 `CSession::ReadSome()` 每次接收一段任意长度的字节，并交给 `TcpFrameParser::Feed()`。解析器保存未读完的包头或包体；每凑齐一帧，就按收到的顺序返回给会话处理。一次读取含多帧时会逐帧处理；尾部不足一帧则留到下次读取。
-
-核心调用：
-
-```cpp
-void CSession::ReadSome() {
-    auto self = shared_from_this();
-    _socket.async_read_some(boost::asio::buffer(_data, sizeof(_data)),
-        [self, this](const boost::system::error_code& ec, std::size_t count) {
-            if (ec) { HandleDisconnect(); return; }
-            std::vector<chat_protocol::TcpFrame> frames;
-            const auto result = _frame_parser.Feed(_data, count, frames);
-            for (const auto& frame : frames) {
-                HandleFrame(frame);
-                if (_disconnect_handled.load()) return;
-            }
-            if (!result.IsOk()) { HandleDisconnect(); return; }
-            ReadSome();
-        });
-}
-```
-
-### 5.3 防恶意包
-
-包头的消息 ID 和长度都必须校验。`TcpFrameParser` 只接受 1 到 `MAX_LENGTH`；非法头部会让解析器进入失败状态，`CSession` 调用 `HandleDisconnect()`：
-
-```cpp
-if (msg_id == 0 || msg_id > MAX_LENGTH) return InvalidMessageId;
-if (msg_len == 0 || msg_len > MAX_LENGTH) return InvalidBodyLength;
-```
-
-如果不校验，攻击者伪造一个超大 `msg_len`（比如 65535）会让接收端为异常长度分配缓存；校验发生在调整包体缓存大小之前。
-
-### 5.4 本次修复：客户端也必须按同一状态机收包
-
-服务端的 `CSession` 用增量解析器恢复帧边界；半包留在解析器内部，粘在一起的多帧在同一次 `Feed()` 中按顺序返回。
-
-客户端 `TcpMgr` 虽然使用 Qt 的 `QTcpSocket::readyRead`，但面对的是同一条 TCP 字节流，也必须遵守同一规则。此次发送文本消息时暴露了两个客户端收包问题：
-
-| 场景 | 原来会发生什么 | 修复方式 |
-| --- | --- | --- |
-| 包头已到、包体没到齐（半包） | 代码移除了 4 字节包头，却没有记录“正在等该包包体”；下次 `readyRead` 又把包体前 4 字节当成新包头，整个流随即错位 | 解析包头后设 `_b_recy_pending = true`；包体完整且已消费后才恢复 `false` |
-| 一次 `readyRead` 收到多包（粘包） | 每次回调只解析一包，后面的完整包留在 `_buffer` 中，若之后没有新数据就一直不处理 | 用 `while (true)` 持续消费，直到缓冲区不足一个完整包才返回 |
-
-文本聊天中这很容易出现：同服转发时，发送方可收到 `1018` 文本回包，接收方收到 `1019` 推送；多个服务端包可能在一次 `readyRead` 一起到达。若客户端只处理第一个包，业务看起来就像“消息没有成功发送”或“回包丢了”，实际是剩余字节没有被正确解包。
-
-修复后的接收流程如下。这里的 `return` 不代表丢数据，未消费的字节仍保留在成员变量 `_buffer` 中，等待下一次 `readyRead` 继续处理：
-
-```cpp
-connect(&_socket, &QTcpSocket::readyRead, [this] {
-    _buffer.append(_socket.readAll());
-
-    while (true) {
-        if (!_b_recy_pending) {
-            if (_buffer.size() < HEAD_TOTAL_LEN) {
-                return; // 连 4 字节包头都未到齐
-            }
-
-            QDataStream stream(&_buffer, QIODevice::ReadOnly);
-            stream.setByteOrder(QDataStream::BigEndian);
-            stream >> _message_id >> _message_len;
-            _buffer = _buffer.mid(HEAD_TOTAL_LEN);
-            _b_recy_pending = true; // 包头已经消费，接下来只能等这个包体
-        }
-
-        if (_buffer.size() < _message_len) {
-            return; // 包体未到齐，不能重新解析新包头
-        }
-
-        const QByteArray body = _buffer.left(_message_len);
-        _buffer = _buffer.mid(_message_len);
-        _b_recy_pending = false; // 这一整包已消费，下一轮从新包头开始
-
-        DispatchMessage(_message_id, body);
-    }
-});
-```
-
-状态转换可以记成下面四步：
-
-```text
-等待包头 --(攒够 4B，解析并移除包头)--> 等待包体
-等待包体 --(数据不足)--------------------> 继续等待包体
-等待包体 --(攒够 msg_len，分发并移除包体)-> 等待包头
-等待包头 --(缓冲区还有完整下一包)--------> 立即继续解析
-```
-
-> `_b_recy_pending` 不是“缓冲区是否有数据”的标志，而是“包头是否已经消费”的标志。只要包头已消费而包体未完整，就绝不能把 `_buffer` 开头的字节重新解释成包头。
-
-断开时还要清空 `_buffer` 并把 `_b_recy_pending` 复位，避免下一次重新连接后误用旧连接的残留字节。发送端同样应在写入前检查 `QTcpSocket::ConnectedState`，否则 `write()` 只会把失败留在异步错误信号里，界面层难以判断。
-
----
-
-## 6. MsgNode：消息节点的内存布局
-
-### 6.1 基类 MsgNode
-
-```cpp
-class MsgNode {
-public:
-    MsgNode(short max_len) : _total_len(max_len), _cur_len(0) {
-        _data = new char[_total_len + 1]();  // 多分配 1 字节，放字符串结束符 '\0'
-        _data[_total_len] = '\0';
-    }
-    void Clear() { memset(_data, 0, _total_len); _cur_len = 0; } // 复用节点
-    short _cur_len;    // 已读写字节数
-    short _total_len;  // 缓冲区总长度
-    char* _data;       // 数据
-};
-```
-
-- `_total_len` 只存"内容长度"，发送节点实际数据 = 头部 4 字节 + 内容。
-- `Clear()` 让节点可复用，减少频繁 `new/delete`。
-
-### 6.2 RecvNode（接收节点）
-
-```cpp
-class RecvNode : public MsgNode {
-    friend class LogicSystem;            // 逻辑层需要读 _msg_id 做路由
-public:
-    RecvNode(short max_len, short msg_id) : MsgNode(max_len), _msg_id(msg_id) {}
-private:
-    short _msg_id;                       // 消息id，来自包头
-};
-```
-
-会话层读包头时创建：`_recv_msg_node = make_shared<RecvNode>(msg_len, msg_id);`，然后读包体填 `_data`。
-
-### 6.3 SendNode（发送节点）
-
-```cpp
-class SendNode : public MsgNode {
-public:
-    SendNode(const char* msg, short max_len, short msg_id)
-        : MsgNode(max_len + HEAD_TOTAL_LEN), _msg_id(msg_id) {
-        short id   = host_to_network_short(msg_id);   // id 转网络字节序
-        short len  = host_to_network_short(max_len);  // 长度转网络字节序
-        memcpy(_data, &id, HEAD_ID_LEN);              // 写 id
-        memcpy(_data + HEAD_ID_LEN, &len, HEAD_DATA_LEN); // 写长度
-        memcpy(_data + HEAD_TOTAL_LEN, msg, max_len); // 写包体
-    }
-private:
-    short _msg_id;
-};
-```
-
-发送节点在**构造时就拼好整个包**（头部 + 包体），`async_write` 一次写出，避免发送时反复拼包。
-
----
-
-## 7. 发送队列
-
-### 7.1 为什么需要发送队列
-
-`async_write` 是异步的，如果上层连续调用两次 `async_write`：
-
-- 第一个写还没完成，第二个写就发起，同一 socket 的并发写**行为未定义**；
-- 即使能写，两条消息的顺序也无法保证。
-
-所以用队列串行化：**同一时刻只允许一个 `async_write` 在飞**。
-
-
-
-队列起到一个排序的作用，将要发送的数据放在队列中，当有人要`send`的时候，发现队列不为空，就将消息加入到队列中，在回调函数中去`send`，妙啊
-
-
-
-### 7.2 发送流程
-
-```cpp
-void CSession::Send(std::string msg, short msgid) {
-    std::lock_guard<std::mutex> lock(_send_lock);
-    std::size_t send_que_size = _send_que.size();
-    if (send_que_size > MAX_SENDQUE) {           // 队列满：对端消费太慢，丢弃
-        std::cout << "send que fulled" << std::endl;
-        return;
-    }
-    _send_que.push(std::make_shared<SendNode>(msg.c_str(),
-                   static_cast<short>(msg.length()), msgid));
-    if (send_que_size > 0) {
-        return;                                   // 已有写在进行，等前面的发完
-    }
-    // 队列之前是空的：当前没有写操作，立刻启动第一个
-    auto& msgnode = _send_que.front();
-    boost::asio::async_write(_socket,
-        boost::asio::buffer(msgnode->_data, msgnode->_total_len),
-        std::bind(&CSession::HandleWrite, this, std::placeholders::_1, SharedSelf()));
-}
-
-void CSession::HandleWrite(const boost::system::error_code& error,
-                           std::shared_ptr<CSession> shared_self) {
-    if (!error) {
-        std::lock_guard<std::mutex> lock(_send_lock);
-        _send_que.pop();                          // 弹出已发送的消息
-        if (!_send_que.empty()) {                 // 还有消息就继续发下一条
-            async_write(...);                     // 递归启动下一个写
-        }
-    } else {
-        Close();                                  // 写失败：连接不可用
-        _server->ClearSession(_session_id);
-    }
-}
-```
-
-流程一句话：**入队 → 队空则启动写 → 写完成弹队首 → 队列非空继续写**。`MAX_SENDQUE` 防止对端不消费时内存无限膨胀。
-
----
-
-## 8. 接收队列（生产-消费者模型）
-
-### 8.1 投递：CSession → LogicSystem
-
-```cpp
-// CSession 的 HandleFrame 收到完整业务帧后：
-LogicSystem::GetInstance()->PostMsgToQue(
-    std::make_shared<LogicNode>(shared_from_this(), _recv_msg_node));
-```
-
-`LogicNode` 就是队列元素：`{ shared_ptr<CSession> _session; shared_ptr<RecvNode> _recvnode; }`，记录"谁发的 + 发了什么"。
-
-### 8.2 消费：LogicSystem 工作线程
-
-这个工作线程从逻辑队列中取数据，消费数据
-
-队列为空，这个线程挂起，等待有逻辑队列唤醒
-
-```cpp
-void LogicSystem::PostMsgToQue(std::shared_ptr<LogicNode> msg) {
-    std::unique_lock<std::mutex> unique_lk(_mutex);
-    _msg_que.push(msg);
-    if (_msg_que.size() == 1) {
-        unique_lk.unlock();       // 队列从空变非空，唤醒工作线程
-        _consume.notify_one();
-    }
-}
-
-void LogicSystem::DealMsg() {              // 工作线程主循环
-    for (;;) {
-        std::unique_lock<std::mutex> unique_lk(_mutex);
-        while (_msg_que.empty() && !_b_stop) {
-            _consume.wait(unique_lk);      // 队列空则挂起
-        }
-        if (_b_stop) { /* 处理完剩余消息后 break */ }
-        auto msg_node = _msg_que.front();
-        auto iter = _fun_callbacks.find(msg_node->_recvnode->_msg_id);
-        if (iter != _fun_callbacks.end()) {
-            iter->second(msg_node->_session, msg_node->_recvnode->_msg_id,
-                std::string(msg_node->_recvnode->_data, msg_node->_recvnode->_cur_len));
-        }
-        _msg_que.pop();
-    }
-}
-```
-
-这套模型的好处：
-
-- **IO 线程只负责收发**，登录校验、数据库查询等耗时操作全部挪到逻辑线程；
-- 消息**串行处理**，同一逻辑线程内不需要再考虑业务数据竞争；
-- 注册新业务只需要 `RegisterCallBacks()` 里加一行映射，例如：
-
-```cpp
-_fun_callbacks[MSG_CHAT_LOGIN] = std::bind(&LogicSystem::LoginHandler, this,
-    placeholders::_1, placeholders::_2, placeholders::_3);
-```
-
----
-
-## 9. 会话管理
-
-### 9.1 生命周期
-
-- 连接接入：`CServer::HandleAccept` 把 `shared_ptr<CSession>` 存进 `_sessions`；
-- 连接断开：会话回调里 `Close()` 后先锁定 `_server` 的弱引用，再调用 `ClearSession(session_id)` 移除 map 条目；
-- 最后一个 `shared_ptr` 消失时 `~CSession()` 自动执行。
-
-### 9.2 为什么用 enable_shared_from_this
-
-异步回调执行时，服务器可能已经清除了这个会话。如果回调里直接用裸 `this`，`this` 可能已被析构 → **悬垂指针崩溃**。
-
-解决：每次发起异步读都先 `auto self = shared_from_this();`，回调捕获 `self`，保证回调执行期间会话一定存活：
-
-```cpp
-void CSession::ReadSome() {
-    auto self = shared_from_this();   // 关键！
-    _socket.async_read_some(boost::asio::buffer(_data), [self, this](...) { ... });
-}
-```
-
-### 9.3 关闭与清理
-
-```cpp
-void CSession::HandleDisconnect() {
-    if (_disconnect_handled.exchange(true)) {
-        return; // 多个异步回调可能同时报错，完整清理只能执行一次
-    }
-
-    Close();
-    _server->ClearSession(_session_id); // 清本地 map、UserMgr 和在线人数
-
-    // 已登录用户获取 login_lock_<uid>，且 Redis session_id 仍属于本连接时，
-    // 才删除 usession_<uid> 和 uip_<uid>，避免旧连接误删新登录。
-}
-```
-
-读错误、写错误、非法协议包和心跳超时统一调用 `HandleDisconnect`。函数先清理本地状态，
-再尝试清理 Redis，因此分布式锁或 Redis 暂时不可用不会造成本机 Session 残留。
-
----
-
-## 10. 关键设计要点 
-
-1. **字节序**：包头里的 `msg_id`、`msg_len` 一律网络字节序，收发都要用 `host_to_network_short` / `network_to_host_short` 转换。
-2. **定长包头**：包头固定 4 字节；增量解析器保存跨读取的包头与包体状态，并从一次读取中提取所有完整帧。
-3. **长度校验**：`msg_len > MAX_LENGTH` 必须断开连接，这是防内存越界的最低要求。
-4. **错误分支要 return**：读取错误或非法头部触发 `HandleDisconnect()` 后必须 `return`；半包本身不是错误，等待后续字节。
-5. **缓冲区**：`CSession` 直接用栈数组 `char _data[MAX_LENGTH]`，避免手动 `new/delete` 泄漏；`MsgNode` 构造多分配 1 字节存 `'\0'`，方便打印调试。
-6. **发送队列**：同一 socket 同时只允许一个 `async_write`，消息用 `SendNode` 预先拼好整包再写出。
-7. **接收队列**：网络层与业务层通过 `condition_variable + mutex` 队列解耦，业务单线程消费。
-8. **线程安全**：`_sessions`、`_send_que`、`_msg_que` 各自的互斥锁各管各的，避免共享数据无保护。
-9. **对象存活**：会话读写回调持有 `shared_from_this()`；CServer 的 timer/accept 回调持有 `weak_ptr<CServer>`，停止或析构后不会访问悬空服务器对象。完整退出顺序见 [异常处理.md](异常处理.md)。
-10. **会话保活**：`CSession` 对每个完整合法 TCP 包刷新原子化活跃时间，`1023` 在会话层直回 `1024`，`CServer::steady_timer` 每 10 秒检查一次并通过 `HandleDisconnect()` 清理 60 秒无活动会话；路由租约、自动重连和断点续传仍是后续方向。
-
----
-
-## 一条消息的完整旅程
-
-```text
-客户端
-  │  发送 [id|len|body]
-  ▼
-CServer::HandleAccept ──► CSession::Start
-  ▼
-CSession::ReadSome  ── 接收字节片段，交给 TcpFrameParser
-  ▼
-TcpFrameParser::Feed ── 校验包头、组装完整帧
-  ▼
-PostMsgToQue(LogicNode) ──► LogicSystem 消息队列
-  ▼
-LogicSystem::DealMsg  ── 按 msg_id 找到处理函数（如 LoginHandler）
-  ▼
-处理函数调用 session->Send(回包, MSG_CHAT_LOGIN_RSP)
-  ▼
-Send 入发送队列 ── async_write ──► HandleWrite 弹出，继续发下一条
-  ▼
-客户端收到回包
-```
+- [监听和心跳扫描](../ChatServer1/src/CServer.cpp)、[会话收发](../ChatServer1/src/CSession.cpp)、[增量解析器](../ChatServer1/include/TcpFrameParser.h)。
+- [发送节点](../ChatServer1/include/MsgNode.h)、[线程池](../ChatServer1/src/AsioIOServicePool.cpp)、[逻辑队列](../ChatServer1/src/LogicSystem.cpp)。
+- [Qt TCP管理器](../chat_app%20desktop/tcpmgr.cpp)、[实例配置](../ChatServer1/config.ini)、[进程入口](../ChatServer1/ChatServer.cpp)。
+- [消息ID全链路](消息ID全链路.md)、[聊天信息收发](聊天信息收发.md)、[心跳检测](心跳检测.md)。

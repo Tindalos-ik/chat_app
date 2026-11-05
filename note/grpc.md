@@ -1,659 +1,117 @@
-# gRPC 在聊天室项目中的应用
+# gRPC 契约、调用与生命周期
 
-> 本文基于本项目（chat_app）中的实际代码整理，说明 gRPC 在这个分布式聊天室里是怎么落地使用的。
+## 协议与服务职责
 
----
+[proto/message.proto](../proto/message.proto) 使用 `proto3` 和 `package message` 定义请求、响应及服务。Protobuf 用字段编号编码数据，gRPC 以 HTTP/2 承载远程调用。客户端与 ChatServer 的长连接仍使用自定义包头和 JSON，客户端资源传输也走 ResourceServer TCP；服务间 RPC 与这些客户端协议分别演进。
 
-## 1. 为什么这个项目要用 gRPC
+| 服务 | 服务端进程 | 主要调用者 | 接口职责 |
+| --- | --- | --- | --- |
+| `VarifyService` | VarifyServer，Node.js | GateServer | `GetVarifyCode` 保存验证码并发送邮件 |
+| `StatusService` | StatusServer | GateServer；另保留 Login 客户端封装 | `GetChatServer` 选择实例并签发 token；`Login` 校验 token |
+| `ChatService` | ChatServer1/2 | 对端 ChatServer | 好友通知、消息与回执转发、重复登录踢人、群通知、音视频信令 |
+| `ResourceService` | ResourceServer | ChatServer1/2 | `VerifyImages`、`VerifyFiles`、`VerifyGroupAvatar` 获取核验结果 |
 
-聊天室由多个独立进程（服务）组成，它们之间需要互相调用：
-
-- GateServer（C++，HTTP 网关）需要向验证服务器要验证码；
-- GateServer 需要向状态服务器查询"该给用户分配哪台聊天服务器"；
-- ChatServer 需要向状态服务器校验用户的 token。
-- ChatServer 需要向**另一台 ChatServer** 转发跨服业务：两个登录用户可能被负载均衡到不同的聊天服务器上，好友申请、好友认证、聊天消息都要经过"服务器 → 服务器"这一段。
-
-这些"服务调用服务"的场景可以用 gRPC 解决，原因是：
-
-| 优势 | 说明 |
-| --- | --- |
-| 跨语言 | 验证服务器用 Node.js 写，C++ 客户端照样能调用（`.proto` 是通用契约） |
-| 性能好 | 基于 HTTP/2 + Protobuf 二进制序列化，比 HTTP+JSON 更轻量 |
-| 接口即契约 | `.proto` 文件同时生成服务端基类和客户端 Stub，两端代码不会不一致 |
-| 类型安全 | 请求/响应都是强类型 message，不再靠手拼字符串 |
-
-一句话：**gRPC = 像调用本地函数一样调用另一台机器上的函数**。
-
----
-
-## 2. Protobuf 是什么，和本项目有什么关系
-
-Protobuf（Protocol Buffers）是 Google 推出的跨语言数据序列化协议。它先用 `.proto` 文件定义消息字段和服务接口，再由 `protoc` 自动生成 C++、Node.js 等语言可直接调用的代码。
-
-可以把它理解成服务之间约定的一份“数据合同”。例如，JSON 通常直接传字段名：
-
-```json
-{
-  "uid": 1001,
-  "message": "hello"
-}
+```mermaid
+flowchart LR
+    Qt[Qt 客户端] -->|HTTP JSON| Gate[GateServer]
+    Gate -->|GetVarifyCode| Verify[VarifyServer]
+    Gate -->|GetChatServer| Status[StatusServer]
+    Qt -->|TCP JSON| Chat[ChatServer1 或 ChatServer2]
+    Chat <-->|ChatService| Peer[对端 ChatServer]
+    Chat -->|ResourceService| Resource[ResourceServer]
+    Qt -->|TCP 上传下载| Resource
 ```
 
-Protobuf 则先定义数据结构：
+当前 ChatServer TCP 登录直接查 Redis 的 `utoken_<uid>`，不调用 `StatusService.Login`。token 没有一次性消费和 TTL，其具体生成方式见 [Redis](Redis.md)。
+
+## Protobuf 数据模型与演进
 
 ```protobuf
-message ChatMessage {
-    int32 uid = 1;
-    string message = 2;
-}
-```
-
-运行时，`ChatMessage` 会被序列化为二进制字节流发送；接收方用同一份 `.proto` 生成的代码反序列化回来。字段后的 `= 1`、`= 2` 是字段编号，二进制编码依赖编号而不是字段名，因此已发布的字段编号不能随意修改或复用。
-
-### 2.1 Protobuf 和 JSON 的区别
-
-| 对比项 | JSON | Protobuf |
-| --- | --- | --- |
-| 数据格式 | 文本，便于直接阅读 | 二进制，需要生成代码或工具解析 |
-| 体积 | 包含字段名，通常较大 | 使用字段编号，通常更紧凑 |
-| 类型约束 | 较弱，常需手动校验字段 | `.proto` 明确定义字段类型和请求/响应结构 |
-| 跨语言协作 | 双方手写或约定 JSON 格式 | 由同一份 `.proto` 自动生成多语言代码 |
-| 接口演进 | 依赖人工兼容 | 新增字段通常可向后兼容，前提是不改旧字段编号和语义 |
-
-这里的“通常更快、更小”是协议层面的常见优势，不代表业务一定更快：一次 RPC 的总耗时还受网络、服务端排队、Redis/MySQL 等因素影响。
-
-### 2.2 本项目中 Protobuf 的位置
-
-本项目同时使用了两种协议，不要混淆：
-
-```text
-Qt 客户端 <---- TCP: 消息 ID + 长度 + JSON Body ----> ChatServer
-
-GateServer / StatusServer / ChatServer / VarifyServer
-                    <---- gRPC: HTTP/2 + Protobuf ---->
-```
-
-- 客户端和 ChatServer 的业务长连接目前使用自定义 TCP 包头加 JSON Body；
-- 服务之间使用 gRPC，消息结构和 RPC 接口统一定义在根目录 `proto/message.proto`；
-- C++ 服务在构建时生成 `message.pb.*` 和 `message.grpc.pb.*`，Node.js 的 VarifyServer 在运行时加载同一份 `.proto`；
-- 这使得 C++ 的 GateServer 可以调用 Node.js 的验证码服务，也让两台 C++ ChatServer 能按同一份消息定义进行跨服转发。
-
-面试时可以概括为：**“Protobuf 负责定义并编码服务间数据，gRPC 在它的基础上提供远程调用、网络传输和客户端/服务端 Stub。”**
-
----
-
-## 3. 项目中的 gRPC 服务全景
-
-### 3.1 服务清单
-
-| 服务 | 进程（语言） | 端口 | RPC 方法 | 职责 |
-| --- | --- | --- | --- | --- |
-| `VarifyService` | VarifyServer（Node.js） | 50051 | `GetVarifyCode` | 生成验证码、存 Redis、发邮件 |
-| `StatusService` | StatusServer（C++） | 50052 | `GetChatServer` | 负载均衡选聊天服务器 + 发 token |
-| `StatusService` | StatusServer（C++） | 50052 | `Login` | 保留的 uid/token 校验接口；当前 ChatServer 登录路径直接查 Redis |
-| `ChatService` | ChatServer1（C++） | 50055 | `NotifyAddFriend`、`SendChatMsg`、`NotifyAuthFriend`、`NotifyTextChatMsg`、`NotifyKickUser` | 接收 ChatServer2 转来的好友通知、消息与踢人请求 |
-| `ChatService` | ChatServer2（C++） | 50056 | 同上 | 接收 ChatServer1 转来的好友通知、消息与踢人请求 |
-
-### 3.2 谁调用谁
-
-```text
-客户端(Qt)
-   │  HTTP
-   ▼
-GateServer (8080, C++)
-   │  gRPC  ──────────────►  VarifyServer (50051, Node.js) ──► Redis + 163邮箱
-   │  gRPC  ──────────────►  StatusServer (50052, C++)  ──► 选择 ChatServer + 生成token
-   ▼  TCP 长连接
-ChatServer1 (8090 / rpc 50055, C++)
-   │  gRPC ChatService ──►  ChatServer2 (8091 / rpc 50056, C++)
-   ◄──────────────────────  gRPC ChatService
-   │  Redis ──────────────►  读取 utoken_<uid> 校验 TCP 登录凭证
-```
-
-角色分三类：GateServer 是纯 gRPC 客户端；VarifyServer、StatusServer 是纯 gRPC 服务端；**ChatServer 最特殊——既是 gRPC 客户端（调对端 ChatServer），又是 gRPC 服务端（在 rpcport 接收对端转发）**。仓库仍保留 `StatusGrpcClient::Login` 封装，但当前 `LoginHandler` 不走它。
-
----
-
-## 4. `.proto` 契约文件
-
-所有服务的接口统一定义在项目根目录的 `proto/message.proto` 中。各服务不再维护自己的协议副本，避免多个文件逐渐产生差异：
-
-```protobuf
-syntax = "proto3";          // 使用 proto3 语法
-package message;            // 包名，生成代码时变成命名空间 message
-
-// 定义数据结构
+// 接口节选；字段编号是编码契约。
 message GetVarifyReq {
-    string email = 1;       // 字段编号从 1 开始，序列化时用编号代替名字
+    string email = 1;
 }
-
-message GetVarifyRsp {
-    int32 error = 1;
-    string email = 2;
-    string code = 3;
-}
-
-// 定义服务接口（RPC 方法）
 service VarifyService {
     rpc GetVarifyCode (GetVarifyReq) returns (GetVarifyRsp) {}
 }
 ```
 
-同一个文件里还定义了 `StatusService`：
+已发布字段的编号、类型及语义需要保持兼容。新增字段通常可由旧端忽略，删除字段应保留编号并使用 `reserved` 防止复用。proto3 普通标量缺失时有默认值，仅有类型定义不能保证 uid 为正数、字符串非空或调用者有权限；这些仍由业务校验。
 
-```protobuf
-service StatusService {
-    rpc GetChatServer (GetChatServerReq) returns (GetChatServerRsp) {}
-    rpc Login (LoginReq) returns (LoginRsp) {}
-}
-```
+跨服消息包括 MySQL 提交后的 `message_id`、`thread_id`、发送接收 uid、时间与状态等字段。资源核验响应提供可信文件名、MIME、字节数和图片尺寸；聊天服务不直接信任客户端提交的这些属性。`GroupNotifyReq` 用 `event_type` 区分消息、管理结果、成员变化和失效通知，`payload_json` 是 Protobuf 内的一段 JSON 文本，接收端仍需解析和校验。
 
-再往后是专门给**聊天服务器之间转发**用的 `ChatService`：
+`ChatService.SendChatMsg` 在 proto 中存在，当前 ChatServiceImpl 未重写，实际文本转发使用 `NotifyTextChatMsg`。接口声明与已提供的服务实现需分别确认，未实现方法可能返回 `UNIMPLEMENTED`。
 
-```protobuf
-service ChatService {
-    rpc NotifyAddFriend (AddFriendReq) returns (AddFriendRsp) {}        // 转发好友申请
-    rpc SendChatMsg (SendChatMsgReq) returns (SendChatMsgRsp) {}        // 转发单条聊天消息
-    rpc NotifyAuthFriend (AuthFriendReq) returns (AuthFriendRsp) {}     // 好友认证通知
-    rpc NotifyTextChatMsg (TextChatMsgReq) returns (TextChatMsgRsp) {}  // 批量转发文本消息
-    rpc NotifyKickUser (KickUserReq) returns (KickUserRsp) {}           // 通知旧服踢掉重复登录会话
-}
-```
+## 代码生成与构建
 
-请求/响应里的 `applyuid / touid / fromuid` 等字段，作用是告诉对端"这条业务涉及你机器上的哪个用户"，对端据此找到对应 session 做推送。
+[根 CMakeLists.txt](../CMakeLists.txt) 统一调用 `protobuf::protoc` 和 `gRPC::grpc_cpp_plugin`，在构建目录的 `proto_gen` 生成：
 
-用 `protoc` 编译后自动生成：
+- `message.pb.h/.cc`：Protobuf 消息类与序列化。
+- `message.grpc.pb.h/.cc`：服务端 `Service` 基类、客户端 `Stub`。
 
-- `message.pb.h / message.pb.cc`：消息类的序列化代码；
-- `message.grpc.pb.h / message.grpc.pb.cc`：**服务端 Service 基类** + **客户端 Stub 代理类**。
+生成源码编译成公共静态库 `chat_proto`，通过 `PUBLIC` 传播生成头文件目录，五个 C++ 服务链接该库。修改协议应修改根 proto 并重新构建所有受影响服务，生成文件不作为手工维护入口。依赖查找与编译器配置应从根构建执行，子服务依赖父工程提供的 `chat_proto`。
 
-> 根目录的 `.proto` 是唯一源文件。修改协议后只需要重新生成这一套代码，所有 C++ 服务和 Node.js 服务都会使用同一份定义。
+[VarifyServer/proto.js](../VarifyServer/proto.js) 在运行时从服务目录的上级 `proto/message.proto` 加载同一契约，`keepCase: true` 保持字段名，`longs: String` 将 64 位整数字段映射为字符串，避免 JavaScript Number 精度损失。
 
-### 4.1 C++ 服务共用一套生成代码
+## Channel、Stub 与单次调用
 
-顶层 `CmakeLists.txt` 负责查找 `protoc` 和 gRPC 插件，并为根目录协议定义一次生成规则：
-
-```cmake
-set(PROTO_SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/proto/message.proto)
-set(PROTO_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/proto_gen)
-
-add_custom_command(
-    OUTPUT ${PROTO_GENERATED_FILES}
-    COMMAND ${Protobuf_PROTOC_EXECUTABLE}
-        --cpp_out=${PROTO_GEN_DIR}
-        --proto_path=${CMAKE_CURRENT_SOURCE_DIR}/proto
-        ${PROTO_SOURCE}
-    COMMAND ${Protobuf_PROTOC_EXECUTABLE}
-        --grpc_out=${PROTO_GEN_DIR}
-        --plugin=protoc-gen-grpc=${gRPC_CPP_PLUGIN}
-        --proto_path=${CMAKE_CURRENT_SOURCE_DIR}/proto
-        ${PROTO_SOURCE}
-    DEPENDS ${PROTO_SOURCE}
-)
-```
-
-生成的四个文件放在构建目录的 `proto_gen/`：
-
-```text
-message.pb.h
-message.pb.cc
-message.grpc.pb.h
-message.grpc.pb.cc
-```
-
-为了避免四个服务分别编译同一组 `.pb.cc`，顶层 CMake 还把它们编译成公共静态库：
-
-```cmake
-add_library(chat_proto STATIC ${PROTO_GENERATED_FILES})
-target_include_directories(chat_proto PUBLIC ${PROTO_GEN_DIR})
-target_link_libraries(chat_proto PUBLIC
-    gRPC::grpc++
-    protobuf::libprotobuf
-)
-```
-
-`chat_proto` 使用 `PUBLIC` 方式暴露 `PROTO_GEN_DIR`，因此链接它的服务会自动获得生成头文件的搜索路径。四个服务的 CMake 不需要再手动添加 `${PROTO_GEN_DIR}`，只需要链接公共协议库：
-
-```cmake
-target_link_libraries(${PROJECT_NAME}
-    chat_proto
-    gRPC::grpc++
-    protobuf::libprotobuf
-)
-```
-
-源码中仍然直接引用生成头文件即可：
-
-```cpp
-#include "message.grpc.pb.h"
-#include "message.pb.h"
-```
-
-`GateServer`、`StatusServer`、`ChatServer1` 和 `ChatServer2` 不再自行调用 `protoc`，也不再把生成源码重复加入自己的目标。这样既能保证 include 路径正确，也能避免服务继续依赖已经删除的旧 `proto_gen` 目录。
-
----
-
-## 5. 服务端实现
-
-### 5.1 Node.js 版（VarifyServer，跨语言）
-
-`proto.js` 负责加载根目录的 `.proto` 并解析出服务对象：
-
-```js
-const PROTO_PATH = path.join(__dirname, '..', 'proto', 'message.proto');
-const packageDefinition = protoLoader.loadSync(PROTO_PATH, {...});
-const protoDescriptor = grpc.loadPackageDefinition(packageDefinition);
-const message_proto = protoDescriptor.message;   // 包名 message
-module.exports = message_proto;
-```
-
-`server.js` 实现接口并启动服务：
-
-```js
-// 实现 RPC：call 是客户端请求，callback 是回包
-async function GetVarifyCode(call, callback) {
-    let query_res = await redis_module.GetRedis("code_" + call.request.email);
-    if (query_res != null) {
-        callback(null, { email: call.request.email, error: Errors.DuplicateRequest });
-        return;                                    // 验证码已存在，不重复发
-    }
-    let uniqueId = uuidv4().substring(0, 4);       // 生成 4 位验证码
-    await redis_module.SetRedisExpire("code_" + call.request.email, uniqueId, 180);
-    await email_module.SendMail({ to: call.request.email, text: '您的验证码为' + uniqueId });
-    callback(null, { email: call.request.email, error: Errors.Success });
-}
-
-function main() {
-    var server = new grpc.Server();
-    server.addService(message_proto.VarifyService.service, { GetVarifyCode });
-    server.bindAsync('0.0.0.0:50051', grpc.ServerCredentials.createInsecure(), () => {
-        server.start();
-    });
-}
-```
-
-业务逻辑很清楚：**查 Redis 有没有旧验证码 → 生成新码存 Redis（180 秒过期）→ 发邮件 → 回包**。C++ 的 GateServer 完全不用关心这些细节，只调用接口。
-
-### 5.2 C++ 版（StatusServer）
-
-实现类继承 proto 生成的 `StatusService::Service`，重写两个虚函数：
-
-虚函数参数去看生成的grpc相关头文件
-
-```cpp
-class StatusServiceImpl final : public StatusService::Service {
-    Status GetChatServer(ServerContext* context, const GetChatServerReq* request,
-                         GetChatServerRsp* reply) override;
-    Status Login(ServerContext* context, const LoginReq* request, LoginRsp* reply) override;
-};
-```
-
-`GetChatServer` 的核心逻辑（**负载均衡 + 发 token**）：
-
-```cpp
-Status StatusServiceImpl::GetChatServer(ServerContext* context,
-                                        const GetChatServerReq* request,
-                                        GetChatServerRsp* reply) {
-    ChatServer server = getChatServer();            // 读取 Redis 在线数，选负载最低的服务器
-    reply->set_host(server.host);
-    reply->set_port(server.port);
-    reply->set_token(generate_unique_string());     // 生成一次性 token
-    reply->set_error(ErrorCode::Success);
-    insertToken(request->uid(), reply->token());    // Redis: utoken_<uid> = token
-    return Status::OK;                              // 返回 OK，reply 自动序列化发回
-}
-```
-
-`getChatServer()` 遍历 `_servers`，从 Redis 哈希 `login_count` 读取各实例在线数，选择最小值；并列最小时按 `_round_index` 轮询。读不到有效计数的实例按最大负载处理。
-
-`Login` 则是纯校验：
-
-```cpp
-std::string token_value;
-bool found = RedisMgr::GetInstance()->Get("utoken_" + std::to_string(uid), token_value);
-if (!found)                    { reply->set_error(ErrorCode::UidInvalid); }
-else if (token_value != token) { reply->set_error(ErrorCode::TokenInvalid); }
-else                           { reply->set_error(ErrorCode::Success); }
-return Status::OK;
-```
-
-服务启动（main 里）：
-
-```cpp
-grpc::ServerBuilder builder;
-builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
-builder.RegisterService(&service);
-std::unique_ptr<grpc::Server> server(builder.BuildAndStart());
-server->Wait();                 // 阻塞等待，收到信号后 Shutdown()
-```
-
----
-
-### 5.3 C++ 版（ChatServer 之间互相通信）
-
-ChatServer 是项目里唯一"既当服务端又当客户端"的角色：
-
-- **服务端**：每台 ChatServer 启动时，除了监听 TCP 长连接端口（8090/8091），还会额外起一个 gRPC 服务，监听自己的 `rpcport`（ChatServer1=50055、ChatServer2=50056），注册 `ChatServiceImpl`；
-- **客户端**：同时持有 `ChatGrpcClient` 单例，按照 `config.ini` 里 `[PeerServer] servers` 的对端列表，给每台对端 ChatServer 建好 Stub 连接池。
-
-main 里启动 gRPC 服务端（每台 ChatServer 各一份）：
-
-```cpp
-// 监听地址 = SelfChatServer.host + rpcport，例如 127.0.0.1:50055
-std::string server_address(config["SelfChatServer"]["host"] + ":" + config["SelfChatServer"]["rpcport"]);
-ChatServiceImpl service;
-grpc::ServerBuilder builder;
-builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
-builder.RegisterService(&service);
-auto server = std::make_shared<CServer>(io_context, tcp_port);
-LogicSystem::GetInstance()->SetServer(server);
-service.RegisterServer(server); // 登录逻辑、TCP 会话与 gRPC 踢人共用同一个 CServer
-
-std::unique_ptr<grpc::Server> grpc_server(builder.BuildAndStart());
-if (!grpc_server) { // 端口被占 / 地址不合法时返回空指针，必须判空，否则后面 Wait() 会崩
-    std::cerr << "rpc server start failed on " << server_address << std::endl;
-    return 1;
-}
-std::cout << "rpc server listening on " << server_address << std::endl;
-
-// gRPC 服务放在独立线程里阻塞等待，主线程继续跑 Asio 的 TCP 长连接
-std::thread grpc_server_thread([&grpc_server]() {
-    grpc_server->Wait();
-});
-```
-
-`ChatServiceImpl` 继承生成的 `ChatService::Service`，每个方法都对应一类跨服转发：
-
-| 方法 | 什么时候被对端调 | 服务端应该做的下一步 |
+| 对象 | 责任 | 使用规则 |
 | --- | --- | --- |
-| `NotifyAddFriend` | 申请方所在服务器转发好友申请 | 通知本机被申请用户，弹出好友申请 |
-| `NotifyTextChatMsg` | 发消息方所在服务器转发聊天内容 | 找到本机目标用户的 session 并推送 |
-| `NotifyAuthFriend` | 好友关系建立后的认证通知 | 刷新双方好友列表 |
-| `NotifyKickUser` | 同一 uid 在另一台 ChatServer 重新登录 | 通知旧端下线、注销本机会话并关闭旧 socket |
-| `SendChatMsg` | proto 遗留的单条文本接口 | 当前业务未调用，也未在 `ChatServiceImpl` 中重写 |
+| `Channel` | 目标地址、传输状态、连接与重连 | 长期复用，创建成功不表示远端已就绪 |
+| `Stub` | 某个 service 的类型化代理 | 可复用，支持并发 RPC |
+| `ClientContext` | deadline、metadata、取消等单次调用状态 | 每次调用新建，不跨调用复用 |
+| Request / Response | 本次业务数据 | 同步调用返回前保持有效 |
+| `grpc::Status` | RPC 传输及框架结果 | 与响应中的业务 error 分别判断 |
 
-> 当前好友申请、好友认证、批量文本消息和重复登录踢人都已接通。`SendChatMsg` 仍是未使用的遗留接口；实际文本链路统一走 `NotifyTextChatMsg`。
-
-## 6. 客户端实现（C++）
-
-### 6.1 一次 RPC 调用的三个固定步骤
-
-以 GateServer 调 VarifyServer 为例（`VarifyGrpcClient::GetVarifyCode`）：
+同步一元调用片段：
 
 ```cpp
-// 第 1 步：创建 Channel（连接远程服务器）
-std::shared_ptr<Channel> channel =
-    grpc::CreateChannel("127.0.0.1:50051", grpc::InsecureChannelCredentials());
-
-// 第 2 步：用 Channel 创建 Stub（远程服务的本地代理）
-auto stub = VarifyService::NewStub(channel);
-
-// 第 3 步：准备上下文 + 请求 + 响应，同步调用
-ClientContext context;
-GetVarifyReq request;
-GetVarifyRsp reply;
-request.set_email(email);
-Status status = stub->GetVarifyCode(&context, request, &reply);
-
+// 已有 ResourceService 的 stub；每次操作使用新的 context。
+grpc::ClientContext context;
+context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(3));
+message::ResourceFileVerifyRsp response;
+const grpc::Status status = stub->VerifyFiles(&context, request, &response);
 if (status.ok()) {
-    return reply;                   // 调用成功
-} else {
-    reply.set_error(ErrorCode::RPCFaild);   // 网络失败，填错误码返回
+    const int business_error = response.error();
 }
 ```
 
-> 这是**同步**（阻塞）一元调用：发起后等服务端回包才返回。项目中业务逻辑层（LogicSystem）本来就是独立线程，阻塞调用不会卡住网络收发。
+`status.ok()` 只表示 RPC 成功结束。响应仍可能带资源不存在、凭证无效或重复请求等业务错误。远端已执行但响应丢失时，调用者可能收到非 OK，不能据此认定业务未执行；deadline 到期也不等同于远端事务已回滚。
 
-#### Stub 是什么：结合网络编程理解
+项目的同步调用阻塞发起它的线程。ChatServer 的普通 LogicSystem 使用业务队列线程，等待 RPC 会延迟后续业务；GateServer 路由从 HTTP 处理路径调用 RPC，不能笼统宣称所有同步 RPC 都不会影响 I/O 线程。
 
-Stub（桩/代理）可以理解成**远程服务在本进程中的本地代理对象**。它把“组装 Protobuf、走 HTTP/2
-网络、等待回包、反序列化”的细节封装成普通成员函数，因此业务代码看起来像调用本地函数：
+## Stub 池与等待上限
 
-```cpp
-Status status = stub->NotifyTextChatMsg(&context, request, &response);
-```
+GateServer 的 [VarifyGrpcClient](../GateServer/src/VarifyGrpcClient.cpp) 建立容量 5 的 `RPConPool`，[StatusGrpcClient](../GateServer/src/StatusGrpcClient.cpp) 建立容量 10 的状态 Stub 池。ChatServer 按 `[PeerServer] servers` 枚举对端，为每个 `name` 创建容量 5 的 [ChatConPool](../ChatServer1/include/ChatGrpcClient.h)。
 
-但这行代码并没有直接调用对端 `ChatServiceImpl::NotifyTextChatMsg()` 的 C++ 函数。真实链路是：
+池独占借用限制应用并发，不是 gRPC 线程安全的必要条件。每条 Stub 创建时关联 Channel，底层 HTTP/2 连接可多路复用，多个 Channel 也可能共享底层传输资源；不能将池大小当作已建立 socket 数量。
 
-```text
-ChatServer1 业务线程
-  -> ChatService::Stub::NotifyTextChatMsg(...)      本地代理
-  -> Protobuf 序列化请求 + gRPC/HTTP2 framing
-  -> Channel 管理到底层 TCP 连接（建立、复用、断开后的再次建连）
-  -> 网络发送到 ChatServer2:50056
-  -> ChatServer2 gRPC 框架解帧、反序列化
-  -> ChatServiceImpl::NotifyTextChatMsg(...)        真正执行的服务端函数
-  -> Protobuf 序列化响应，沿连接返回
-  -> Stub 解包，填充 response 和 grpc::Status
-```
+`getConnectionUntil(deadline)` 使用绝对时刻等待。文件、显示确认、已读、群及音视频信令等路径将同一时刻交给 context，排队消耗 RPC 可用时间。图片路径也设置约三秒等待及调用 deadline，但使用分别取得的时刻。好友和文本等部分旧路径仍是无界借用、没有显式 RPC deadline。资源核验客户端直接复用单个 Stub，各次 context 设置三秒 deadline。
 
-三者职责不要混：
+借用后的所有退出路径都需归还，池关闭返回空时需判空。GateServer 部分调用缺少该检查，部分 Defer 在同步调用后才建立，关闭与异常处理并不完全一致。具体差异见 [连接池](连接池.md)。
 
-| 对象 | 可以类比成 | 在项目中的职责 |
-| --- | --- | --- |
-| `Channel` | 到某个地址的通信通道管理器 | 记住 `host:rpcport`，管理 HTTP/2/TCP 传输状态与底层建连；不是每次调用都手写 `connect()`。 |
-| `Stub` | 针对某个服务接口的“遥控器” | 提供 `NotifyAddFriend`、`NotifyTextChatMsg` 等类型安全的方法，把本地函数式调用转为 RPC。 |
-| `ClientContext` | 单次请求的信封/控制信息 | 保存 deadline、metadata、取消状态等；每次 RPC 都必须新建，不能跨调用复用。 |
+## 服务端生命周期
 
-本项目的 `ChatConPool` 实际缓存的是多个 Stub。每个 Stub 创建时传入一个 Channel，业务线程从池里借出
-Stub、调用后归还。它的价值主要是控制并发调用数量和复用代理对象；**Stub 不是一条永远在线的 socket**，
-底层连接是否可用仍由 Channel 和 gRPC 运行时负责。
+C++ 服务通过 `ServerBuilder` 添加监听地址、注册服务对象，再 `BuildAndStart()`。注册的 service 对象必须活到 server 完成停止；`Wait()` 等待 server 结束，不是启动调用。正常退出需调用 `Shutdown()`，等待 `Wait()` 返回并 join 等待线程，再销毁 service 及其依赖资源。
 
-如果手写 TCP，同一件事需要自己完成：`connect()`、长度/粘包 framing、序列化、`write()`、异步收包、
-请求与响应配对、超时和错误处理。Stub 只是把这些通用网络工作藏到生成代码和 gRPC 库中，业务层仍要根据
-`status.ok()` 判断这次调用是否真正成功。
+[ChatServer1 启动代码](../ChatServer1/ChatServer.cpp) 创建一个 CServer，交给 LogicSystem 和 ChatServiceImpl 共用；`BuildAndStart()` 返回空时走失败退出。gRPC 的 `Wait()` 在独立线程运行，主线程运行 Asio。退出时停止 TCP 接收与上下文、关闭 gRPC、join 等待线程、停止业务队列，再解除 CServer 所有者。
 
-### 6.2 连接池（为什么需要）
+[ResourceServer](../ResourceServer/ResourceServer.cpp) 同时监听资源 TCP 和资源核验 RPC，也检查构建失败并维护等待线程。[StatusServer](../StatusServer/StatusServer.cpp) 使用信号调用 `Shutdown()`，当前没有对 `BuildAndStart()` 返回值判空，并使用 detached Asio 线程；不能把其他服务的检查推广为所有进程的共同保证。
 
-`CreateChannel` 每次调用都会新建连接，而 Stub 借出/归还频繁。所以项目里用**连接池**管理：
+Node 服务用 `addService()` 注册实现，再 `bindAsync()` 监听 `0.0.0.0:50051`。当前回调未处理 bind 错误，也没有统一信号关闭与等待清理，运行边界见 [邮箱认证服务](../VarifyServer/nodejs搭建邮箱认证服务.md)。
 
-```cpp
-class RPConPool {
-    std::queue<std::unique_ptr<VarifyService::Stub>> _connections; // 池
-    std::mutex _mutex;
-    std::condition_variable _cond;
+## 地址、安全与失败排查
 
-    // 借用：池空则等待（unique_lock 可以临时解锁）
-    std::unique_ptr<VarifyService::Stub> GetConnection() {
-        std::unique_lock<std::mutex> lock(_mutex);
-        _cond.wait(lock, [this]() { return _b_stop || !_connections.empty(); });
-        auto con = std::move(_connections.front());
-        _connections.pop();
-        return con;
-    }
+ChatServer 的 `port` 为 Qt TCP 端口，`rpcport` 为服务间端口，二者不可互换。常见配置的状态 RPC 为 `50052`，聊天 RPC 为 `50055/50056`，资源 RPC 为 `50057`；实际监听以各服务配置及验证码源码为准。
 
-    // 归还：放回队列并唤醒一个等待线程
-    void ReleaseConnection(std::unique_ptr<VarifyService::Stub> connection) {
-        std::lock_guard<std::mutex> lock(_mutex);
-        _connections.push(std::move(connection));
-        _cond.notify_one();
-    }
-};
-```
+当前 Channel 和 Server 使用 `Insecure*Credentials()`，未提供 TLS 加密或 mTLS 身份认证。群头像核验额外使用 `x-resource-service-key` metadata 和 uid/token，不能将该单个接口的验证推广到全部 RPC。部署需限制 RPC 网络可达范围，服务密钥不得发到客户端。
 
-要点：
+调用失败时分别排查：
 
-- `NewStub` 返回 `unique_ptr`，队列元素也用 `unique_ptr`，全程**移动语义**，零拷贝；
-- 每次调用 `GetConnection()` 借用、用完 `ReleaseConnection()` 归还，**必须成对出现**（项目里有的用 `Defer` 保证归还）；
-- 池大小在构造函数里配置：GateServer 调 VarifyServer 用 5 个，调 StatusServer 用 10 个。
+1. 配置名与 Redis 路由名是否一致，目标 `rpcport` 是否正确。
+2. `UNAVAILABLE`：进程、监听、网络可达性及传输状态。
+3. `DEADLINE_EXCEEDED`：借用等待及远端处理是否耗尽时限。
+4. `UNIMPLEMENTED`：两端 proto、服务注册和二进制是否包含同一方法。
+5. `Status::OK` 下的业务错误：按响应 error 检查授权、数据与目标会话。
 
-### 6.3 项目里的实际调用点
-
-**场景 1：GateServer 获取验证码**（`/get_varifycode` 路由）
-
-```cpp
-auto email = src_root["email"].asString();
-GetVarifyRsp rsp = VarifyGrpcClient::GetInstance()->GetVarifyCode(email);
-root["error"] = rsp.error();           // 把验证服务器返回的错误码透传给客户端
-root["email"] = src_root["email"];
-```
-
-**场景 2：GateServer 登录时分配聊天服务器**（`/user_login` 路由）
-
-```cpp
-// 密码校验通过后，问 StatusServer 要一台聊天服务器 + token
-auto reply = StatusGrpcClient::GetInstance()->GetChatServer(user_info.uid);
-root["uid"]   = user_info.uid;
-root["token"] = reply.token();   // token 是后续登录聊天服务器的凭证
-root["host"]  = reply.host();    // 例如 127.0.0.1
-root["port"]  = reply.port();    // 例如 8090（负载均衡选出来的）
-```
-
-**场景 3：ChatServer 校验登录 token**（`LoginHandler`）
-
-```cpp
-std::string token_value;
-bool found = RedisMgr::GetInstance()->Get("utoken_" + std::to_string(uid), token_value);
-if (!found)                 { rtvalue["error"] = ErrorCode::UidInvalid; return; }
-if (token_value != token)   { rtvalue["error"] = ErrorCode::TokenInvalid; return; }
-rtvalue["error"] = ErrorCode::Success;
-```
-
-**场景 4：ChatServer 跨服调用另一台 ChatServer**（`ChatGrpcClient`）
-
-对端连接池在构造函数里初始化——读 `[PeerServer] servers` 拆出对端 section 名，为每个对端建一个池：
-
-```cpp
-auto server_list = cfg["PeerServer"]["servers"];   // 例如 ChatServer2
-// 按逗号拆出对端 section 名后：
-for (auto& name : words) {
-    _pools[cfg[name]["name"]] = std::make_unique<ChatConPool>(5, cfg[name]["host"], cfg[name]["rpcport"]);
-}
-```
-
-业务层需要转发时，按"目标用户在哪个服务器"选池，借 Stub → 同步调用 → 归还：
-
-```cpp
-AddFriendRsp ChatGrpcClient::NotifyAddFriend(std::string server_name, const AddFriendReq& request) {
-    auto& pool = _pools[server_name];
-    ClientContext context;
-    auto stub = pool->getConnection();
-    Defer defer([&stub, &pool]() { pool->returnConnection(std::move(stub)); });
-
-    AddFriendRsp rsp;
-    Status status = stub->NotifyAddFriend(&context, request, &rsp);
-    if (!status.ok()) {
-        rsp.set_error(ErrorCode::RPCFaild);   // 网络层失败
-    }
-    return rsp;
-}
-```
-
-> 端口坑：跨服 gRPC 要连的是对端的 **rpcport**（50055/50056），不是对端给客户端用的 TCP 端口（8090/8091）。当前 `ChatGrpcClient` 已读取 `cfg[name]["rpcport"]`。
-
-### 6.4 当前的 gRPC 心跳、断线与重连边界
-
-目前项目的 gRPC 调用都是同步一元 RPC，没有 gRPC 流，也没有业务层定时 Ping。因此代码中**没有显式
-配置 gRPC keepalive 心跳**：`grpc::CreateChannel(...)` 使用默认参数，没有设置
-`GRPC_ARG_KEEPALIVE_TIME_MS`、`GRPC_ARG_KEEPALIVE_TIMEOUT_MS` 等 Channel 参数；各 gRPC 服务端的
-`ServerBuilder` 也没有对应的 keepalive 策略。
-
-连接池保存的是 Stub，不是“已经永久连通的 TCP socket”。Stub 持有 Channel，Channel 会按 gRPC 自身的
-传输状态按需建连；底层连接断开后，gRPC Core 会用内部退避策略尝试恢复传输。因此，**后续新发起的
-RPC 有机会在对端恢复后重新连上**。这属于 gRPC 库的连接管理，不是本项目实现的心跳或业务重连，不能
-据此判断对端始终在线。
-
-本项目也没有为 RPC 写重试循环或 Service Config 重试策略。一次调用返回非 `status.ok()` 后，当前代码
-直接转换成 `RPCFaild` 返回给上层，失败的请求不会自动再发。唯一的显式时限是跨服
-`NotifyKickUser`，它设置了 3 秒 deadline；其余大部分一元调用没有设置 deadline，遇到网络黑洞时可能
-等待较长时间。
-
-```text
-现在：业务发起一次 RPC -> 成功，或 status 非 OK 后返回 RPCFaild
-                     └-> gRPC Channel 可在之后尝试重建底层传输
-
-尚未实现：定时 keepalive Ping、RPC deadline 统一规范、按幂等性选择的指数退避重试、
-          长时间不可用后的熔断/降级与可观测状态上报
-```
-
-> 不能对所有 RPC 机械重试。好友申请、文本转发等调用在“服务端已处理但响应丢失”时重发可能造成重复
-> 推送；需要先给请求增加唯一请求 ID，或让服务端实现幂等去重，才适合启用业务重试。
-
----
-
-## 7. 一次"注册 + 登录"的完整业务闭环
-
-```text
-1. 用户点"获取验证码"
-   客户端 ──HTTP──► GateServer(/get_varifycode)
-                       │ gRPC GetVarifyCode(email)
-                       ▼
-                  VarifyServer ──► Redis 存 code_<email>=验证码(180s)
-                       └────────► 163邮箱发送验证码
-
-2. 用户注册
-   客户端 ──HTTP──► GateServer(/user_register)
-                       │ 查 MySQL(邮箱/用户名是否重复)
-                       │ 比对 Redis 里的验证码
-                       └── 写入 MySQL
-
-3. 用户登录
-   客户端 ──HTTP──► GateServer(/user_login)
-                       │ 查 MySQL(密码正确?)
-                       │ gRPC GetChatServer(uid)
-                       ▼
-                  StatusServer ──► 选负载最低的 ChatServer、生成 token
-                       └────────► 返回 {host, port, token}
-   客户端拿到 host/port 后发起 TCP 长连接
-
-4. 客户端登录聊天服务器
-   客户端 ──TCP──► ChatServer
-                       │ 解析 MSG_CHAT_LOGIN(uid, token)
-                       │ 直接读取 Redis 的 utoken_<uid> 并校验 token
-                       ▼
-                  token 匹配后，ChatServer 回包 MSG_CHAT_LOGIN_RSP
-
-5. 跨服转发（A 登录在 ChatServer1，B 登录在 ChatServer2）
-   用户A ──TCP──► ChatServer1
-                       │ 按 B 所在服务器路由
-                       │ gRPC NotifyTextChatMsg / NotifyAddFriend（ChatService）
-                       ▼
-                  ChatServer2 ──► 找到 B 的 session，TCP 推送给 B
-```
-
-token 在这里的作用：GateServer 登录时由 StatusServer 签发，ChatServer 再向 StatusServer 校验，**保证只有经过 HTTP 网关登录的用户才能建立 TCP 长连接**。
-
----
-
-## 8. CMake 构建配置
-
-```cmake
-# 顶层只生成一次根目录 proto/message.proto
-add_custom_target(proto_codegen DEPENDS ${PROTO_GENERATED_FILES})
-add_library(chat_proto STATIC ${PROTO_GENERATED_FILES})
-add_dependencies(chat_proto proto_codegen)
-
-# 子服务只链接公共协议库
-target_link_libraries(${PROJECT_NAME} chat_proto ...)
-```
-
-构建依赖关系如下：
-
-```text
-proto/message.proto
-        |
-        v
-proto_codegen -> chat_proto（只编译一次）
-        |
-        +--> GateServer
-        +--> StatusServer
-        +--> ChatServer1
-        +--> ChatServer2
-```
-
-这样只有协议源文件发生变化时才会重新运行 `protoc`；普通增量编译不会重复生成或重复编译协议代码。
-
----
-
-## 9. 总结
-
-1. **.proto 是"合同"**：服务端和客户端必须用同一份 proto 生成代码，字段编号（`= 1`、`= 2`）不能随意改，否则序列化错位。
-2. **包名决定命名空间**：`package message;` 让生成代码都在 `message::` 命名空间下，客户端 `using message::GetVarifyRsp` 等。
-3. **判断调用结果看 `status.ok()`**：网络层失败（连接不上、超时）返回非 OK；业务失败（验证码重复、token 无效）是 `Status::OK` + 业务 error 字段，两者要分清。
-4. **Stub 用完必须归还连接池**：项目里用 `Defer` 或显式 `ReleaseConnection(std::move(stub))`，漏归还会导致连接池慢慢耗尽。
-5. **跨语言版本**：C++ 用 gRPC 1.x，Node.js 用 `@grpc/grpc-js`（纯 JS 实现，不需要原生编译），只要 proto 一致就能互通。
-6. **同步调用的位置**：本项目客户端都是同步一元调用，放在 LogicSystem 的业务线程里，不阻塞 IO 线程。
-7. **统一协议源**：协议文件放在根目录的 `proto/message.proto`，C++ 端通过公共 `chat_proto` 静态库复用生成代码；Node.js 端通过相对路径加载同一份文件，避免各服务协议副本不一致。
-8. **ChatServer 是唯一"双重角色"服务**：既当 gRPC 客户端（调对端 ChatServer），又当 gRPC 服务端（`ChatServiceImpl` 监听 rpcport 50055/50056）。启动时 `BuildAndStart()` 可能返回空指针（端口被占、host 缺失等），必须先判空再 `Wait()`。
-9. **在线跨服业务已接通**：好友申请、认证、批量文本消息和重复登录踢人都通过 `ChatServiceImpl` / `ChatGrpcClient` 落地；未显式配置 gRPC keepalive，离线消息、业务重试和端到端 ACK 仍未实现。
-10. **分清 TCP 端口和 gRPC 端口**：ChatServer 的 `port`（8090/8091）是客户端连的 TCP 长连接口，`rpcport`（50055/50056）是另一台 ChatServer 连的 gRPC 口，连接池使用后者。
+项目未显式配置 gRPC keepalive 或统一业务重试策略；Channel 的库内退避重连不保证失败业务已再次执行。对有副作用的通知和写入，重试需依赖业务操作 ID、幂等约束或明确的重复处理语义。端到端显示与已读以聊天回执协议为准，RPC 成功不能证明用户已经看到消息。

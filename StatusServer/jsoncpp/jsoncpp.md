@@ -1,38 +1,23 @@
-# jsoncpp
+# StatusServer 的数据协议与 JsonCpp 依赖
 
-在cpp网关服务中，网络通信底层boost.beast处理的是HTTP请求的原始字节流，而业务逻辑层需要的是结构化的数据
+## 调度接口的数据模型
 
-所以需要jsoncpp
+[StatusServiceImpl.cpp](../src/StatusServiceImpl.cpp) 通过 Protobuf 请求和响应实现 `GetChatServer` 与 `Login`，接口见 [message.proto](../../proto/message.proto)。当前状态服务不接收 HTTP JSON 账号请求。
 
+`GetChatServerReq` 携带 uid，响应携带 `error/host/port/token`。服务读取 Redis Hash `login_count`，选择计数较小的 ChatServer，并列时轮询；读不到的计数按最大值参与选择，全部缺失仍可能返回实例。Redis field 值是十进制字符串，用 `std::stoll` 解析，不经 JsonCpp。
 
+`Login` 读取 `utoken_<uid>` 并比较请求 token。当前 TCP 登录在 ChatServer 直接读 Redis，StatusService 的该接口仍保留。token 用普通 SET 保存，没有 TTL 和一次性消费。
 
-**解析请求 (反序列化)**：前端、小程序或其他服务发来的请求，其 Body 部分通常是 JSON 格式的字符串。C++ 网关服务使用 `jsoncpp` 可以将这段原始的字符串，解析成方便 C++ 代码直接访问和操作的对象（如 `Json::Value`），从而高效地读取其中的参数。
+## JsonCpp 的构建位置
 
-**构造响应 (序列化)**：当网关处理完业务逻辑，需要返回数据给客户端时，`jsoncpp` 能把 C++ 的数据结构（如 `map`、`vector` 或自定义对象）重新打包成标准的 JSON 字符串，并通过 HTTP 响应发送回去。
+[CMakeLists.txt](../CMakeLists.txt) 将本目录 `jsoncpp.cpp` 编入目标，增加 `json` 头文件目录；[StatusServer.cpp](../StatusServer.cpp) 包含 `json.h` 和 `json-forwards.h`。当前启动和调度业务没有使用 JsonCpp 解析或构造网络正文，不能据此描述为 Beast HTTP 网关。
 
+[json.h](json/json.h) 的版本标记为 `1.9.8`。该目录提供的是随仓库的 amalgamated 依赖。维护时应保持源文件和配套头文件版本一致，避免再链接另一套带相同符号的 JsonCpp 实现。
 
+## 扩展 JSON 字段时的使用规则
 
-如何配置？
+若在状态服务中增加 JSON 配置或诊断数据，需明确 schema 和敏感信息范围。`Json::Value` 表示对象或数组，`parseFromStream()` 只负责解析；`isObject()`、`isMember()`、类型和范围判断仍由调用者完成。非 const `operator[]` 可以创建缺失 null 成员，不能用转换默认值推断字段有效。
 
-首先下载jsoncpp源码 [地址](https://github.com/open-source-parsers/jsoncpp)
+uid 当前为 int，协议中的 64 位字段需要单独设计跨语言表示方式。不可将 token 或数据库密码放入可公开诊断 JSON；JSON 本身没有保密能力。
 
-然后运行`amalgamate.py` ，生成dist文件夹，json目录下就是文件，还有一个cpp，把源码放进去项目即可，然后在CMakeLists.txt中修改一下
-
-```
-# 收集 JsonCpp 的源文件
-set(JSONCPP_SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/jsoncpp/jsoncpp.cpp
-)
-
-# 添加可执行文件，把 JsonCpp 源文件也加进去
-add_executable(${PROJECT_NAME} 
-    main.cpp
-    ${JSONCPP_SOURCES}  
-)
-
-# 指定头文件搜索路径
-target_include_directories(${PROJECT_NAME} PRIVATE 
-    ${CMAKE_CURRENT_SOURCE_DIR}/jsoncpp/json  # JsonCpp 的路径
-)
-```
-
+这些是新增 JSON 使用时的规则，当前接口仍使用 gRPC/Protobuf。JsonCpp API、Qt 数字精度和编码示例见 [JSON主文](../../note/json.md)，调度与服务生命周期见 [gRPC主文](../../note/grpc.md)。

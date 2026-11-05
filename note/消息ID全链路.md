@@ -1,297 +1,187 @@
 # 消息 ID 全链路
 
-本文按当前 `chat_app`、`GateServer`、`StatusServer`、`ChatServer1/2`、`ResourceServer` 和 `VarifyServer` 的代码整理。ChatServer 与 ResourceServer 是两条独立 TCP 连接，各自拥有消息 ID 空间；HTTP 接口同样使用 `ReqId` 作为客户端回调索引，但不会把这个 ID 放进 HTTP body。
+## 传输通道与标识空间
 
-> 判断一条链路是否真正完成，要同时检查客户端发送、服务端 callback 注册、服务端业务落库/转发、客户端回包 handler 四个环节。
-
-## 1. 通信分层
-
-```text
-Qt 客户端
-  ├─ HTTP + JSON ──> GateServer:8080
-  │                    ├─ MySQL：用户、密码、验证码结果
-  │                    ├─ gRPC ──> VarifyServer:50051（验证码）
-  │                    └─ gRPC ──> StatusServer:50052（选择 ChatServer、签发 token）
-  │
-  └─ TCP 长连接 + [ID(2B) + 长度(2B) + JSON] ──> ChatServer:8090/8091
-                                                   ├─ Redis：token、在线位置、用户缓存
-                                                   ├─ MySQL：账号、社交、私聊/群聊、消息与回执
-                                                   └─ gRPC：ChatServer1 <-> ChatServer2
+```mermaid
+flowchart LR
+    Q[Qt客户端] -->|HTTP JSON| G[GateServer]
+    G -->|gRPC验证码| V[VarifyServer]
+    G -->|gRPC路由| S[StatusServer]
+    Q -->|TCP四字节头 JSON| C[ChatServer]
+    Q -->|TCP六字节头 资源协议| R[ResourceServer]
+    C -->|gRPC正式消息与信令| P[其他ChatServer]
+    C -->|gRPC资源核验| R
 ```
 
-HTTP 负责注册、登录、验证码和重置密码等短请求。登录拿到 `uid/host/port/token` 后，客户端连接 StatusServer 分配的 ChatServer，后续搜索、好友和聊天业务都走 TCP。
+`ReqId`同时用作Qt HTTP回调索引与聊天TCP消息类型。HTTP请求不携带这个数字包头；聊天TCP使用大端 `uint16 ID + uint16 body_length + UTF-8 JSON`。ResourceServer有独立连接、独立ID空间和 `uint16 ID + uint32 body_length`头，同值不能跨协议解释。
 
-## 2. ID 总表
+帧ID表示操作种类；客户端 `msgid`表示一条待确认消息；数据库 `message_id`表示正式消息主键；`thread_id`表示会话；群管理 `request_id`关联一次网络请求，`operation_id`关联可持久重放的业务操作；音视频 `call_id`关联整场通话。它们的去重、权限和生命周期分别处理。
 
-| 消息常量 | 方向/载荷 | 处理情况 |
-| --- | --- | --- |
-| `ID_GET_VARIFY_CODE` | HTTP `/get_varifycode`，`{email}` | GateServer 调用 VarifyServer 发送验证码 |
-| `ID_REG_USER` | HTTP `/user_register`，用户资料和验证码 | GateServer 校验后写入用户数据 |
-| `ID_RESET_PWD` | HTTP `/user_resetpassword`，用户、邮箱、验证码、新密码 | GateServer 校验后更新密码 |
-| `ID_LOGIN_USER` | 预留的 HTTP 登录消息 | 当前登录代码使用 `ID_CHAT_LOGIN`，未单独使用 |
-| `ID_CHAT_LOGIN` | HTTP 登录回调索引；TCP `{uid,token}` 登录 ChatServer | 两层复用，语义由 `Modules`/传输层区分 |
-| `ID_CHAT_LOGIN_RSP` | ChatServer 返回 `{error,uid,token,user,...}` | 客户端解析资料并进入聊天页 |
-| `ID_SEARCH_USER_REQ` | TCP `{uid}`，可传 UID 或用户名 | ChatServer 按 UID 或用户名查询 |
-| `ID_SEARCH_USER_RSP` | TCP 返回搜索到的用户资料 | 客户端展示查询结果 |
-| `ID_ADD_FRIEND_REQ` | TCP `{uid,applyname,bakname,touid}` | ChatServer 写申请并通知目标用户 |
-| `ID_ADD_FRIEND_RSP` | ChatServer 返回申请写入结果 | 服务端已回包，客户端尚未注册专用 handler |
-| `ID_NOTIFY_ADD_FRIEND_REQ` | ChatServer 推送 `{applyuid,name,desc,nick,sex,icon}` 给被申请方 | 客户端加入新朋友列表 |
-| `ID_AUTH_FRIEND_REQ` | 被申请方提交 `{fromuid,bakname,touid}` | ChatServer1 在同一事务内确认好友关系、创建/复用私聊并写入初始消息 |
-| `ID_AUTH_FRIEND_RSP` | 认证请求处理结果，含 `textmsgs` | 客户端更新好友列表、绑定 `thread_id` 并把初始消息写入 SQLite |
-| `ID_NOTIFY_AUTH_FRIEND_REQ` | 通知申请方认证结果，含同一份 `textmsgs` | 同服和跨服均透传初始消息；客户端以 `msg_id` 幂等缓存 |
-| `ID_TEXT_CHAT_MSG_REQ` | TCP `{fromuid,touid,textArray}` 文本请求 | ChatServer1 先持久化后同服或跨服转发 |
-| `ID_TEXT_CHAT_MSG_RSP` | 文本消息请求回包 | 成功回包带服务端 `message_id/thread_id`，发送方据此写 SQLite |
-| `ID_NOTIFY_TEXT_CHAT_MSG_REQ` | 推送对方收到的文本消息 | 每条消息必须带完整服务端元数据；客户端实时写 SQLite，缺字段即丢弃 |
-| `ID_NOTIFY_OFF_LINE_REQ` | 重复登录时通知旧客户端下线 | 服务端发送后关闭旧 socket；客户端解析通知或检测已登录连接断开后返回登录页 |
-| `ID_HEART_BEAT_REQ` / `ID_HEARTBEAT_RSP` | 客户端定期 Ping、服务端立即 Pong | 客户端每 20 秒发送，60 秒无回包时弹出心跳超时提示并返回登录页；ChatServer 60 秒无有效收包清理会话 |
-| `ID_LOAD_CHAT_THREAD_REQ` / `ID_LOAD_CHAT_THREAD_RSP` | 加载聊天会话列表 | 客户端登录后按游标发现新增会话并写 SQLite |
-| `ID_CREATE_PRIVATE_CHAT_REQ` / `ID_CREATE_PRIVATE_CHAT_RSP` | 创建私聊会话 | 客户端好友资料页请求唯一私聊；回包写入本地 SQLite 会话缓存 |
-| `ID_LOAD_CHAT_MSG_REQ` / `ID_LOAD_CHAT_MSG_RSP` | 加载会话历史消息 | 客户端按会话游标正序分页同步到 SQLite |
-| `ID_UPDATE_USER_PROFILE_REQ` / `ID_UPDATE_USER_PROFILE_RSP` | TCP `{uid,nick,desc,icon}` 更新当前用户资料 | ChatServer 以登录会话 UID 鉴权，更新 MySQL 并失效 Redis 用户缓存 |
-| `ID_IMAGE_CHAT_MSG_REQ` (`1033`) | TCP `{fromuid,touid,imageArray}` 图片请求 | ChatServer 先调用 ResourceServer gRPC 核验已完成图片，再写 `chat_message` |
-| `ID_IMAGE_CHAT_MSG_RSP` (`1034`) | 图片发送确认 | 成功表示图片已核验且已持久化；`delivered:false` 时接收方走历史增量同步 |
-| `ID_NOTIFY_IMAGE_CHAT_MSG_REQ` (`1035`) | 收到图片通知 | 服务端下发可信 `resource_id/name/mime_type/file_size/width/height` 与正式消息元数据 |
-| `ID_MESSAGE_DISPLAY_ACK_REQ` (`1036`) | 接收端 `{thread_id,message_ids}` | 消息已实际绘制后确认；服务端幂等写入 `displayed_at`，不改已读状态 |
-| `ID_NOTIFY_MESSAGE_DISPLAYED` (`1037`) | 服务端推送发送端 | 对方已显示指定消息，客户端将投递状态提升为“已显示” |
-| `ID_MARK_THREAD_READ_REQ` (`1038`) | 接收端 `{thread_id,read_through_message_id}` | 当前会话已读游标；服务端只更新该用户实际接收的未读消息 |
-| `ID_NOTIFY_THREAD_READ` (`1039`) | 服务端推送发送端 | 对方已读到指定游标，客户端将对应发送消息显示为“已读” |
-| `ID_FILE_CHAT_MSG_REQ` (`1040`) | TCP `{fromuid,touid,fileArray}` 私聊文件请求 | ChatServer 以 session UID 鉴权，并调用 ResourceServer 核验已完成的普通文件 |
-| `ID_FILE_CHAT_MSG_RSP` (`1041`) | 文件发送确认 | 成功表示可信元数据已持久化；实时推送失败时仍由 1030 历史补齐 |
-| `ID_NOTIFY_FILE_CHAT_MSG_REQ` (`1042`) | 收到私聊文件通知 | 只传资源元数据；Qt 保存到 SQLite 并显示可点击卡片，不自动下载 |
-| `ID_CREATE_GROUP_REQ/RSP` | `{request_id,operation_id,name}` | 事务创建群/群主，持久业务重放 |
-| `ID_SEARCH_GROUP_REQ/RSP` | `{request_id,thread_id}` | 精确搜索有效群号，返回group对象 |
-| `ID_JOIN_GROUP_REQ/RSP` | `{request_id,operation_id,thread_id,explanation?}` | joined或pending；现有邀请转明确同意，已有申请仍待审批 |
-| `ID_LOAD_GROUP_LIST_REQ/RSP` | `{request_id,after_thread_id,page_size}` | 从0建立session UID快照，groups/next_thread_id/load_more，4KiB分页；整轮成功才客户端失效对账 |
-| `ID_LOAD_GROUP_MEMBERS_REQ/RSP` | `{request_id,thread_id,after_uid,page_size}` | 当前有效成员，最新完整group/self proof及members[{uid,nick,role,membership_version}] |
-| `ID_GROUP_TEXT_MSG_REQ/RSP` | `{thread_id,textArray:[{msgid,content}]}` | 当前成员单份消息事务，正式元数据及sender_nick，persisted与实时结果分离 |
-| `ID_NOTIFY_GROUP_TEXT_MSG` | 群文本正式元数据+target_member_uid | 提交后按成员扇出，同服/跨服目标锁内授权并排队，不再落库 |
-| `ID_KICK_GROUP_MEMBER_REQ/RSP` | `{request_id,operation_id,thread_id,target_member_uid,expected_membership_version}` | 群主踢非owner，管理员仅踢role0，版本指目标 |
-| `ID_DISSOLVE_GROUP_REQ/RSP` | `{request_id,operation_id,thread_id}` | owner逻辑解散/成员失效版本，保留历史 |
-| `ID_NOTIFY_GROUP_STATE` | `{thread_id,type:'group',active:false,reason,target_member_uid}` | reason kicked/dissolved，只失效本群，不触发账号下线 |
-| `ID_INVITE_GROUP_REQ/RSP` | `{request_id,operation_id,thread_id,target_member_uid}` | 好友邀请准入契约 |
-| `ID_DECIDE_GROUP_INVITE_REQ/RSP` | `{request_id,operation_id,thread_id,invitation_id,accept}` | 被邀请者明确同意/拒绝 |
-| `ID_LOAD_GROUP_REQUESTS_REQ/RSP` | `{request_id,scope,after_id,page_size,thread_id?}` | inbox/applications/results/approvals；每个scope独立使用全局准入id分页 |
-| `ID_DECIDE_GROUP_APPLICATION_REQ/RSP` | `{request_id,operation_id,thread_id,application_id,approve}` | 管理员/群主审批申请 |
-| `ID_SET_GROUP_ADMIN_REQ/RSP` | `{request_id,operation_id,thread_id,target_member_uid,role,expected_membership_version}` | 群主管理角色0/1，版本指目标 |
-| `ID_TRANSFER_GROUP_OWNER_REQ/RSP` | `{request_id,operation_id,thread_id,target_member_uid,expected_membership_version}` | 群主原子转让，版本指目标 |
-| `ID_LEAVE_GROUP_REQ/RSP` | `{request_id,operation_id,thread_id,expected_membership_version}` | 普通/管理员自愿离群，版本指自己 |
-| `ID_SET_GROUP_APPROVAL_REQ/RSP` | `{request_id,operation_id,thread_id,approval_required}` | 群主审批开关，不自动处理已有申请 |
-| `ID_UPDATE_GROUP_ANNOUNCEMENT_REQ/RSP` | `{request_id,operation_id,thread_id,announcement,expected_announcement_version}` | 纯 UTF8 最大1024字节；完整输入仍受2048限制 |
-| `ID_UPDATE_GROUP_AVATAR_REQ/RSP` | `{request_id,operation_id,thread_id,resource_id}` | 可信群头像核验/发布契约 |
-| `ID_NOTIFY_GROUP_EVENT` | event_type inbox/result/metadata/members/invalidated | 非成员信箱/结果不携带有效成员证明 |
-| `ID_VIDEO_TEST_REQ/RSP` | `{op,request_id,touid?}` 或 `{op,request_id,test_id,reason?}` | 单向固定文件测试控制；`start/ready/stop`，身份取登录 session，Redis 保存短期状态 |
-| `ID_NOTIFY_VIDEO_TEST` | `{op,status,test_id,stream_id,app,media_url,fromuid,touid,...}` | 通知好友测试开始、发布就绪或停止；跨服使用专用 `NotifyVideoTest` RPC |
-| `ID_VOICE_CALL_REQ/RSP` | invite `{op,request_id,touid,call_type}`；后续 `{op,request_id,call_id,reason?}` | 好友音视频 `invite/accept/reject/ready/end`；类型只允许 `audio/video`，由服务端保存并回传；后续动作不得携带类型 |
-| `ID_NOTIFY_VOICE_CALL` | `{op,status,call_id,invite_request_id,fromuid,touid,call_type,actoruid?,...}` | 成功通知从Redis通话元数据生成 `call_type`；`accepted` 另带 `app=voice_call/media_url/caller_stream/callee_stream`；跨服复用 `NotifyVoiceCall` |
+## HTTP回调ID
 
-视频测试发送端在 transport connected 且 outbound 视频 bytes 增长时发送 `ready`；接收端随后单次 play，ZLM 以 `maxStreamWaitMS` 等待流注册。`rpc_failed` 统一表示 Redis/MySQL 依赖或跨服 RPC 失败，客户端提示“业务依赖或跨服通知失败”。同服与跨服文件音视频、非好友、离线、素材缺失和清理结果见 [连通测试](WebRTC视频通信.md#连通测试)。
+定义依据为[客户端global.h](../chat_app%20desktop/global.h)，请求路由依据为[GateServer LogicSystem](../GateServer/src/LogicSystem.cpp)。
 
-音视频控制共用同一通话状态机：`invite` 必须带 `call_type=audio|video`，服务端校验好友关系后写入Redis；后续 `accept/reject/ready/end` 使用服务端 `call_id`，携带 `call_type` 会被拒绝。基于已创建元数据的成功响应与通知带服务端保存的 `call_type`；创建前失败或操作失败的错误响应可能没有该字段，客户端按 `request_id` 关联错误，不以缺失类型推断通话模式。`invite_request_id` 保留原邀请UUID，`request_id` 关联单次操作，`call_id` 关联整场通话。`rejected/ended` 表示拒绝/结束；同服与跨服都复用 `NotifyVoiceCall` 精确投递，依赖或传输失败为 `rpc_failed`。部署需同步更新客户端及ChatServer1/2；旧客户端未发送 `call_type` 的邀请会得到 `invalid`。好友鉴权不提供媒体短时授权，当前复用可信回环ZLM，详见 [视频通话](WebRTC视频通信.md#视频通话)。
+| 数值 | 常量 | 请求与用途 |
+| ---: | --- | --- |
+| 1001 | `ID_GET_VARIFY_CODE` | `/get_varifycode`，`email`，调用VarifyService |
+| 1002 | `ID_REG_USER` | `/user_register`，用户名/邮箱/混淆密码/确认密码/验证码 |
+| 1003 | `ID_RESET_PWD` | `/user_resetpassword`，用户/邮箱/新密码/验证码 |
+| 1004 | `ID_LOGIN_USER` | 已定义；当前登录页没有用它分发HTTP回调 |
+| 1005 | `ID_CHAT_LOGIN` | 登录页实际用作 `/user_login`回调索引；也是TCP登录类型 |
 
+验证码通过Redis保存并邮件发送，账号与密码写MySQL。`Modules`区分注册、登录、重置密码的Qt回调。当前HTTP登录字段为 `user/passwd`，成功返回 `uid/email/token/host/port`，详细操作见[登录](login.md)。
 
-群管理 mutation 均要求 operation_id（现有 create/join/kick/dissolve 同样适用）。准入响应 entries 使用 `{kind,id,thread_id,group_name,inviter_uid,applicant_uid,target_uid,status,explanation,created_at_ms,updated_at_ms}`，next_id 为全局准入游标。group包含最新version、审批/公告/头像独立版本与可信元数据，以及接收者专属member/role/membership_version/membership_proof/source；source为mutation/snapshot/event。成员项携带membership_version，成员回包包含完整最新group。
+## 聊天TCP消息表
 
-公告仅有效成员查看。group.member=false的精确搜索、pending准入、旧JOIN重放和本人失效事件将announcement置空、announcement_version/announcement_author_uid/announcement_updated_at_ms置0，announcement_visible=false；当前有效成员visible=true且字段完整。公开name/thread_id/owner_uid/active/approval_required仍可读；公告占位0不是“清空公告”或新公告版本。客户端不得把非成员group资料合并到缓存，失效事件只推进成员负向版本/active，不用这些占位字段覆盖缓存公告。广播可见性按实际接收者，而不是操作人的权限。
+数值依据为[客户端ReqId](../chat_app%20desktop/global.h)与[服务端MSG_IDS](../ChatServer1/include/const.h)。请求方向均为Qt到ChatServer；响应和通知方向均为ChatServer到Qt。1005服务端名为 `MSG_CHAT_LOGIN`，1006名为 `MSG_CHAT_LOGIN_RSP`；其余使用表中常量名。
 
-`inbox`返回本人收到的全部邀请（pending及终态）；`applications`返回本人的全部申请（pending及终态）；`results`返回本人是被邀请者/申请者/邀请者的终态记录；`approvals`仅返回该群待审申请并锁内校验当前管理权限。每轮刷新各scope都从after_id=0开始，不能把其他scope的游标混用，也不能只按新id刷新旧记录状态。通知紧凑JSON显式带接收者`uid`和`type="group"`；uid不是操作人。只有新入群者的members事件带membership_granted=true，非成员结果不能授予权限。
+| 数值 | 常量 | 语义 |
+| ---: | --- | --- |
+| 1005 | `ID_CHAT_LOGIN` | `uid/token`认证当前连接 |
+| 1006 | `ID_CHAT_LOGIN_RSP` | 登录结果、资料、申请与好友列表 |
+| 1007 / 1008 | `ID_SEARCH_USER_REQ/RSP` | UID或用户名搜索 |
+| 1009 / 1010 | `ID_ADD_FRIEND_REQ/RSP` | 好友申请写入结果 |
+| 1011 | `ID_NOTIFY_ADD_FRIEND_REQ` | 被申请方申请通知 |
+| 1013 / 1014 | `ID_AUTH_FRIEND_REQ/RSP` | 同意申请、建立关系与首条消息 |
+| 1015 | `ID_NOTIFY_AUTH_FRIEND_REQ` | 原申请方认证结果及初始消息 |
+| 1017 / 1018 | `ID_TEXT_CHAT_MSG_REQ/RSP` | 私聊文本请求与持久化确认 |
+| 1019 | `ID_NOTIFY_TEXT_CHAT_MSG_REQ` | 接收方私聊文本通知 |
+| 1021 | `ID_NOTIFY_OFF_LINE_REQ` | 重复登录的旧账号连接下线 |
+| 1023 / 1024 | `ID_HEART_BEAT_REQ` / `ID_HEARTBEAT_RSP` | Ping/Pong |
+| 1025 / 1026 | `ID_LOAD_CHAT_THREAD_REQ/RSP` | 私聊会话增量列表 |
+| 1027 / 1028 | `ID_CREATE_PRIVATE_CHAT_REQ/RSP` | 创建或复用唯一私聊 |
+| 1029 / 1030 | `ID_LOAD_CHAT_MSG_REQ/RSP` | 私聊/群消息历史分页 |
+| 1031 / 1032 | `ID_UPDATE_USER_PROFILE_REQ/RSP` | 当前用户资料更新 |
+| 1033 / 1034 | `ID_IMAGE_CHAT_MSG_REQ/RSP` | 图片资源核验与消息持久化 |
+| 1035 | `ID_NOTIFY_IMAGE_CHAT_MSG_REQ` | 图片消息元数据通知 |
+| 1036 | `ID_MESSAGE_DISPLAY_ACK_REQ` | 接收方实际绘制后的展示确认 |
+| 1037 | `ID_NOTIFY_MESSAGE_DISPLAYED` | 向发送方推送展示事实 |
+| 1038 | `ID_MARK_THREAD_READ_REQ` | 接收方会话已读游标 |
+| 1039 | `ID_NOTIFY_THREAD_READ` | 向发送方推送已读游标 |
+| 1040 / 1041 | `ID_FILE_CHAT_MSG_REQ/RSP` | 文件资源核验与消息持久化 |
+| 1042 | `ID_NOTIFY_FILE_CHAT_MSG_REQ` | 文件消息元数据通知 |
+| 1043 / 1044 | `ID_CREATE_GROUP_REQ/RSP` | 创建群 |
+| 1045 / 1046 | `ID_SEARCH_GROUP_REQ/RSP` | 精确群号搜索 |
+| 1047 / 1048 | `ID_JOIN_GROUP_REQ/RSP` | 入群或提交申请 |
+| 1049 / 1050 | `ID_LOAD_GROUP_LIST_REQ/RSP` | 当前账号群列表快照分页 |
+| 1051 / 1052 | `ID_LOAD_GROUP_MEMBERS_REQ/RSP` | 有效群成员分页 |
+| 1053 / 1054 | `ID_GROUP_TEXT_MSG_REQ/RSP` | 群文本请求与持久化结果 |
+| 1055 | `ID_NOTIFY_GROUP_TEXT_MSG` | 群文本通知 |
+| 1056 / 1057 | `ID_KICK_GROUP_MEMBER_REQ/RSP` | 移除群成员 |
+| 1058 / 1059 | `ID_DISSOLVE_GROUP_REQ/RSP` | 群主逻辑解散 |
+| 1060 | `ID_NOTIFY_GROUP_STATE` | 指定群成员身份失效，保持账号连接 |
+| 1061 / 1062 | `ID_INVITE_GROUP_REQ/RSP` | 邀请好友 |
+| 1063 / 1064 | `ID_DECIDE_GROUP_INVITE_REQ/RSP` | 被邀请者接受/拒绝 |
+| 1065 / 1066 | `ID_LOAD_GROUP_REQUESTS_REQ/RSP` | 邀请/申请/结果/待审批分页 |
+| 1067 / 1068 | `ID_DECIDE_GROUP_APPLICATION_REQ/RSP` | 管理员或群主审批 |
+| 1069 / 1070 | `ID_SET_GROUP_ADMIN_REQ/RSP` | 群主管理角色 |
+| 1071 / 1072 | `ID_TRANSFER_GROUP_OWNER_REQ/RSP` | 原子转让群主 |
+| 1073 / 1074 | `ID_LEAVE_GROUP_REQ/RSP` | 非群主自愿离群 |
+| 1075 / 1076 | `ID_SET_GROUP_APPROVAL_REQ/RSP` | 群主设置入群审批 |
+| 1077 / 1078 | `ID_UPDATE_GROUP_ANNOUNCEMENT_REQ/RSP` | 版本化公告更新 |
+| 1079 / 1080 | `ID_UPDATE_GROUP_AVATAR_REQ/RSP` | 专用群头像资源核验与更新 |
+| 1081 | `ID_NOTIFY_GROUP_EVENT` | 群信箱、结果、资料和成员事件 |
+| 1082 / 1083 | `ID_VIDEO_TEST_REQ/RSP` | 单向固定文件测试控制 |
+| 1084 | `ID_NOTIFY_VIDEO_TEST` | 单向测试通知 |
+| 1085 / 1086 | `ID_VOICE_CALL_REQ/RSP` | 好友音视频操作及结果 |
+| 1087 | `ID_NOTIFY_VOICE_CALL` | 好友音视频状态通知 |
 
-membership_proof不等于激活许可：普通metadata/members只能刷新已有有效身份，不能激活未知群或tombstone。仅实际新增/重入收件人得到event_type='members',source='event',membership_granted=true，其他成员无grant。self显式CREATE/JOIN在当前锁定证明member=true时确认grant，包括已经入群与相同键重放；旧JOIN被踢后重放没有grant。接受邀请仅实际新入群响应有grant，pending/离群重放/接受邀请重放无grant；审批者响应不能代替申请者grant。离线激活只能完整成功快照轮，旧版本不能覆盖新身份。
+1012、1016、1020、1022在聊天消息枚举中没有定义。错误码有独立空间，例如错误1016表示 `MessageTooLarge`，与帧ID没有自动对应关系。客户端1010目前没有专用回包handler，不能把服务端回包存在等同于界面处理完整。
 
-邀请先确认目标账号存在（否则SearchUserNoExist）和互为好友的两条friend边，再产生pending；一条单向残留关系不成立。终态邀请/申请的新operation_id响应error=0、already_processed=true，status_conflict表示请求决定与entry.status不一致（invalid总是冲突）；不得覆盖终态、重入或将相反审批显示为成功执行。
+## 登录、心跳与资料
 
-所有mutation错误响应也回传operation_id、request_id、真实session uid及可验证数值格式的thread_id；这些只关联请求，不授予身份证明。列表/成员/准入分页预算先包含最终UID/相关字段，以较大的load_more=false计整帧，失败页不推进快照游标。
-管理/列表/成员响应原样回传字符串request_id；身份只用登录session UID。群不可用GroupUnavailable，非成员GroupNotMember，权限或版本冲突GroupPermissionDenied；群号uint64 thread_id。群历史复用ID_LOAD_CHAT_MSG_REQ/RSP，有效成员可读加入前历史，踢出/解散后拒绝。
+1005验证Redis `utoken_<uid>`后，登录锁内处理旧连接、登记当前UID及在线路由。1006成功后Qt才开启心跳和聊天界面。token没有TTL或一次性消费，Status路由选择没有健康探测，详见[登录](login.md)。
 
+1023使用JSON对象，`client_time`为可选诊断毫秒字符串；1024含 `error/server_time`。Qt成功登录后立即发送，再每20秒发送；60秒无有效1024则主动断线。服务端完整业务帧或合法心跳续期，60秒无完整收包加10秒扫描延迟清理，详见[心跳检测](心跳检测.md)。
 
-ResourceServer 的独立协议使用其自身的上传分片、断点同步消息常量。完成回包包含
-`resource_url`；客户端只有拿到该字段后，才向 ChatServer 发送 `ID_UPDATE_USER_PROFILE_REQ`。
+1031提交 `uid/nick/desc/icon`，服务端用登录UID验证操作人，更新MySQL并失效Redis用户缓存。头像资源上传完成后的资源引用与资料更新是两步操作。
 
-## 3. 注册、验证码和重置密码
+## 用户搜索、申请与认证
 
-### 3.1 获取验证码
+1007的 `uid`是字符串，可输入数字UID或用户名；纯数字先查UID，未命中再按用户名查询。1008返回用户展示资料。
 
-```text
-客户端 RegisterDialog/ResetDialog
-  -> HTTP POST /get_varifycode {email}
-  -> GateServer
-  -> gRPC VarifyService.GetVarifyCode
-  -> VarifyServer
-  -> Redis 保存验证码（带过期时间）并发送邮件
-  <- GateServer 返回 {error,email}
+1009提交 `uid/applyname/bakname/touid`，`bakname`保存为申请者给目标的备注 `applicant_remark`。1010表示申请处理结果，1011向目标展示申请人资料。申请记录使用 `(from_uid,to_uid)`唯一约束，已终态申请不会被新请求直接覆盖。
+
+1013的 `fromuid`是原申请者，`touid`是处理申请者；备注属于处理者给申请者的备注。数据库在同一事务中锁申请、更新同意状态、写双向好友、创建/复用私聊并保存初始消息“我们已经是好友了，开始聊天吧。”。当前 `AddFriendApply/AuthFriend`直接使用JSON中的操作UID，没有与Session UID比较；数据库检查申请状态不能代替调用者身份授权。此路径处理同意，没有独立的好友拒绝请求字段。
+
+1014与1015包含同一份 `textmsgs`：
+
+```json
+{"sender_id":1002,"unique_id":"friend-auth-81","msg_id":81,"thread_id":12,"msgcontent":"我们已经是好友了，开始聊天吧。"}
 ```
 
-客户端使用 `ID_GET_VARIFY_CODE` 区分注册模块和重置密码模块。验证码本身由 VarifyServer 生成，GateServer 只负责转发结果。
+Qt按正式消息主键幂等缓存；跨服 `NotifyAuthFriend`原样携带这些字段。该protobuf的 `msg_id/thread_id`为int32，数据库路径检查范围。重复同意复用初始消息，不能推广为普通发送重试幂等。
 
-### 3.2 注册
+## 私聊消息与回执
 
-```text
-客户端 -> POST /user_register
-       {user,email,passwd,confirm,varifycode}
-       -> GateServer 校验参数、验证码、用户名/邮箱唯一性
-       -> MySQL 写入 user
-客户端 <- {error,email}
+1017输入 `fromuid/touid/textArray:[{msgid,content}]`。服务端检查Session UID，先保存再通知，1018/1019每项附 `message_id/thread_id/sender_id/recv_id/created_at_ms/status`。1018的 `persisted`描述保存，`realtime_delivered`描述实时路径判定；普通Send不暴露入队失败，后者不保证客户端收到。
+
+1033使用 `imageArray`，1040使用 `fileArray`。服务端先通过ResourceServer核验资源完成状态及可信元数据，再保存聊天记录。1034/1041成功代表已核验并持久化，资源正文走独立连接。1035/1042携带正式主键和资源元数据，文件不会因通知到达便自动下载。
+
+1036示例：
+
+```json
+{"thread_id":"12","message_ids":["81","82"]}
 ```
 
-### 3.3 重置密码
+接收端实际绘制后才上报，最多100个ID；服务端以当前UID确认所属消息，写 `displayed_at`后发1037。1038提交 `thread_id/read_through_message_id`字符串，更新该用户实际收到的私聊已读状态，1039通知发送方。群 `recv_id=0`不复用该单接收者回执。
 
-```text
-客户端 -> POST /user_resetpassword
-       {user,email,passwd,varifycode}
-       -> GateServer 校验用户、邮箱和验证码
-       -> MySQL 更新密码
-客户端 <- {error}
+1029请求 `thread_id/after_message_id`十进制字符串和 `page_size`，1030按正式ID正序返回 `messages/next_message_id/load_more`。默认50条、最大1000条，实际还受4096字节JSON预算限制。连续历史游标只在完整历史页缓存提交后推进，实时通知不得跳过缺失历史。文本发送UUID未持久为去重键，当前缺少安全自动重发机制。
+
+## 群请求字段与权限
+
+群号使用uint64 `thread_id`，Qt请求通常发送十进制字符串。查询带非空字符串 `request_id`；管理mutation还要求 `operation_id`，同一业务重放保留该值。响应回显当前请求ID，业务结果持久化在 `group_operation(user_id, operation_id)`。
+
+| 操作 | 必要业务字段和约束 |
+| --- | --- |
+| 创建/加入 | `name`或 `thread_id/explanation`；审批开启可返回pending，pending没有成员权限 |
+| 邀请/决定 | `target_member_uid`或 `invitation_id/accept`；邀请检查双向好友，接收者明确决定 |
+| 审批 | `application_id/approve`，仅当前管理员/群主 |
+| 踢人/角色/转让 | `target_member_uid/expected_membership_version`；角色更新另带role，版本指目标 |
+| 离群 | `expected_membership_version`指本人，群主须先转让 |
+| 审批开关 | `approval_required`，不自动处理原有pending |
+| 公告 | `announcement/expected_announcement_version`，UTF-8正文最大1024字节，完整请求仍限2048 |
+| 群头像 | `resource_id`，ResourceServer专用用途和服务凭据核验 |
+
+角色0成员、1管理员、2群主。群主管理角色、转让、解散与审批开关；管理员可审批、移除普通成员和编辑公告。成员读取、发文本、历史都核对当前有效身份；有效成员可读加入前历史。
+
+1049从 `after_thread_id=0`开始完整快照轮，客户端整轮成功才失效比较。1051使用 `after_uid/next_uid`，成员含昵称、角色与成员版本。1065的 `scope=inbox/applications/results/approvals`分别分页，游标不可混用，每轮从0以便刷新旧记录状态。
+
+群1053使用 `thread_id/textArray`，1054/1055带 `type="group"`及正式元数据、`sender_nick`，一条正文只保存一行 `recv_id=0`消息。目标入队前在群行锁内再次授权。1060包含失效原因和目标成员版本；1081包含接收者UID、事件类型与接收者专属成员证明。普通资料/成员事件不能激活未知群或已失效身份；实际入群grant与完整成功快照有专门规则。
+
+公告仅有效成员可见；非成员搜索、pending或本人失效返回不可缓存的空/0占位和 `announcement_visible=false`。占位不代表公告被清空。完整管理模型、版本与恢复见[群聊](群聊.md)。
+
+## 音视频控制
+
+1082保留单向固定文件测试的 `start/ready/stop`，1084通知对端；状态与原精确session绑定，不写聊天历史。
+
+1085示例：
+
+```json
+{"op":"invite","request_id":"具有UUID格式的操作标识","touid":1002,"call_type":"video"}
 ```
 
-## 4. 登录和 ChatServer 会话
+真实请求的 `request_id`必须是UUID。`invite`必须携带 `call_type=audio|video`；服务端验证双向好友、当前UserMgr及Redis session，在Redis原子占用双方通话状态。随后 `accept/reject/ready/end`提交 `call_id`和新的请求UUID，携带 `call_type`会被拒绝。类型由服务端元数据权威返回，客户端不能在接听阶段改写。
 
-```text
-1. 客户端 -> POST /user_login {user,passwd}
-2. GateServer -> MySQL 校验用户名和密码
-3. GateServer -> StatusServer.GetChatServer(uid)
-4. StatusServer 选择负载较低的 ChatServer，生成 token，并写 Redis `utoken_<uid>`
-5. GateServer <- {uid,host,port,token}
-6. 客户端 TCP 连接 host:port
-7. 客户端 -> ID_CHAT_LOGIN {uid,token}
-8. ChatServer 校验 Redis token，读取用户资料，绑定 uid/session
-9. 客户端 <- ID_CHAT_LOGIN_RSP {error,uid,token,user,nick,desc,sex,icon}
-```
+1086回显 `op/request_id/call_id`，1087通知含原邀请 `invite_request_id`及成功元数据中的 `call_type`。`accepted`才携带 `app/media_url/caller_stream/callee_stream`；失败响应可能没有类型，按请求ID处理。`notified`表示信令入队，不能表示对方已听见声音或媒体连接成功。
 
-`ID_CHAT_LOGIN_RSP` 成功后客户端才切换到 `ChatDialog`。`ID_CHAT_LOGIN` 在当前代码中既作为 HTTP 登录回调索引，又作为 TCP 登录 ID；HTTP 请求由 `Modules::LOGINMOD` 区分，TCP 则通过包头 ID 区分。
+媒体直接连接ZLM，RPC仅转发信令，当前共用 `[VideoTest] enabled/media_url`及可信回环部署，没有短时媒体授权。协议和操作见[WebRTC视频通信](WebRTC视频通信.md)。
 
-## 5. 搜索用户
+## ResourceServer独立ID
 
-```text
-客户端 -> ID_SEARCH_USER_REQ {"uid":"10001"}
-       -> ChatServer.UserSearchHandler
-          纯数字先按 uid 查，查不到再按用户名查
-客户端 <- ID_SEARCH_USER_RSP {error,uid,user,nick,desc,sex,icon}
-```
+| 数值 | 常量 | 用途 |
+| ---: | --- | --- |
+| 1001 / 1002 | `ID_TEST_REQ/RSP` | 资源连接测试 |
+| 1003 / 1004 | `ID_UPLOAD_FILE_REQ/RSP` | 上传分片及完成结果 |
+| 1005 / 1006 | `ID_SYNC_FILE_REQ/RSP` | 上传状态/断点同步 |
+| 1007 / 1008 | `ID_DOWNLOAD_FILE_REQ/RSP` | 按resource_id下载分片 |
 
-搜索成功后客户端显示用户资料，点击“添加好友”才进入下一条好友申请链路。
+资源标识使用上传任务ID，不能把服务端磁盘路径作为下载协议。下载权限、上传用途和分片字段见[资源服务](资源服务.md)。
 
-## 6. 好友申请
+## 修改协议与定位
 
-### 6.1 客户端 A 发起申请
-
-```text
-A -> ID_ADD_FRIEND_REQ
-   {
-     "uid": A 的 uid,
-     "applyname": A 的展示名,
-     "bakname": 备注名,
-     "touid": B 的 uid
-   }
-```
-
-ChatServer 收到后向 `friend_apply(from_uid,to_uid,applicant_remark)` 写入申请记录；
-`bakname` 保存为 `applicant_remark`，表示 A 给 B 设置的好友备注。B 同意后，服务端把它
-写入 A 的 `friend(self_id=A, friend_id=B).back`，并把 B 在认证页填写的备注写入反向记录。
-随后向 A 返回：
-
-```text
-A <- ID_ADD_FRIEND_RSP {"error":0}
-```
-
-这个回包只表示“申请已被服务器接收/写入”，不表示 B 已同意。
-
-### 6.2 通知 B 有新申请
-
-如果 B 与 A 在同一个 ChatServer，服务器直接向 B 推送；如果跨 ChatServer，则先通过 gRPC `NotifyAddFriend(AddFriendReq)` 转发到 B 所在服务，再由目标服务推送 TCP 消息：
-
-```text
-B <- ID_NOTIFY_ADD_FRIEND_REQ
-   {
-     "applyuid": A 的 uid,
-     "name": A 的用户名/昵称,
-     "desc": 申请附言,
-     "nick": A 的昵称,
-     "sex": A 的性别,
-     "icon": A 的头像
-   }
-```
-
-B 的 `ChatDialog::slot_apply_friend` 将申请缓存到 `UserMgr`，点开“新的朋友”页面后渲染 `ApplyInfo`。同一 `applyuid` 会去重。
-
-## 7. 好友认证和最终结果
-
-当前同意好友后的完整链路如下：
-
-```text
-1. B 在申请列表点击“同意”或“拒绝”
-2. B -> ID_AUTH_FRIEND_REQ
-   {"fromuid":A 的 uid,"bakname":"B 给 A 的备注","touid":B 的 uid}
-3. B 所在 ChatServer 在一个 MySQL 事务中更新 `friend_apply`、双向 `friend`、
-   创建或复用 `private_chat`，并向 `chat_message` 写入一条“已成为好友”初始消息
-4. B <- ID_AUTH_FRIEND_RSP，消息在 `textmsgs` 中返回
-5. A 同服时直接收到 `ID_NOTIFY_AUTH_FRIEND_REQ`；跨 ChatServer 时以 gRPC `NotifyAuthFriend(AuthFriendReq)`
-   转发，`AuthFriendReq.fromuid` 是 B，`touid` 是 A，`textmsgs` 原样透传
-6. A <- ID_NOTIFY_AUTH_FRIEND_REQ，带同一条初始消息
-7. 两端客户端先更新好友资料，再按 `thread_id` 建立/更新本地正式会话，并以 `msg_id`
-   主键幂等写入 SQLite；重复通知不会重复增加未读数
-```
-
-跨服认证的 protobuf 附加消息为：
-
-```proto
-message AddFriendMsg {
-  int32 sender_id = 1;
-  string unique_id = 2;
-  int32 msg_id = 3;
-  int32 thread_id = 4;
-  string msgcontent = 5;
-}
-
-message AuthFriendReq {
-  int32 fromuid = 1;              // 认证方
-  int32 touid = 2;                // 接收通知的原申请方
-  repeated AddFriendMsg textmsgs = 3;
-}
-```
-
-TCP `ID_AUTH_FRIEND_RSP` / `ID_NOTIFY_AUTH_FRIEND_REQ` 将其映射为同名 `textmsgs` 数组。单项 JSON 使用
-`sender_id`、`unique_id`、`msg_id`、`thread_id`、`msgcontent`；客户端仅接受这些正式字段，
-不再解析历史字段名。
-
-## 8. 聊天通信
-
-文本消息目前仍按用户 UID 路由，并不依赖私聊会话。`ID_CREATE_PRIVATE_CHAT_REQ` 的服务端处理会创建或获取私聊：
-
-```text
-客户端好友资料页 -> ID_CREATE_PRIVATE_CHAT_REQ {uid, other_id}
-                  -> ChatServer.CreatePrivateChat
-                  -> MySQL chat_thread/private_chat
-客户端 <- ID_CREATE_PRIVATE_CHAT_RSP {error, uid, other_id, thread_id}
-```
-
-服务端会将两个 UID 排序，并通过 `private_chat(user1_id, user2_id)` 的唯一索引确保同一对用户只对应一个 `thread_id`。并发请求命中已有记录时返回已有会话；竞争创建产生的临时 `chat_thread` 会在同一事务中删除。Qt 客户端发送 `ID_CREATE_PRIVATE_CHAT_REQ` 后会注册并处理 `ID_CREATE_PRIVATE_CHAT_RSP`：校验当前登录 uid、写入 `LocalChatStorageMgr`，再将正式 `thread_id` 绑定到对应 `ChatUserWid`。
-
-ChatServer1 和 ChatServer2 使用相同的完整单聊链路：
-
-```text
-A -> ID_TEXT_CHAT_MSG_REQ {fromuid,touid,textArray:[{content,msgid}]}
-A <- ID_TEXT_CHAT_MSG_RSP {error,textArray:[{msgid,content,message_id,thread_id,sender_id,recv_id,created_at_ms,status}]}
-B <- ID_NOTIFY_TEXT_CHAT_MSG_REQ {error,fromuid,touid,textArray:[{msgid,content,message_id,thread_id,sender_id,recv_id,created_at_ms,status}]}
-```
-
-服务端用当前 TCP 会话保存的 UID 校验文本请求的 `fromuid`，避免客户端伪造发送者。ChatServer 先写入 MySQL，因而目标离线时 `ID_TEXT_CHAT_MSG_RSP` 返回 `delivered:false`，但不是发送失败；客户端下次登录以 `ID_LOAD_CHAT_THREAD_REQ/RSP`、`ID_LOAD_CHAT_MSG_REQ/RSP` 增量补齐。1018/1034 明确返回 `persisted` 与 `realtime_delivered`：前者表示事务已提交，后者仅表示通知已排入对端 TCP 发送队列。对端只能在气泡实际进入聊天窗口后发送 1036，服务端才写 `displayed_at` 并用 1037 通知发送端；进入会话时客户端再发送 1038，服务端更新 `status=1` 并用 1039 推送已读游标。客户端 SQLite 的 `delivery_state` 依次保存“已保存、已送达、已显示、已读”，本地 `unread_count` 在增量同步、实时通知和进入会话清零之间保持一致。跨 ChatServer 的显示/已读回执使用新的 `NotifyMessageDisplayed`、`NotifyThreadRead` RPC；发送端离线时状态仍由下次 1030 历史同步读取。两台服务和客户端必须同时部署这版协议，不支持旧通知。
-
-## 9. TCP 包格式
-
-ChatServer TCP 包固定为：
-
-```text
-| message id: 2 bytes, BigEndian | body length: 2 bytes, BigEndian | JSON body: length bytes |
-```
-
-客户端 `TcpMgr::slot_send_data` 写入包头和 JSON；`readyRead` 将数据追加到缓冲区，按 ID 找到 handler 后解析 JSON。TCP 是字节流，服务端和客户端必须同时处理半包、粘包，并且长度必须使用 UTF-8 字节数而不是 QString 字符数。
-
-## 10. 当前实现边界
-
-| 模块 | 已接通 | 仍需补齐 |
-| --- | --- | --- |
-| GateServer | 验证码、注册、登录、重置密码 | 登录回包字段可继续补充用户资料 |
-| StatusServer | ChatServer 负载选择、token 签发/校验 | 更完整的在线状态管理 |
-| ChatServer1 | 登录、社交、私聊创建/消息/历史/回执；群创建/精确搜索/加入/分页/文本/群主踢人/逻辑解散；好友单向固定文件测试信令与短期状态，同服/跨服真实好友通知、发布及停止已实测 | 撤回、发送幂等重试 |
-| ChatServer 间 gRPC | 社交、私聊文本/资源/回执；群已提交消息与独立群状态转发；视频测试 `NotifyVideoTest` 按目标 session 跨服投递且发布/停止流程已实测 | 生产级重试与传输身份边界 |
-| Qt 客户端 | HTTP/TCP登录与社交、SQLite历史/增量同步、私聊文本资源；共享搜索框中的群搜索卡片/创建/加入、侧栏嵌入式群通知、独立thread身份/纯文本/昵称、数字未读、真实成员分页与群管理审批、失效只读和完整快照对账；好友资料页 test 单向固定文件发布/接收，同服及跨服音视频已实测 | 文本发送幂等重试（本次不改） |
-| VarifyServer | Redis 验证码、邮件发送 | 邮件失败后的补偿和监控 |
+1. 查 [global.h](../chat_app%20desktop/global.h)和 [const.h](../ChatServer1/include/const.h)确认数值及传输通道。
+2. 查 [TcpMgr](../chat_app%20desktop/tcpmgr.cpp)的发送方法及 `_handler`确认客户端解析，查 [LogicSystem](../ChatServer1/src/LogicSystem.cpp)的 `RegisterCallBacks`及handler确认服务端分派。
+3. 涉及跨服时同时查看 [message.proto](../proto/message.proto)、[ChatGrpcClient](../ChatServer1/src/ChatGrpcClient.cpp)、[ChatServiceImpl](../ChatServer1/src/ChatServiceImpl.cpp)。
+4. 涉及历史或回执时查看 [MysqlMgr](../ChatServer1/src/MysqlMgr.cpp)、[建表SQL](../sql/create_tables.sql)与Qt缓存路径，不能只添加实时handler。
+5. 协议变更同时部署Qt和两个ChatServer实例；共享源码同步与独立配置规则见[聊天服务器服务](聊天服务器服务.md)。输入2048字节、历史/群输出4096字节预算详见[TCP服务器](TCP服务器.md)。
