@@ -1,3 +1,4 @@
+# 配置 HTTP 网关服务的编译及运行配置复制。
 cmake_minimum_required(VERSION 3.10)
 project(GateServer)
 
@@ -26,8 +27,6 @@ set(SOURCE_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/StatusGrpcClient.cpp
 )
 
-link_directories("D:/cppsoft/vcpkg/installed/x64-windows/lib") # 添加 vcpkg 的 lib 路径，库文件搜索路径
-
 # ==================== 可执行文件 ====================
 add_executable(${PROJECT_NAME} 
     main.cpp
@@ -37,10 +36,9 @@ add_executable(${PROJECT_NAME}
 
 # ==================== 头文件搜索路径 ====================
 target_include_directories(${PROJECT_NAME} PRIVATE 
-    "C:/local/boost_1_91_0"
+    ${CHAT_APP_BOOST_INCLUDE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/jsoncpp/json
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-    "D:/cppsoft/vcpkg/installed/x64-windows/include"   # 添加 vcpkg 的 include 路径
 )
 
 # ==================== 链接库 ====================
@@ -49,7 +47,7 @@ target_link_libraries(${PROJECT_NAME}
     gRPC::grpc++                        #链接grpc-c++库
     protobuf::libprotobuf               #链接protobuf库
     redis++::redis++                    #链接redis-c++库
-    mysqlcppconnx                        #链接mysql-c++库
+    unofficial::mysql-connector-cpp::connector
 )
 
 if(WIN32)

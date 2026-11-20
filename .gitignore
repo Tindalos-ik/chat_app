@@ -13,6 +13,7 @@ cmake_install.cmake
 *.tlog
 *.lastbuildstate
 CMakePresets.json
+!DistributeLock/CMakePresets.json
 
 # ==================== IDE / 编辑器 ====================
 .vscode/

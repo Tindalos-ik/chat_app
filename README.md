@@ -1,5 +1,7 @@
 # chat_app
 
+Windows 从零安装、Docker Compose 启动 MySQL 和 Redis、编译和运行步骤见 [环境部署](环境部署.md)。自动化恢复见 [环境部署（Agent）](环境部署-Agent.md)。
+
 ## 服务与通信
 
 | 组件 | 默认端口 | 职责 |
@@ -53,40 +55,13 @@ flowchart LR
 | `proto/message.proto` | 共用 protobuf/gRPC 契约 |
 | `sql/` | MySQL 建表、增量迁移与 SQLite 结构参考 |
 | `tests/` | 协议、数据库事务、SQLite、资源和容量测试 |
-| `deploy/` | ZLMediaKit 启动脚本和配置样例 |
+| `deploy/` | [MySQL 和 Redis 的 Compose 配置](deploy/compose.yaml)、ZLMediaKit 启动脚本和配置样例 |
 | `DistributeLock/` | 可独立构建的 hiredis 分布式锁组件 |
 | `note/` | 按主题组织的知识文档 |
 
-## 开发依赖
-
-| 工具 | 配置要求 |
-| --- | --- |
-| Windows 10/11、Visual Studio 2022 | C++ 桌面开发工具链，x64 |
-| CMake | 使用预设需要 3.21 或更高版本 |
-| vcpkg | 根预设默认工具链位于 `D:/cppsoft/vcpkg` |
-| Boost | 各服务 CMake 默认使用 `C:/local/boost_1_91_0` |
-| MySQL 8 | 启用 X Plugin；服务连接 `33060` |
-| Redis、Node.js、SMTP 邮箱 | 用于在线状态及验证码服务 |
-| Qt 6.5+ | Core、Widgets、Network、Sql、WebEngineWidgets、WebChannel；Windows 选用包含 WebEngine 的 MSVC kit |
-
-安装 C++ 依赖时使用与预设一致的 triplet：
-
-```powershell
-D:/cppsoft/vcpkg/vcpkg.exe install grpc protobuf redis-plus-plus mysql-connector-cpp gtest libpng libjpeg-turbo --triplet x64-windows
-```
-
-若依赖安装位置不同，修改 `CMakePresets.json` 的工具链路径及各服务 CMake 的 Boost 路径。Qt 客户端单独配置，服务与客户端的编译器、Qt 库和插件应分别保持 ABI 一致。
-
 ## 数据库初始化与迁移
 
-全新环境执行 [sql/create_tables.sql](sql/create_tables.sql)。以下命令在仓库根目录的 PowerShell 中运行，密码由 MySQL 客户端提示输入：
-
-```powershell
-$ddl = Get-Content .\sql\create_tables.sql -Raw
-mysql --default-character-set=utf8mb4 --protocol=tcp -h 127.0.0.1 -P 3306 -u root -p -e $ddl
-```
-
-命令行客户端使用经典协议端口 `3306`；C++ 服务使用 X DevAPI 的 `33060`。全量脚本包含用户、好友、会话、消息、群资料、成员、准入和业务操作记录。`CREATE TABLE IF NOT EXISTS` 只补建缺表，不能升级已有表。
+全新环境按 [环境部署：用 Docker Compose 启动 MySQL 和 Redis](环境部署.md#3-用-docker-compose-启动-mysql-和-redis) 启动，[sql/create_tables.sql](sql/create_tables.sql) 会在空 MySQL 数据卷上自动执行。脚本包含用户、好友、会话、消息、群资料、成员、准入和业务操作记录。`CREATE TABLE IF NOT EXISTS` 只补建缺表，不能升级已有表。
 
 | 已有结构 | 对应脚本与前提 |
 | --- | --- |
@@ -99,59 +74,7 @@ mysql --default-character-set=utf8mb4 --protocol=tcp -h 127.0.0.1 -P 3306 -u roo
 
 迁移前确认源结构、备份与停写窗口。旧群迁移会重置管理员角色，已完成该阶段的数据库直接使用对应管理增量脚本。详细约束见 [数据库设计](note/数据库设计.md)。
 
-## 运行配置
-
-1. 修改各 C++ 服务 `config.ini` 的 MySQL、Redis 地址与凭据，业务服务指向同一套数据。
-2. 保持 `StatusServer` 的 `[ChatServers]` 与两个聊天实例的 `[SelfChatServer]`、`[PeerServer]` 名称、主机、TCP/gRPC 端口一致。
-3. `ResourceServer` 的 `[StatusServer]`、`[Mysql]` 指向相同认证和聊天数据。群头像发布需要为资源服务与 ChatServer 配置匹配的私密服务凭据。
-4. 客户端 `config.ini` 的 `[GateServer]`、`[ResourceServer]` 指向可达地址。
-5. 初始化验证码配置：
-
-```powershell
-Set-Location VarifyServer
-Copy-Item config.example.json config.json
-npm install
-```
-
-填写 SMTP 邮箱及授权码、Redis 地址和密码。`config.json` 含凭据，保持私有。验证码流程使用 SMTP 与 Redis。
-
-音视频另外需要 ZLMediaKit。好友通话与固定文件 test 共用聊天服务 `[VideoTest] enabled/media_url`；当前媒体接入面向可信回环部署，短时媒体授权和公网 ICE 策略见 [WebRTC 视频通信](note/WebRTC视频通信.md)。聊天好友权限不能充当媒体服务访问凭据。
-
-## 构建
-
-在仓库根目录构建 C++ 服务及启用的测试目标：
-
-```powershell
-cmake --preset windows-vcpkg
-cmake --build --preset debug
-```
-
-协议从 `proto/message.proto` 统一生成到构建目录，再链接公共协议库。Visual Studio Debug 产物位于 `build/<服务名>/Debug/`，运行时配置由各服务构建规则复制到产物目录。
-
-Qt Creator 打开 `chat_app desktop/CMakeLists.txt`，选择具备上述模块的 MSVC Qt kit 后配置、构建。运行时保留 `config.ini`、`static/`、`media/` 及 Qt 插件。SQLite 使用 `QSQLITE` 驱动，无需单独数据库服务。
-
-## 启动与连通性检查
-
-先启动 MySQL 和 Redis，再启动验证码服务、StatusServer、两个 ChatServer、ResourceServer、GateServer。音视频功能另外启动 ZLMediaKit。
-
-`start_all.bat` 可打开服务窗口及 WSL 媒体服务。使用前修改脚本中的 `ROOT`、`REDIS`、`CFG`、WSL 发行版、MediaServer 路径及私有媒体配置、日志路径；这些值与本机安装相关。
-
-```powershell
-.\start_all.bat
-```
-
-手动启动时，验证码服务在 `VarifyServer/` 中执行 `npm run serve`；每个 C++ 服务在其可执行文件目录中执行同名 `.exe`。例如：
-
-```powershell
-Set-Location build/ResourceServer/Debug
-.\ResourceServer.exe
-```
-
-网关可达性检查：
-
-```powershell
-curl.exe http://127.0.0.1:8080/get_test
-```
+## 网关接口
 
 | HTTP 方法 | 路径 | 作用 |
 | --- | --- | --- |
@@ -161,7 +84,7 @@ curl.exe http://127.0.0.1:8080/get_test
 | POST | `/user_login` | 验证账号并取得聊天地址与 token |
 | POST | `/user_resetpassword` | 凭邮箱验证码重置密码 |
 
-随后用客户端完成注册、登录及双账号通信。网关返回成功仅说明该 HTTP 请求完成，聊天、资源与媒体链路需分别检查。
+启动命令及客户端连通性检查见 [环境部署：启动和检查](环境部署.md#6-启动和检查)。
 
 ## 测试入口
 

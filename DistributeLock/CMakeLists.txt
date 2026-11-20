@@ -1,17 +1,5 @@
+# 独立分布式锁库与 Redis 集成测试的构建配置。
 cmake_minimum_required(VERSION 3.10)
-
-# 单独配置 DistributeLock 时，不会经过根目录 CMakePresets.json；因此在第一次
-# project() 之前指定与主工程相同的 vcpkg 工具链。调用方若通过 -DCMAKE_TOOLCHAIN_FILE
-# 传入了其他位置，本默认值不会覆盖它。
-if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
-    set(CMAKE_TOOLCHAIN_FILE
-        "D:/cppsoft/vcpkg/scripts/buildsystems/vcpkg.cmake"
-        CACHE FILEPATH "vcpkg toolchain file")
-endif()
-
-if(NOT DEFINED VCPKG_TARGET_TRIPLET)
-    set(VCPKG_TARGET_TRIPLET "x64-windows" CACHE STRING "vcpkg target triplet")
-endif()
 
 project(distribute_lock LANGUAGES CXX)
 

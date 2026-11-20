@@ -40,23 +40,28 @@
 
 ## 独立构建
 
-在 `DistributeLock/` 目录中运行：
+按 [环境部署](../环境部署.md#2-安装-c-依赖) 设置 `VCPKG_ROOT` 并安装 `redis-plus-plus`。在 `DistributeLock/` 目录中运行：
 
 ```powershell
 cmake --preset windows-vcpkg-debug
 cmake --build --preset windows-vcpkg-debug
 ```
 
-预设选择 Visual Studio 2022、x64 和 vcpkg。工具链默认路径在 `CMakePresets.json` 与 `CMakeLists.txt` 中；依赖安装位置不同时先修改配置。目标为静态库 `distribute_lock` 和程序 `distribute_lock_test`。
+预设选择 Visual Studio 2022、x64 和 `VCPKG_ROOT` 中的 vcpkg。换了工具链时，从新的构建目录配置，例如 `cmake --preset windows-vcpkg-debug -B build_recovered`，再用 `cmake --build build_recovered --config Debug` 构建。目标为静态库 `distribute_lock` 和程序 `distribute_lock_test`。
 
 VS Code 可直接打开本目录，选择 `Windows x64 Debug (vcpkg)` 预设，构建后运行 `distribute_lock_test`。Windows 构建会把 hiredis DLL 复制到测试程序旁。
 
 ## 运行组件测试
 
-先启动可达的 Redis。`start_redis.bat` 使用脚本内指定的本机 Redis 安装与配置，运行前检查其路径和认证参数。测试程序的连接参数在 [test.cpp](test.cpp) 中，与 Redis 设置保持一致；使用独立测试环境。
+按照 [Docker Compose 配置步骤](../环境部署.md#3-用-docker-compose-启动-mysql-和-redis)准备仓库外的 `.env`。在 `DistributeLock/` 目录执行以下命令；`start_redis.bat` 只启动 Compose 的 Redis 服务。测试使用回环地址，从环境变量读取端口和密码。
 
 ```powershell
+$envFile = Join-Path $env:LOCALAPPDATA 'chat_app\docker\.env'
+$settings = ConvertFrom-StringData (Get-Content -LiteralPath $envFile -Raw)
+$env:REDIS_PORT = $settings.REDIS_PORT
+$env:REDIS_PASSWORD = $settings.REDIS_PASSWORD
 .\start_redis.bat
+if ($LASTEXITCODE -ne 0) { throw 'Redis 未就绪' }
 .\build\Debug\distribute_lock_test.exe
 ```
 

@@ -1,3 +1,4 @@
+# C++ 服务、共享协议和测试的根构建配置。
 cmake_minimum_required(VERSION 3.10)
 project(chat_app)
 
@@ -26,6 +27,8 @@ if(NOT CHAT_APP_TESTS_ONLY)
 # 所有 C++ 服务共用根目录下这一份协议，避免每个子项目重复调用 protoc。
 find_package(gRPC CONFIG REQUIRED)
 find_package(Protobuf CONFIG REQUIRED)
+find_package(unofficial-mysql-connector-cpp CONFIG REQUIRED)
+find_path(CHAT_APP_BOOST_INCLUDE_DIR NAMES boost/asio.hpp REQUIRED)
 
 get_target_property(Protobuf_PROTOC_EXECUTABLE protobuf::protoc IMPORTED_LOCATION_RELEASE)
 if(NOT Protobuf_PROTOC_EXECUTABLE)

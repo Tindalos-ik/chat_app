@@ -2,10 +2,10 @@
 
 ## Windows根构建
 
-在仓库根目录执行。需要Visual Studio 2022的C++工具链、CMake、vcpkg与对应服务依赖。根 [CMakePresets.json](../CMakePresets.json)的windows-vcpkg使用本机绝对工具链路径；首次使用先将其调整为实际vcpkg位置，或在配置命令中覆盖：
+按 [环境部署：安装 C++ 依赖](../环境部署.md#2-安装-c-依赖) 设置 `VCPKG_ROOT`。从仓库根目录执行；将 `$qt` 设为已安装的 Qt MSVC x64 kit 路径，以便构建 SQLite 测试。
 
 ```powershell
-cmake --preset windows-vcpkg "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+cmake --preset windows-vcpkg "-DCMAKE_PREFIX_PATH=$qt"
 cmake --build --preset debug
 ctest --test-dir build -C Debug -N
 ```

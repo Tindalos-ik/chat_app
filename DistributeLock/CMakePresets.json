@@ -1,0 +1,33 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "windows-vcpkg-debug",
+      "displayName": "Windows x64 Debug (vcpkg)",
+      "description": "Visual Studio 2022 x64, vcpkg x64-windows, Debug",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-windows"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "windows-vcpkg-debug",
+      "displayName": "Build DistributeLock test (Debug)",
+      "configurePreset": "windows-vcpkg-debug",
+      "configuration": "Debug",
+      "targets": [
+        "distribute_lock_test"
+      ]
+    }
+  ]
+}

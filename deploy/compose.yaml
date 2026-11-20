@@ -1,0 +1,44 @@
+# 本机开发使用的 MySQL 和 Redis；凭据由仓库外的 .env 提供。
+name: chat-app-local
+services:
+  mysql:
+    image: mysql:8.4.9
+    command: ['--collation-server=utf8mb4_unicode_ci']
+    environment:
+      MYSQL_ROOT_HOST: localhost
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}
+      MYSQL_DATABASE: chat_app_db
+      MYSQL_USER: chat_app
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required}
+    ports:
+      - '127.0.0.1:${MYSQL_X_PORT}:33060'
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - type: bind
+        source: ../sql/create_tables.sql
+        target: /docker-entrypoint-initdb.d/01-create_tables.sql
+        read_only: true
+        bind:
+          create_host_path: false
+    healthcheck:
+      test: ['CMD-SHELL', 'MYSQL_PWD="$$MYSQL_PASSWORD" mysql -h 127.0.0.1 -u "$$MYSQL_USER" -D "$$MYSQL_DATABASE" -e "SELECT 1 FROM chat_message LIMIT 1"']
+      interval: 5s
+      timeout: 5s
+      retries: 24
+  redis:
+    image: redis:7.4.8
+    command: ['redis-server', '--appendonly', 'yes', '--requirepass', '${REDIS_PASSWORD:?REDIS_PASSWORD is required}']
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    ports:
+      - '127.0.0.1:${REDIS_PORT}:6379'
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD-SHELL', 'redis-cli ping | grep -qx PONG']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+volumes:
+  mysql-data:
+  redis-data:

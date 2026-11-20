@@ -1,15 +1,19 @@
+// 使用真实 Redis 检查分布式锁的生命周期与并发互斥。
 #include "RedisDistributedLock.h"
 
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdlib>
 #include <iostream>
 #include <memory>
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -17,8 +21,6 @@ namespace {
 
 using namespace std::chrono_literals;
 
-constexpr int kRedisPort = 6379;
-constexpr char kRedisPassword[] = "123456";
 constexpr int kThreadCount = 8;
 
 const char* ToString(RedisLockResult result) {
@@ -176,11 +178,26 @@ bool TestConcurrentMutualExclusion(const std::shared_ptr<RedisConnectionPool>& p
 } // namespace
 
 int main() {
-    // 与项目 config.ini 一致：Redis 位于本机 6379，requirepass 为 123456。
+    const char* port_env = std::getenv("REDIS_PORT");
+    const char* password = std::getenv("REDIS_PASSWORD");
+    if (!port_env || !*port_env || !password || !*password) {
+        std::cerr << "请从 Compose 的 .env 设置 REDIS_PORT 和 REDIS_PASSWORD。\n";
+        return 1;
+    }
+
+    const std::string_view port_text(port_env);
+    const auto* port_end = port_text.data() + port_text.size();
+    int port = 0;
+    const auto result = std::from_chars(port_text.data(), port_end, port);
+    if (result.ec != std::errc{} || result.ptr != port_end || port < 1 || port > 65535) {
+        std::cerr << "REDIS_PORT 必须为 1 至 65535 的整数。\n";
+        return 1;
+    }
+
     RedisConnectionConfig config;
     config.host = "127.0.0.1";
-    config.port = kRedisPort;
-    config.password = kRedisPassword;
+    config.port = port;
+    config.password = password;
     config.pool_size = kThreadCount;
     config.connect_timeout = 1000ms;
 
@@ -189,8 +206,7 @@ int main() {
     const bool concurrency_ok = lifecycle_ok && TestConcurrentMutualExclusion(pool);
 
     if (!lifecycle_ok || !concurrency_ok) {
-        std::cerr << "\n分布式锁测试失败。请先运行 start_redis.bat，并确认 Redis 密码为 123456。"
-                  << std::endl;
+        std::cerr << "\n分布式锁测试失败。请确认 Redis 已启动，且端口与密码匹配。\n";
         return 1;
     }
 

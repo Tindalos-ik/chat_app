@@ -1,3 +1,4 @@
+# 配置第二个聊天服务实例的编译及运行配置复制。
 cmake_minimum_required(VERSION 3.10)
 project(ChatServer2)
 
@@ -32,8 +33,6 @@ set(SOURCE_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/DistLock.cpp
 )
 
-link_directories("D:/cppsoft/vcpkg/installed/x64-windows/lib") # 濞ｈ濮?vcpkg 閻?lib 鐠侯垰绶為敍灞界氨閺傚洣娆㈤幖婊呭偍鐠侯垰绶?
-
 # ==================== 閸欘垱澧界悰灞炬瀮娴?====================
 add_executable(${PROJECT_NAME} 
     ChatServer.cpp
@@ -43,10 +42,9 @@ add_executable(${PROJECT_NAME}
 
 # ==================== 婢跺瓨鏋冩禒鑸垫偝缁便垼鐭惧?====================
 target_include_directories(${PROJECT_NAME} PRIVATE 
-    "C:/local/boost_1_91_0"
+    ${CHAT_APP_BOOST_INCLUDE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/jsoncpp/json
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-    "D:/cppsoft/vcpkg/installed/x64-windows/include"   # 濞ｈ濮?vcpkg 閻?include 鐠侯垰绶?
 )
 
 # ==================== 闁剧偓甯存惔?====================
@@ -55,7 +53,7 @@ target_link_libraries(${PROJECT_NAME}
     gRPC::grpc++                        #闁剧偓甯磄rpc-c++鎼?
     protobuf::libprotobuf               #闁剧偓甯磒rotobuf鎼?
     redis++::redis++                    #闁剧偓甯磖edis-c++鎼?
-    mysqlcppconnx                        #闁剧偓甯磎ysql-c++鎼?
+    unofficial::mysql-connector-cpp::connector
 )
 
 if(WIN32)

@@ -1,3 +1,4 @@
+# 配置资源服务的编译及运行配置复制。
 cmake_minimum_required(VERSION 3.10)
 project(ResourceServer)
 
@@ -27,8 +28,6 @@ set(SOURCE_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/GroupAvatarDecoder.cpp
 )
 
-link_directories("D:/cppsoft/vcpkg/installed/x64-windows/lib") # 添加 vcpkg 的 lib 路径，库文件搜索路径
-
 # ==================== 可执行文件 ====================
 add_executable(${PROJECT_NAME} 
     ResourceServer.cpp
@@ -38,10 +37,9 @@ add_executable(${PROJECT_NAME}
 
 # ==================== 头文件搜索路径 ====================
 target_include_directories(${PROJECT_NAME} PRIVATE 
-    "C:/local/boost_1_91_0"
+    ${CHAT_APP_BOOST_INCLUDE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/jsoncpp/json
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-    "D:/cppsoft/vcpkg/installed/x64-windows/include"   # 添加 vcpkg 的 include 路径
 )
 
 # ResourceServer 也链接根工程唯一生成的 proto 库。这样 ChatServer 和资源服务
@@ -50,7 +48,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     chat_proto
     gRPC::grpc++
     protobuf::libprotobuf
-    mysqlcppconnx
+    unofficial::mysql-connector-cpp::connector
     PNG::PNG
     libjpeg-turbo::turbojpeg
 )
